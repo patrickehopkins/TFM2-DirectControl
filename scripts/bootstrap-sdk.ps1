@@ -1,5 +1,5 @@
 param(
-    [string]$GameDir = (Join-Path ${env:ProgramFiles(x86)} "Steam\steamapps\common\Teamfight Manager 2")
+    [string]$GameDir = (Join-Path ${env:ProgramFiles(x86)} "Steam\steamapps\common\Teamfight Manager2")
 )
 
 $ErrorActionPreference = "Stop"

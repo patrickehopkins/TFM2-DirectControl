@@ -73,6 +73,12 @@ Suggested checkout:
 C:\Dev\TFM2-DirectControl
 ```
 
+Default Steam install used by the helper scripts:
+
+```text
+C:\Program Files (x86)\Steam\steamapps\common\Teamfight Manager2
+```
+
 The official stable SDK ships with the game under:
 
 ```text
@@ -88,6 +94,14 @@ C:\Dev\
 ```
 
 Run `scripts\bootstrap-sdk.ps1` to copy the game's current stable API crate into that sibling location. The script accepts a custom game path if Steam is installed elsewhere.
+
+If PowerShell reports that script execution is disabled, allow scripts only for the current PowerShell process:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+```
+
+Closing that PowerShell window restores the previous policy.
 
 ### Build
 
@@ -115,10 +129,10 @@ The script builds the DLL and installs these files under:
   tfm2_direct_control.dll
 ```
 
-Pass `-GameDir` if the default Steam path is wrong:
+Pass `-GameDir` if Teamfight Manager 2 is installed in another Steam library:
 
 ```powershell
-.\scripts\install-dev.ps1 -GameDir "D:\SteamLibrary\steamapps\common\Teamfight Manager 2"
+.\scripts\install-dev.ps1 -GameDir "D:\SteamLibrary\steamapps\common\Teamfight Manager2"
 ```
 
 The GitHub repository/folder may remain named `TFM2-DirectControl`; the installed runtime mod id is deliberately lowercase `tfm2_direct_control` so it matches the Rust DLL name and TFM2 mod folder.
