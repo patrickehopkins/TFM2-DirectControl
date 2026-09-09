@@ -1,6 +1,9 @@
 # Rust build output
 /target/
 
+# Local copy of the official TFM2 stable SDK
+/sdk/
+
 # Generated development/package output
 /dist/
 
