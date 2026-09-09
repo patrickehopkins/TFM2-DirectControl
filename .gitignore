@@ -1,0 +1,21 @@
+# Rust build output
+/target/
+
+# Generated development/package output
+/dist/
+
+# Native build artifacts copied during local testing
+*.dll
+*.pdb
+*.so
+*.dylib
+
+# Editor / OS noise
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local-only environment overrides
+.env
+.env.*
