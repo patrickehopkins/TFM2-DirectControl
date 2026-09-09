@@ -65,7 +65,7 @@ External live mouse input crosses Teamfight Manager 2's deterministic simulation
 
 Target platform for the first version: **Windows + Steam**.
 
-The repository itself is the development workspace. It can be cloned anywhere; no separate sacrificial or `C:\Dev` copy is required. All helper scripts resolve paths relative to the repository root.
+The GitHub working copy itself is the development workspace. It can be cloned anywhere; no separate sacrificial or `C:\Dev` copy is required. Switching branches in GitHub Desktop updates this same working directory automatically. All helper scripts resolve paths relative to the repository root.
 
 Default Steam install used by the helper scripts:
 
