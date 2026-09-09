@@ -1,6 +1,14 @@
+use std::{
+    collections::VecDeque,
+    fmt::Write as _,
+    fs,
+    path::PathBuf,
+    sync::Mutex,
+};
+
 use mod_api_stable::{
     declare_stable_mod, ClientSceneKindV1, LogLevel, StableClient, StableExtension, StableHost,
-    StableMatchHook, StableMod, StableSim, TextAlignXV1, TextAlignYV1,
+    StableMod, TextAlignXV1, TextAlignYV1,
 };
 use windows_sys::Win32::{
     Foundation::{POINT, RECT},
@@ -17,15 +25,10 @@ use windows_sys::Win32::{
 const MOD_ID: &str = "tfm2_direct_control";
 const UI_FALLBACK_W: f32 = 1920.0;
 const UI_FALLBACK_H: f32 = 1080.0;
-
-const WORLD_CENTER: u64 = 480_000;
-const WORLD_PROBE_OFFSET: u64 = 120_000;
-const WORLD_MARKER_RADIUS: u64 = 6_000;
-const WORLD_MARKER_HALF_LINE: u64 = 12_000;
-
-const COLOR_YELLOW: u32 = 0xffe040ff;
-const COLOR_CYAN: u32 = 0x40e0ffff;
-const COLOR_MAGENTA: u32 = 0xff40e0ff;
+const UI_DUMP_FILENAME: &str = "TFM2-DirectControl-ui-tree.txt";
+const UI_DUMP_MAX_DEPTH: usize = 24;
+const UI_DUMP_MAX_NODES: usize = 12_000;
+const STATUS_FRAMES: u32 = 360;
 
 #[derive(Debug, Clone, Copy, Default)]
 struct MouseSnapshot {
@@ -37,6 +40,14 @@ struct MouseSnapshot {
     client_w: i32,
     client_h: i32,
 }
+
+#[derive(Debug, Default)]
+struct DiagnosticStatus {
+    text: String,
+    frames_left: u32,
+}
+
+static DIAGNOSTIC_STATUS: Mutex<Option<DiagnosticStatus>> = Mutex::new(None);
 
 #[derive(Debug, Default)]
 struct DirectControlExtension;
@@ -114,6 +125,203 @@ impl DirectControlExtension {
             Some(ClientSceneKindV1::Match | ClientSceneKindV1::InGame)
         )
     }
+
+    fn dump_path() -> PathBuf {
+        std::env::temp_dir().join(UI_DUMP_FILENAME)
+    }
+
+    fn clean_inline(value: String, max_chars: usize) -> String {
+        let mut result = value.replace(['\r', '\n', '\t'], " ");
+        if result.chars().count() > max_chars {
+            result = result.chars().take(max_chars).collect();
+            result.push_str("...");
+        }
+        result
+    }
+
+    fn format_rect(rect: Option<(f32, f32, f32, f32)>) -> String {
+        match rect {
+            Some((x, y, w, h)) => format!("({x:.1},{y:.1},{w:.1},{h:.1})"),
+            None => "-".to_owned(),
+        }
+    }
+
+    fn looks_camera_relevant(
+        path: &str,
+        runner: &str,
+        rect: Option<(f32, f32, f32, f32)>,
+        contents_rect: Option<(f32, f32, f32, f32)>,
+    ) -> bool {
+        let name = format!("{path} {runner}").to_ascii_lowercase();
+        const KEYWORDS: &[&str] = &[
+            "camera",
+            "viewport",
+            "view_port",
+            "view",
+            "minimap",
+            "mini_map",
+            "map",
+            "field",
+            "battle",
+            "match",
+            "game",
+            "world",
+            "scene",
+            "spectat",
+            "render",
+            "canvas",
+        ];
+
+        if KEYWORDS.iter().any(|keyword| name.contains(keyword)) {
+            return true;
+        }
+
+        let geometry_candidate = |(_, _, w, h): (f32, f32, f32, f32)| {
+            let large_panel = w >= 700.0 && h >= 400.0;
+            let square_panel =
+                (140.0..=500.0).contains(&w)
+                    && (140.0..=500.0).contains(&h)
+                    && (w - h).abs() <= 100.0;
+            large_panel || square_panel
+        };
+
+        rect.map(geometry_candidate).unwrap_or(false)
+            || contents_rect.map(geometry_candidate).unwrap_or(false)
+    }
+
+    fn dump_ui_tree(ctx: &StableClient<'_>) -> Result<(PathBuf, usize, usize), String> {
+        let mut queue = VecDeque::new();
+        queue.push_back((String::new(), 0usize));
+
+        let mut full = String::new();
+        let mut candidates = String::new();
+        let mut visited = 0usize;
+        let mut candidate_count = 0usize;
+
+        writeln!(full, "TFM2 Direct Control - live UI tree dump").ok();
+        writeln!(full, "Scene: {:?}", ctx.client_scene_kind()).ok();
+        writeln!(full, "Root children: {:?}", ctx.ui_child_names("")).ok();
+        writeln!(full).ok();
+
+        while let Some((path, depth)) = queue.pop_front() {
+            if visited >= UI_DUMP_MAX_NODES {
+                writeln!(full, "\n[TRUNCATED after {UI_DUMP_MAX_NODES} nodes]").ok();
+                break;
+            }
+            if depth > UI_DUMP_MAX_DEPTH {
+                continue;
+            }
+
+            let children = ctx.ui_child_names(&path);
+            let runner = ctx.ui_runner_name(&path).unwrap_or_default();
+            let visible = ctx.ui_visible(&path);
+            let rect = ctx.ui_node_rect(&path);
+            let contents_rect = ctx.ui_contents_rect(&path);
+            let text = ctx
+                .ui_text(&path)
+                .map(|value| Self::clean_inline(value, 240))
+                .unwrap_or_default();
+            let state = ctx
+                .ui_state_json(&path)
+                .map(|value| Self::clean_inline(value, 1_000))
+                .unwrap_or_default();
+
+            let display_path = if path.is_empty() { "<root>" } else { &path };
+            let line = format!(
+                "depth={depth:02} path={display_path} | runner={runner:?} | visible={visible:?} | rect={} | contents={} | children={}{}{}",
+                Self::format_rect(rect),
+                Self::format_rect(contents_rect),
+                children.len(),
+                if text.is_empty() {
+                    String::new()
+                } else {
+                    format!(" | text={text:?}")
+                },
+                if state.is_empty() {
+                    String::new()
+                } else {
+                    format!(" | state={state}")
+                },
+            );
+
+            writeln!(full, "{line}").ok();
+            if Self::looks_camera_relevant(&path, &runner, rect, contents_rect) {
+                candidate_count += 1;
+                writeln!(candidates, "{line}").ok();
+            }
+
+            visited += 1;
+            if depth < UI_DUMP_MAX_DEPTH {
+                for child in children {
+                    let child_path = if path.is_empty() {
+                        child
+                    } else {
+                        format!("{path}.{child}")
+                    };
+                    queue.push_back((child_path, depth + 1));
+                }
+            }
+        }
+
+        let mut report = String::new();
+        writeln!(report, "TFM2 DIRECT CONTROL - CAMERA/UI DISCOVERY REPORT").ok();
+        writeln!(report, "Visited nodes: {visited}").ok();
+        writeln!(report, "Candidate nodes: {candidate_count}").ok();
+        writeln!(report).ok();
+        writeln!(report, "========== CAMERA / MAP / VIEW CANDIDATES ==========").ok();
+        if candidates.is_empty() {
+            writeln!(report, "<none>").ok();
+        } else {
+            report.push_str(&candidates);
+        }
+        writeln!(report, "\n========== COMPLETE UI TREE ==========").ok();
+        report.push_str(&full);
+
+        let path = Self::dump_path();
+        fs::write(&path, report)
+            .map_err(|error| format!("failed to write {}: {error}", path.display()))?;
+
+        Ok((path, visited, candidate_count))
+    }
+
+    fn set_status(text: String) {
+        if let Ok(mut status) = DIAGNOSTIC_STATUS.lock() {
+            *status = Some(DiagnosticStatus {
+                text,
+                frames_left: STATUS_FRAMES,
+            });
+        }
+    }
+
+    fn draw_status(ctx: &mut StableClient<'_>) {
+        let message = {
+            let Ok(mut status) = DIAGNOSTIC_STATUS.lock() else {
+                return;
+            };
+            let Some(current) = status.as_mut() else {
+                return;
+            };
+            if current.frames_left == 0 {
+                *status = None;
+                return;
+            }
+            current.frames_left -= 1;
+            current.text.clone()
+        };
+
+        ctx.draw_rect("UI", 18.0, 94.0, 1_050.0, 30.0, 19_998, 6.0, 0x101018dd);
+        ctx.draw_text(
+            "UI",
+            &message,
+            "asset/base/font/set/regular",
+            (28.0, 94.0, 1_030.0, 30.0),
+            19_999,
+            13.0,
+            0xffffffff,
+            TextAlignXV1::Left,
+            TextAlignYV1::Center,
+        );
+    }
 }
 
 impl StableExtension for DirectControlExtension {
@@ -122,55 +330,67 @@ impl StableExtension for DirectControlExtension {
             return;
         }
 
-        let mouse = self.read_mouse(ctx);
-        if !mouse.valid {
-            return;
+        if matches!(ctx.client_scene_kind(), Some(ClientSceneKindV1::InGame))
+            && ctx.key_pressed("F12")
+        {
+            match Self::dump_ui_tree(ctx) {
+                Ok((path, nodes, candidates)) => Self::set_status(format!(
+                    "UI dump written: {} | {} nodes | {} candidates",
+                    path.display(),
+                    nodes,
+                    candidates
+                )),
+                Err(error) => Self::set_status(format!("UI dump FAILED: {error}")),
+            }
         }
 
-        let x = mouse.ui_x;
-        let y = mouse.ui_y;
-        let crosshair_color = if mouse.right_down {
-            0xff4040ff
-        } else if mouse.left_down {
-            0x40ff80ff
-        } else {
-            0xffffffff
-        };
+        let mouse = self.read_mouse(ctx);
+        if mouse.valid {
+            let x = mouse.ui_x;
+            let y = mouse.ui_y;
+            let crosshair_color = if mouse.right_down {
+                0xff4040ff
+            } else if mouse.left_down {
+                0x40ff80ff
+            } else {
+                0xffffffff
+            };
 
-        ctx.draw_line("UI", x - 14.0, y, x + 14.0, y, 2.0, 20_000, crosshair_color);
-        ctx.draw_line("UI", x, y - 14.0, x, y + 14.0, 2.0, 20_000, crosshair_color);
-        ctx.draw_circle("UI", x, y, 3.0, 20_001, crosshair_color);
+            ctx.draw_line("UI", x - 14.0, y, x + 14.0, y, 2.0, 20_000, crosshair_color);
+            ctx.draw_line("UI", x, y - 14.0, x, y + 14.0, 2.0, 20_000, crosshair_color);
+            ctx.draw_circle("UI", x, y, 3.0, 20_001, crosshair_color);
 
-        let label = format!(
-            "TFM2 Direct Control | cursor UI ({:.1}, {:.1}) | client {}x{} | LMB {} | RMB {}",
-            mouse.ui_x,
-            mouse.ui_y,
-            mouse.client_w,
-            mouse.client_h,
-            if mouse.left_down { "DOWN" } else { "up" },
-            if mouse.right_down { "DOWN" } else { "up" },
-        );
+            let label = format!(
+                "TFM2 Direct Control | cursor UI ({:.1}, {:.1}) | client {}x{} | LMB {} | RMB {}",
+                mouse.ui_x,
+                mouse.ui_y,
+                mouse.client_w,
+                mouse.client_h,
+                if mouse.left_down { "DOWN" } else { "up" },
+                if mouse.right_down { "DOWN" } else { "up" },
+            );
 
-        ctx.draw_rect("UI", 18.0, 18.0, 760.0, 34.0, 19_998, 6.0, 0x101018dd);
-        ctx.draw_text(
-            "UI",
-            &label,
-            "asset/base/font/set/regular",
-            (28.0, 18.0, 740.0, 34.0),
-            19_999,
-            14.0,
-            0xffffffff,
-            TextAlignXV1::Left,
-            TextAlignYV1::Center,
-        );
-
-        if matches!(ctx.client_scene_kind(), Some(ClientSceneKindV1::InGame)) {
-            ctx.draw_rect("UI", 18.0, 56.0, 700.0, 30.0, 19_998, 6.0, 0x101018cc);
+            ctx.draw_rect("UI", 18.0, 18.0, 760.0, 34.0, 19_998, 6.0, 0x101018dd);
             ctx.draw_text(
                 "UI",
-                "SIM world probe: YELLOW center (480k,480k) | CYAN +X | MAGENTA +Y",
+                &label,
                 "asset/base/font/set/regular",
-                (28.0, 56.0, 680.0, 30.0),
+                (28.0, 18.0, 740.0, 34.0),
+                19_999,
+                14.0,
+                0xffffffff,
+                TextAlignXV1::Left,
+                TextAlignYV1::Center,
+            );
+        }
+
+        if matches!(ctx.client_scene_kind(), Some(ClientSceneKindV1::InGame)) {
+            ctx.draw_rect("UI", 18.0, 56.0, 760.0, 30.0, 19_998, 6.0, 0x101018cc);
+            ctx.draw_text(
+                "UI",
+                "Camera discovery: press F12 once to dump the live UI tree to %TEMP%\\TFM2-DirectControl-ui-tree.txt",
+                "asset/base/font/set/regular",
+                (28.0, 56.0, 740.0, 30.0),
                 19_999,
                 13.0,
                 0xffffffff,
@@ -178,68 +398,19 @@ impl StableExtension for DirectControlExtension {
                 TextAlignYV1::Center,
             );
         }
-    }
-}
 
-#[derive(Debug, Default)]
-struct WorldProbeHook;
-
-impl WorldProbeHook {
-    fn draw_cross(sim: &mut StableSim<'_>, x: u64, y: u64, color: u32) {
-        sim.debug_draw_circle(x, y, WORLD_MARKER_RADIUS, color);
-        sim.debug_draw_line(
-            x.saturating_sub(WORLD_MARKER_HALF_LINE),
-            y,
-            x.saturating_add(WORLD_MARKER_HALF_LINE),
-            y,
-            color,
-        );
-        sim.debug_draw_line(
-            x,
-            y.saturating_sub(WORLD_MARKER_HALF_LINE),
-            x,
-            y.saturating_add(WORLD_MARKER_HALF_LINE),
-            color,
-        );
-    }
-}
-
-impl StableMatchHook for WorldProbeHook {
-    fn on_match_start(&self, _sim: &mut StableSim<'_>) {}
-
-    fn on_match_tick(&self, sim: &mut StableSim<'_>, _rng_seed: u64) {
-        // StableSim debug drawing is explicitly defined in simulation world coordinates.
-        // These anchors should therefore stay glued to fixed terrain positions while the
-        // spectator camera pans or zooms.
-        Self::draw_cross(sim, WORLD_CENTER, WORLD_CENTER, COLOR_YELLOW);
-        Self::draw_cross(
-            sim,
-            WORLD_CENTER + WORLD_PROBE_OFFSET,
-            WORLD_CENTER,
-            COLOR_CYAN,
-        );
-        Self::draw_cross(
-            sim,
-            WORLD_CENTER,
-            WORLD_CENTER + WORLD_PROBE_OFFSET,
-            COLOR_MAGENTA,
-        );
-    }
-
-    fn check_match_end(&self, _sim: &mut StableSim<'_>) -> Option<bool> {
-        None
+        Self::draw_status(ctx);
     }
 }
 
 fn init(host: &StableHost) -> StableMod {
     host.log(
         LogLevel::Info,
-        "TFM2 Direct Control loaded (mouse + simulation world diagnostic build)",
+        "TFM2 Direct Control loaded (mouse + UI-tree camera discovery build)",
     );
 
     let mut module = StableMod::new(MOD_ID);
     module.set_extension(DirectControlExtension);
-    module.set_match_hook(WorldProbeHook);
     module
 }
 
