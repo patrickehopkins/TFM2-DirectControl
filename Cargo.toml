@@ -9,3 +9,7 @@ crate-type = ["cdylib"]
 
 [dependencies]
 mod-api-stable = { path = "../mod-api-stable" }
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_UI_WindowsAndMessaging",
+] }
