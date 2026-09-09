@@ -1,0 +1,6 @@
+{
+  "name": "TFM2 Camera Probe",
+  "author": "patrickehopkins",
+  "version": "0.1.0",
+  "description": "Disposable 0.5.x classic-native probe for discovering the live spectator camera/render state used by TFM2 Direct Control."
+}
