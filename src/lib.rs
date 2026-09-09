@@ -131,7 +131,10 @@ impl DirectControlExtension {
     }
 
     fn clean_inline(value: String, max_chars: usize) -> String {
-        let mut result = value.replace(['\r', '\n', '\t'], " ");
+        let mut result = value
+            .replace('\r', " ")
+            .replace('\n', " ")
+            .replace('\t', " ");
         if result.chars().count() > max_chars {
             result = result.chars().take(max_chars).collect();
             result.push_str("...");
@@ -176,14 +179,14 @@ impl DirectControlExtension {
             return true;
         }
 
-        let geometry_candidate = |(_, _, w, h): (f32, f32, f32, f32)| {
+        fn geometry_candidate((_, _, w, h): (f32, f32, f32, f32)) -> bool {
             let large_panel = w >= 700.0 && h >= 400.0;
             let square_panel =
                 (140.0..=500.0).contains(&w)
                     && (140.0..=500.0).contains(&h)
                     && (w - h).abs() <= 100.0;
             large_panel || square_panel
-        };
+        }
 
         rect.map(geometry_candidate).unwrap_or(false)
             || contents_rect.map(geometry_candidate).unwrap_or(false)
