@@ -11,6 +11,8 @@ Observed executable:
 - `TeamfightManager2.exe`
 - size: `77,666,816` bytes
 - SHA-256: `4ed3aed08971efd06b7415817c9da9a444b6c7f63dc2ec09540b572568a4e045`
+- PE timestamp: `0x6A978218`
+- image size: `0x04A1D000`
 - executable contains a `game.pdb` reference and retained Rust source-path / string information.
 
 Treat all offsets and RVAs in this document as valid only for this exact executable until re-verified.
@@ -73,7 +75,27 @@ The camera input/update path was traced far enough to identify the following fie
 | `+0x418` | horizontal pan velocity / input delta | Pan-right writes `+100.0`; pan-left writes `-100.0`. |
 | `+0x41C` | vertical pan velocity / input delta | Pan-up writes `-100.0`; pan-down writes `+100.0`. |
 
-The camera input handler was identified at RVA approximately `0x009E6750` in the tested executable.
+The camera input handler starts at RVA `0x009E6750` in the tested executable. Its first 12 bytes are eight complete push instructions:
+
+```text
+55 41 57 41 56 41 55 41 54 56 57 53
+```
+
+That makes the entry suitable for a small trampoline without relocating RIP-relative instructions.
+
+### Ownership / embedding trace
+
+Static caller tracing produced an additional structural check:
+
+```text
+outer object
+  +0x4A70 -> scene / active match-view object
+                 +0x960 -> primary camera-containing subobject
+```
+
+The large client update path passes `scene + 0x960` as the first argument (`this`) into the camera handler wrapper. A second camera-like subobject is also routed through the same generic handler on another path, so runtime capture keeps multiple candidates instead of assuming the first/last call is always the active spectator camera.
+
+This ownership trace is useful for validating captured pointers even though the stable API does not expose the `outer` object directly.
 
 ### Coordinate scale
 
@@ -90,17 +112,35 @@ This is consistent with whole-map camera center `(480.0, 480.0)`.
 
 Offsets `+0xEC` and `+0xF0` are read by visible-region/culling math and are divided by the current zoom. They are likely viewport/world-extent values, but their exact semantics are not yet proven. Do not use them as full width, height, or half-extents until verified.
 
-## Current blocker
+## Runtime capture probe
 
-The location of the camera state inside the object is known. The remaining blocker is obtaining the current object's address safely from the stable mod.
+The feature branch now contains `src/camera_probe.rs`, a deliberately narrow v0.5.8 adapter.
 
-Preferred approaches, in order:
+Safety/containment rules:
 
-1. Continue tracing ownership/callers until a stable owner/global path to the camera-containing object is found.
-2. If no clean owner path emerges quickly, install a tiny version-checked hook at the confirmed camera handler and capture its `this` pointer when TFM2 invokes it.
-3. Read only the confirmed camera fields from that captured object.
+- verifies the main module's PE timestamp and image size;
+- verifies the exact 12-byte camera-handler prologue before patching;
+- refuses to install on a mismatched build;
+- copies only whole non-RIP-relative prologue instructions into an executable trampoline;
+- detours only the confirmed camera handler;
+- calls the original handler normally, then snapshots the verified fields;
+- publishes floats through atomics so the stable UI overlay never dereferences stale camera pointers;
+- keeps up to four candidate camera objects because the handler is shared by more than one camera-like subobject;
+- does not issue movement or alter gameplay state.
 
-The adapter must verify the executable version/hash before using hard-coded RVAs/offsets. On mismatch it should disable camera readback rather than guess.
+Current diagnostic fields per candidate:
+
+```text
+address
+zoom (+0xE0)
+center X/Y (+0xE4/+0xE8)
+raw +0xEC/+0xF0 values
+raw +0xEC/+0xF0 divided by zoom
+mode byte (+0xF4)
+handler call count
+```
+
+The next physical test is intended to identify which candidate is the active free spectator camera and verify that its center/zoom values react correctly to pan and zoom.
 
 ## Planned validation milestone
 
