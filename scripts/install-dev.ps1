@@ -6,8 +6,7 @@ $ErrorActionPreference = "Stop"
 
 $ModId = "tfm2_direct_control"
 $RepoRoot = Split-Path $PSScriptRoot -Parent
-$DevRoot = Split-Path $RepoRoot -Parent
-$SdkDestination = Join-Path $DevRoot "mod-api-stable"
+$SdkDestination = Join-Path $RepoRoot "sdk\mod-api-stable"
 $SdkBootstrap = Join-Path $PSScriptRoot "bootstrap-sdk.ps1"
 $ModDir = Join-Path $GameDir "mods\$ModId"
 $DllSource = Join-Path $RepoRoot "target\release\$ModId.dll"
