@@ -1,0 +1,13 @@
+[package]
+name = "tfm2_camera_probe"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+# The classic Teamfight Manager 2 SDK injects the matching `mod_api` crate.
+# Do not add mod_api as a Cargo dependency here.
+[dependencies]
+
+[workspace]
