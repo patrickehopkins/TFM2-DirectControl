@@ -5,9 +5,12 @@ use mod_api_stable::{
 use windows_sys::Win32::{
     Foundation::{POINT, RECT},
     Graphics::Gdi::ScreenToClient,
+    System::Threading::GetCurrentProcessId,
     UI::{
         Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON},
-        WindowsAndMessaging::{GetClientRect, GetCursorPos, GetForegroundWindow},
+        WindowsAndMessaging::{
+            GetClientRect, GetCursorPos, GetForegroundWindow, GetWindowThreadProcessId,
+        },
     },
 };
 
@@ -33,9 +36,19 @@ impl DirectControlExtension {
     fn read_mouse(&self, ctx: &StableClient<'_>) -> MouseSnapshot {
         // TFM2's stable API currently exposes raw keyboard input but not raw mouse
         // coordinates/buttons. Keep all Windows-specific input acquisition isolated here.
+        //
+        // Only use the foreground window when it belongs to this game process. That
+        // prevents clicks on another monitor/application from being interpreted as TFM2
+        // coordinates and also ensures future manual controls are inactive while alt-tabbed.
         unsafe {
             let hwnd = GetForegroundWindow();
             if hwnd.is_null() {
+                return MouseSnapshot::default();
+            }
+
+            let mut foreground_process_id = 0u32;
+            GetWindowThreadProcessId(hwnd, &mut foreground_process_id);
+            if foreground_process_id == 0 || foreground_process_id != GetCurrentProcessId() {
                 return MouseSnapshot::default();
             }
 
@@ -80,7 +93,10 @@ impl DirectControlExtension {
     }
 
     fn should_draw(ctx: &StableClient<'_>) -> bool {
-        matches!(ctx.client_scene_kind(), Some(ClientSceneKindV1::Match))
+        matches!(
+            ctx.client_scene_kind(),
+            Some(ClientSceneKindV1::Match | ClientSceneKindV1::InGame)
+        )
     }
 }
 
