@@ -18,6 +18,12 @@ const MOD_ID: &str = "tfm2_direct_control";
 const UI_FALLBACK_W: f32 = 1920.0;
 const UI_FALLBACK_H: f32 = 1080.0;
 
+const WORLD_CENTER: f32 = 480_000.0;
+const WORLD_PROBE_OFFSET: f32 = 120_000.0;
+const WORLD_MARKER_RADIUS: f32 = 6_000.0;
+const WORLD_MARKER_HALF_LINE: f32 = 12_000.0;
+const WORLD_MARKER_LINE_WIDTH: f32 = 1_600.0;
+
 #[derive(Debug, Clone, Copy, Default)]
 struct MouseSnapshot {
     valid: bool,
@@ -73,6 +79,13 @@ impl DirectControlExtension {
                 return MouseSnapshot::default();
             }
 
+            // TFM2 can remain foreground while the physical cursor crosses onto another
+            // monitor. Treat anything outside the game's own client area as inactive so a
+            // future RMB cannot become an off-window gameplay command.
+            if cursor.x < 0 || cursor.y < 0 || cursor.x >= client_w || cursor.y >= client_h {
+                return MouseSnapshot::default();
+            }
+
             let (ui_w, ui_h) = ctx
                 .draw_map_size("UI")
                 .unwrap_or((UI_FALLBACK_W, UI_FALLBACK_H));
@@ -98,6 +111,60 @@ impl DirectControlExtension {
             Some(ClientSceneKindV1::Match | ClientSceneKindV1::InGame)
         )
     }
+
+    fn draw_world_cross(ctx: &mut StableClient<'_>, x: f32, y: f32, color: u32) {
+        ctx.draw_circle(
+            "Game",
+            x,
+            y,
+            WORLD_MARKER_RADIUS,
+            50_000,
+            color,
+        );
+        ctx.draw_line(
+            "Game",
+            x - WORLD_MARKER_HALF_LINE,
+            y,
+            x + WORLD_MARKER_HALF_LINE,
+            y,
+            WORLD_MARKER_LINE_WIDTH,
+            50_001,
+            color,
+        );
+        ctx.draw_line(
+            "Game",
+            x,
+            y - WORLD_MARKER_HALF_LINE,
+            x,
+            y + WORLD_MARKER_HALF_LINE,
+            WORLD_MARKER_LINE_WIDTH,
+            50_001,
+            color,
+        );
+    }
+
+    fn draw_world_probe(ctx: &mut StableClient<'_>) {
+        if !matches!(ctx.client_scene_kind(), Some(ClientSceneKindV1::InGame)) {
+            return;
+        }
+
+        // Known world anchors. If these remain attached to the terrain while the spectator
+        // camera pans/zooms, the stable renderer is already applying the live Game camera.
+        // That tells us exactly which transform still needs to be inverted for mouse input.
+        Self::draw_world_cross(ctx, WORLD_CENTER, WORLD_CENTER, 0xffe040ff); // center: yellow
+        Self::draw_world_cross(
+            ctx,
+            WORLD_CENTER + WORLD_PROBE_OFFSET,
+            WORLD_CENTER,
+            0x40e0ffff,
+        ); // +X: cyan
+        Self::draw_world_cross(
+            ctx,
+            WORLD_CENTER,
+            WORLD_CENTER + WORLD_PROBE_OFFSET,
+            0xff40e0ff,
+        ); // +Y: magenta
+    }
 }
 
 impl StableExtension for DirectControlExtension {
@@ -105,6 +172,8 @@ impl StableExtension for DirectControlExtension {
         if !Self::should_draw(ctx) {
             return;
         }
+
+        Self::draw_world_probe(ctx);
 
         let mouse = self.read_mouse(ctx);
         if !mouse.valid {
@@ -125,35 +194,57 @@ impl StableExtension for DirectControlExtension {
         ctx.draw_line("UI", x, y - 14.0, x, y + 14.0, 2.0, 20_000, crosshair_color);
         ctx.draw_circle("UI", x, y, 3.0, 20_001, crosshair_color);
 
+        let game_map = ctx.draw_map_size("Game");
+        let game_map_text = match game_map {
+            Some((w, h)) => format!("Game map {:.0}x{:.0}", w, h),
+            None => "Game map unavailable".to_owned(),
+        };
+
         let label = format!(
-            "TFM2 Direct Control | cursor UI ({:.1}, {:.1}) | client {}x{} | LMB {} | RMB {}",
+            "TFM2 Direct Control | cursor UI ({:.1}, {:.1}) | client {}x{} | {} | LMB {} | RMB {}",
             mouse.ui_x,
             mouse.ui_y,
             mouse.client_w,
             mouse.client_h,
+            game_map_text,
             if mouse.left_down { "DOWN" } else { "up" },
             if mouse.right_down { "DOWN" } else { "up" },
         );
 
-        ctx.draw_rect("UI", 18.0, 18.0, 760.0, 34.0, 19_998, 6.0, 0x101018dd);
+        ctx.draw_rect("UI", 18.0, 18.0, 930.0, 34.0, 19_998, 6.0, 0x101018dd);
         ctx.draw_text(
             "UI",
             &label,
             "asset/base/font/set/regular",
-            (28.0, 18.0, 740.0, 34.0),
+            (28.0, 18.0, 910.0, 34.0),
             19_999,
             14.0,
             0xffffffff,
             TextAlignXV1::Left,
             TextAlignYV1::Center,
         );
+
+        if matches!(ctx.client_scene_kind(), Some(ClientSceneKindV1::InGame)) {
+            ctx.draw_rect("UI", 18.0, 56.0, 640.0, 30.0, 19_998, 6.0, 0x101018cc);
+            ctx.draw_text(
+                "UI",
+                "World probe: YELLOW center (480k,480k) | CYAN +X | MAGENTA +Y",
+                "asset/base/font/set/regular",
+                (28.0, 56.0, 620.0, 30.0),
+                19_999,
+                13.0,
+                0xffffffff,
+                TextAlignXV1::Left,
+                TextAlignYV1::Center,
+            );
+        }
     }
 }
 
 fn init(host: &StableHost) -> StableMod {
     host.log(
         LogLevel::Info,
-        "TFM2 Direct Control loaded (mouse diagnostic build)",
+        "TFM2 Direct Control loaded (mouse/world diagnostic build)",
     );
 
     let mut module = StableMod::new(MOD_ID);
