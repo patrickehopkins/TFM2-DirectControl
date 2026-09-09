@@ -3,9 +3,9 @@
 //! The official stable mod API deliberately does not expose the spectator camera.
 //! For the single tested 0.5.8 executable we therefore detour the game's camera
 //! input/update handler and capture only a few verified fields from its `this`
-//! pointer.  No gameplay mutation happens here.
+//! pointer. No gameplay mutation happens here.
 //!
-//! Keep every version-specific RVA/offset in this module.  Higher-level direct
+//! Keep every version-specific RVA/offset in this module. Higher-level direct
 //! control code should consume `CameraSnapshot` and never know TFM2's private
 //! object layout.
 
@@ -17,8 +17,6 @@ use std::{
         OnceLock,
     },
 };
-
-use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
 const HANDLER_RVA: usize = 0x009E_6750;
 const EXPECTED_PE_TIMESTAMP: u32 = 0x6A97_8218;
@@ -48,14 +46,19 @@ const PAGE_EXECUTE_READWRITE: u32 = 0x40;
 #[link(name = "kernel32")]
 extern "system" {
     fn GetModuleHandleW(module_name: *const u16) -> *mut c_void;
+    fn GetCurrentProcess() -> *mut c_void;
     fn VirtualAlloc(
         address: *mut c_void,
         size: usize,
         allocation_type: u32,
         protect: u32,
     ) -> *mut c_void;
-    fn VirtualProtect(address: *mut c_void, size: usize, new_protect: u32, old_protect: *mut u32)
-        -> i32;
+    fn VirtualProtect(
+        address: *mut c_void,
+        size: usize,
+        new_protect: u32,
+        old_protect: *mut u32,
+    ) -> i32;
     fn FlushInstructionCache(process: *mut c_void, address: *const c_void, size: usize) -> i32;
 }
 
@@ -117,7 +120,7 @@ static CANDIDATES: [CandidateSlot; MAX_CANDIDATES] = [
 static TRAMPOLINE: AtomicUsize = AtomicUsize::new(0);
 static INSTALL_RESULT: OnceLock<Result<(), String>> = OnceLock::new();
 
-// Observed machine-level signature at the two known call sites.  Only the first
+// Observed machine-level signature at the two known call sites. Only the first
 // argument matters to us; preserving the rest exactly lets the original handler
 // continue normally through the trampoline.
 type CameraHandlerFn = unsafe extern "system" fn(
@@ -307,11 +310,7 @@ unsafe fn install_inner() -> Result<(), String> {
 
     let mut ignored = 0u32;
     let _ = VirtualProtect(target.cast::<c_void>(), PATCH_LEN, old_protect, &mut ignored);
-    let _ = FlushInstructionCache(
-        GetCurrentProcess(),
-        target.cast::<c_void>(),
-        PATCH_LEN,
-    );
+    let _ = FlushInstructionCache(GetCurrentProcess(), target.cast::<c_void>(), PATCH_LEN);
 
     Ok(())
 }
