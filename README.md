@@ -6,9 +6,7 @@ The goal is to turn one champion on the user's team into a manually controlled M
 
 ## Status
 
-**Bootstrap only. Not playable yet.**
-
-The repository currently contains the smallest stable native Rust mod that should load and log successfully. The first functional milestone is precise mouse-to-world tracking followed by right-click movement.
+Bootstrap loading is verified on Teamfight Manager 2 v0.5.8. The current functional milestone is live mouse diagnostics, followed by precise mouse-to-world tracking and right-click movement.
 
 ## MVP control contract
 
@@ -67,11 +65,7 @@ External live mouse input crosses Teamfight Manager 2's deterministic simulation
 
 Target platform for the first version: **Windows + Steam**.
 
-Suggested checkout:
-
-```text
-C:\Dev\TFM2-DirectControl
-```
+The repository itself is the development workspace. It can be cloned anywhere; no separate sacrificial or `C:\Dev` copy is required. All helper scripts resolve paths relative to the repository root.
 
 Default Steam install used by the helper scripts:
 
@@ -85,15 +79,15 @@ The official stable SDK ships with the game under:
 <TFM2 install>\mod-sdk-stable\mod-api-stable
 ```
 
-`Cargo.toml` expects that crate as a sibling of this repository:
+For local development, `scripts\bootstrap-sdk.ps1` copies that crate into the repository at:
 
 ```text
-C:\Dev\
-  TFM2-DirectControl\
-  mod-api-stable\
+TFM2-DirectControl\
+  sdk\
+    mod-api-stable\
 ```
 
-Run `scripts\bootstrap-sdk.ps1` to copy the game's current stable API crate into that sibling location. The script accepts a custom game path if Steam is installed elsewhere.
+The entire `sdk\` directory is Git-ignored. It is a local dependency copied from the installed game and is not committed to the repository.
 
 If PowerShell reports that script execution is disabled, allow scripts only for the current PowerShell process:
 
@@ -117,11 +111,13 @@ target\release\tfm2_direct_control.dll
 
 ### Install a development build
 
+From the repository root:
+
 ```powershell
 .\scripts\install-dev.ps1
 ```
 
-The script builds the DLL and installs these files under:
+On the first run, the script copies the stable SDK into `sdk\mod-api-stable`, builds the DLL, and installs these files under:
 
 ```text
 <TFM2 install>\mods\tfm2_direct_control\
@@ -139,7 +135,7 @@ The GitHub repository/folder may remain named `TFM2-DirectControl`; the installe
 
 ## First milestones
 
-1. Build and load the bootstrap DLL with no diagnostics.
+1. Build and load the bootstrap DLL with no diagnostics. **Verified on v0.5.8.**
 2. Read physical mouse position/buttons while a match is active.
 3. Prove a correct mouse-screen -> match-world coordinate transform with a debug marker.
 4. RMB ground -> native `Move` input for one predetermined player slot.
