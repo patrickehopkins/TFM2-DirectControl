@@ -4,9 +4,10 @@ use mod_api_stable::{
 };
 use windows_sys::Win32::{
     Foundation::{POINT, RECT},
-    UI::WindowsAndMessaging::{
-        GetAsyncKeyState, GetClientRect, GetCursorPos, GetForegroundWindow, ScreenToClient,
-        VK_LBUTTON, VK_RBUTTON,
+    Graphics::Gdi::ScreenToClient,
+    UI::{
+        Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON},
+        WindowsAndMessaging::{GetClientRect, GetCursorPos, GetForegroundWindow},
     },
 };
 
