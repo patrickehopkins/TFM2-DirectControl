@@ -1,6 +1,6 @@
 use mod_api_stable::{
     declare_stable_mod, ClientSceneKindV1, LogLevel, StableClient, StableExtension, StableHost,
-    StableMod, TextAlignXV1, TextAlignYV1,
+    StableMatchHook, StableMod, StableSim, TextAlignXV1, TextAlignYV1,
 };
 use windows_sys::Win32::{
     Foundation::{POINT, RECT},
@@ -18,11 +18,14 @@ const MOD_ID: &str = "tfm2_direct_control";
 const UI_FALLBACK_W: f32 = 1920.0;
 const UI_FALLBACK_H: f32 = 1080.0;
 
-const WORLD_CENTER: f32 = 480_000.0;
-const WORLD_PROBE_OFFSET: f32 = 120_000.0;
-const WORLD_MARKER_RADIUS: f32 = 6_000.0;
-const WORLD_MARKER_HALF_LINE: f32 = 12_000.0;
-const WORLD_MARKER_LINE_WIDTH: f32 = 1_600.0;
+const WORLD_CENTER: u64 = 480_000;
+const WORLD_PROBE_OFFSET: u64 = 120_000;
+const WORLD_MARKER_RADIUS: u64 = 6_000;
+const WORLD_MARKER_HALF_LINE: u64 = 12_000;
+
+const COLOR_YELLOW: u32 = 0xffe040ff;
+const COLOR_CYAN: u32 = 0x40e0ffff;
+const COLOR_MAGENTA: u32 = 0xff40e0ff;
 
 #[derive(Debug, Clone, Copy, Default)]
 struct MouseSnapshot {
@@ -111,60 +114,6 @@ impl DirectControlExtension {
             Some(ClientSceneKindV1::Match | ClientSceneKindV1::InGame)
         )
     }
-
-    fn draw_world_cross(ctx: &mut StableClient<'_>, x: f32, y: f32, color: u32) {
-        ctx.draw_circle(
-            "Game",
-            x,
-            y,
-            WORLD_MARKER_RADIUS,
-            50_000,
-            color,
-        );
-        ctx.draw_line(
-            "Game",
-            x - WORLD_MARKER_HALF_LINE,
-            y,
-            x + WORLD_MARKER_HALF_LINE,
-            y,
-            WORLD_MARKER_LINE_WIDTH,
-            50_001,
-            color,
-        );
-        ctx.draw_line(
-            "Game",
-            x,
-            y - WORLD_MARKER_HALF_LINE,
-            x,
-            y + WORLD_MARKER_HALF_LINE,
-            WORLD_MARKER_LINE_WIDTH,
-            50_001,
-            color,
-        );
-    }
-
-    fn draw_world_probe(ctx: &mut StableClient<'_>) {
-        if !matches!(ctx.client_scene_kind(), Some(ClientSceneKindV1::InGame)) {
-            return;
-        }
-
-        // Known world anchors. If these remain attached to the terrain while the spectator
-        // camera pans/zooms, the stable renderer is already applying the live Game camera.
-        // That tells us exactly which transform still needs to be inverted for mouse input.
-        Self::draw_world_cross(ctx, WORLD_CENTER, WORLD_CENTER, 0xffe040ff); // center: yellow
-        Self::draw_world_cross(
-            ctx,
-            WORLD_CENTER + WORLD_PROBE_OFFSET,
-            WORLD_CENTER,
-            0x40e0ffff,
-        ); // +X: cyan
-        Self::draw_world_cross(
-            ctx,
-            WORLD_CENTER,
-            WORLD_CENTER + WORLD_PROBE_OFFSET,
-            0xff40e0ff,
-        ); // +Y: magenta
-    }
 }
 
 impl StableExtension for DirectControlExtension {
@@ -172,8 +121,6 @@ impl StableExtension for DirectControlExtension {
         if !Self::should_draw(ctx) {
             return;
         }
-
-        Self::draw_world_probe(ctx);
 
         let mouse = self.read_mouse(ctx);
         if !mouse.valid {
@@ -194,29 +141,22 @@ impl StableExtension for DirectControlExtension {
         ctx.draw_line("UI", x, y - 14.0, x, y + 14.0, 2.0, 20_000, crosshair_color);
         ctx.draw_circle("UI", x, y, 3.0, 20_001, crosshair_color);
 
-        let game_map = ctx.draw_map_size("Game");
-        let game_map_text = match game_map {
-            Some((w, h)) => format!("Game map {:.0}x{:.0}", w, h),
-            None => "Game map unavailable".to_owned(),
-        };
-
         let label = format!(
-            "TFM2 Direct Control | cursor UI ({:.1}, {:.1}) | client {}x{} | {} | LMB {} | RMB {}",
+            "TFM2 Direct Control | cursor UI ({:.1}, {:.1}) | client {}x{} | LMB {} | RMB {}",
             mouse.ui_x,
             mouse.ui_y,
             mouse.client_w,
             mouse.client_h,
-            game_map_text,
             if mouse.left_down { "DOWN" } else { "up" },
             if mouse.right_down { "DOWN" } else { "up" },
         );
 
-        ctx.draw_rect("UI", 18.0, 18.0, 930.0, 34.0, 19_998, 6.0, 0x101018dd);
+        ctx.draw_rect("UI", 18.0, 18.0, 760.0, 34.0, 19_998, 6.0, 0x101018dd);
         ctx.draw_text(
             "UI",
             &label,
             "asset/base/font/set/regular",
-            (28.0, 18.0, 910.0, 34.0),
+            (28.0, 18.0, 740.0, 34.0),
             19_999,
             14.0,
             0xffffffff,
@@ -225,12 +165,12 @@ impl StableExtension for DirectControlExtension {
         );
 
         if matches!(ctx.client_scene_kind(), Some(ClientSceneKindV1::InGame)) {
-            ctx.draw_rect("UI", 18.0, 56.0, 640.0, 30.0, 19_998, 6.0, 0x101018cc);
+            ctx.draw_rect("UI", 18.0, 56.0, 700.0, 30.0, 19_998, 6.0, 0x101018cc);
             ctx.draw_text(
                 "UI",
-                "World probe: YELLOW center (480k,480k) | CYAN +X | MAGENTA +Y",
+                "SIM world probe: YELLOW center (480k,480k) | CYAN +X | MAGENTA +Y",
                 "asset/base/font/set/regular",
-                (28.0, 56.0, 620.0, 30.0),
+                (28.0, 56.0, 680.0, 30.0),
                 19_999,
                 13.0,
                 0xffffffff,
@@ -241,14 +181,65 @@ impl StableExtension for DirectControlExtension {
     }
 }
 
+#[derive(Debug, Default)]
+struct WorldProbeHook;
+
+impl WorldProbeHook {
+    fn draw_cross(sim: &mut StableSim<'_>, x: u64, y: u64, color: u32) {
+        sim.debug_draw_circle(x, y, WORLD_MARKER_RADIUS, color);
+        sim.debug_draw_line(
+            x.saturating_sub(WORLD_MARKER_HALF_LINE),
+            y,
+            x.saturating_add(WORLD_MARKER_HALF_LINE),
+            y,
+            color,
+        );
+        sim.debug_draw_line(
+            x,
+            y.saturating_sub(WORLD_MARKER_HALF_LINE),
+            x,
+            y.saturating_add(WORLD_MARKER_HALF_LINE),
+            color,
+        );
+    }
+}
+
+impl StableMatchHook for WorldProbeHook {
+    fn on_match_start(&self, _sim: &mut StableSim<'_>) {}
+
+    fn on_match_tick(&self, sim: &mut StableSim<'_>, _rng_seed: u64) {
+        // StableSim debug drawing is explicitly defined in simulation world coordinates.
+        // These anchors should therefore stay glued to fixed terrain positions while the
+        // spectator camera pans or zooms.
+        Self::draw_cross(sim, WORLD_CENTER, WORLD_CENTER, COLOR_YELLOW);
+        Self::draw_cross(
+            sim,
+            WORLD_CENTER + WORLD_PROBE_OFFSET,
+            WORLD_CENTER,
+            COLOR_CYAN,
+        );
+        Self::draw_cross(
+            sim,
+            WORLD_CENTER,
+            WORLD_CENTER + WORLD_PROBE_OFFSET,
+            COLOR_MAGENTA,
+        );
+    }
+
+    fn check_match_end(&self, _sim: &mut StableSim<'_>) -> Option<bool> {
+        None
+    }
+}
+
 fn init(host: &StableHost) -> StableMod {
     host.log(
         LogLevel::Info,
-        "TFM2 Direct Control loaded (mouse/world diagnostic build)",
+        "TFM2 Direct Control loaded (mouse + simulation world diagnostic build)",
     );
 
     let mut module = StableMod::new(MOD_ID);
     module.set_extension(DirectControlExtension);
+    module.set_match_hook(WorldProbeHook);
     module
 }
 
