@@ -8,6 +8,7 @@ use mod_api_stable::{
 };
 
 const NO_PLAYER: usize = usize::MAX;
+const NO_CLOCK: u64 = u64::MAX;
 
 static SELECTED_PLAYER: AtomicUsize = AtomicUsize::new(NO_PLAYER);
 static MOVE_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -15,9 +16,15 @@ static MOVE_X: AtomicU64 = AtomicU64::new(0);
 static MOVE_Y: AtomicU64 = AtomicU64::new(0);
 static MOVE_VERSION: AtomicU64 = AtomicU64::new(0);
 
-// Runtime diagnostics for the client -> StablePlayerAi boundary. These are intentionally
-// small atomics plus a short unique-ID list so the UI can tell us whether the AI callback is
-// running for the player IDs we expect and which simulation origin it sees.
+// The client overlay publishes the visible match clock once per render frame. On TFM2 0.5.8,
+// StablePlayerAi receives an enormous number of callbacks from simulations whose origin is
+// reported as Unknown. Matching ctx.tick()/60 to the visible UI second is a narrow bridge to
+// the on-screen simulation without feeding client input into every Unknown callback.
+static LIVE_CLOCK_SECONDS: AtomicU64 = AtomicU64::new(NO_CLOCK);
+static UNKNOWN_CLOCK_MATCHES: AtomicU64 = AtomicU64::new(0);
+static LAST_CLOCK_MATCH_TICK: AtomicU64 = AtomicU64::new(NO_CLOCK);
+
+// Runtime diagnostics for the client -> StablePlayerAi boundary.
 static THINK_CALLS: AtomicU64 = AtomicU64::new(0);
 static SELECTED_THINK_CALLS: AtomicU64 = AtomicU64::new(0);
 static MANUAL_MOVE_RETURNS: AtomicU64 = AtomicU64::new(0);
@@ -32,6 +39,9 @@ pub struct ControlDiagnostics {
     pub selected_think_calls: u64,
     pub manual_move_returns: u64,
     pub manual_idle_returns: u64,
+    pub unknown_clock_matches: u64,
+    pub live_clock_seconds: Option<u64>,
+    pub last_clock_match_tick: Option<u64>,
     pub last_think_player: Option<usize>,
     pub origin_label: &'static str,
     pub seen_player_ids: Vec<usize>,
@@ -45,6 +55,8 @@ fn reset_diagnostics() {
     SELECTED_THINK_CALLS.store(0, Ordering::Release);
     MANUAL_MOVE_RETURNS.store(0, Ordering::Release);
     MANUAL_IDLE_RETURNS.store(0, Ordering::Release);
+    UNKNOWN_CLOCK_MATCHES.store(0, Ordering::Release);
+    LAST_CLOCK_MATCH_TICK.store(NO_CLOCK, Ordering::Release);
     LAST_THINK_PLAYER.store(NO_PLAYER, Ordering::Release);
     LAST_ORIGIN_CLASS.store(0, Ordering::Release);
     if let Ok(mut ids) = SEEN_PLAYER_IDS.lock() {
@@ -54,8 +66,13 @@ fn reset_diagnostics() {
 
 pub fn reset() {
     SELECTED_PLAYER.store(NO_PLAYER, Ordering::Release);
+    LIVE_CLOCK_SECONDS.store(NO_CLOCK, Ordering::Release);
     clear_move_target();
     reset_diagnostics();
+}
+
+pub fn publish_live_clock_seconds(seconds: u64) {
+    LIVE_CLOCK_SECONDS.store(seconds, Ordering::Release);
 }
 
 pub fn selected_player() -> Option<usize> {
@@ -121,25 +138,37 @@ pub fn diagnostics() -> ControlDiagnostics {
     let origin_label = match LAST_ORIGIN_CLASS.load(Ordering::Acquire) {
         1 => "ClientMatchView",
         2 => "ClientSpectate",
-        3 => "ServerPresim",
+        3 => "ServerPresim/rejected",
         4 => "ClientReplay/rejected",
         5 => "Tool/rejected",
         6 => "Unknown/rejected",
-        7 => "sim unavailable",
-        8 => "origin unavailable",
-        9 => "unrecognized/rejected",
+        7 => "Unknown@clock/accepted",
+        8 => "sim unavailable",
+        9 => "origin unavailable",
+        10 => "unrecognized/rejected",
         _ => "not observed",
     };
     let seen_player_ids = SEEN_PLAYER_IDS
         .lock()
         .map(|ids| ids.clone())
         .unwrap_or_default();
+    let live_clock_seconds = match LIVE_CLOCK_SECONDS.load(Ordering::Acquire) {
+        NO_CLOCK => None,
+        seconds => Some(seconds),
+    };
+    let last_clock_match_tick = match LAST_CLOCK_MATCH_TICK.load(Ordering::Acquire) {
+        NO_CLOCK => None,
+        tick => Some(tick),
+    };
 
     ControlDiagnostics {
         think_calls: THINK_CALLS.load(Ordering::Acquire),
         selected_think_calls: SELECTED_THINK_CALLS.load(Ordering::Acquire),
         manual_move_returns: MANUAL_MOVE_RETURNS.load(Ordering::Acquire),
         manual_idle_returns: MANUAL_IDLE_RETURNS.load(Ordering::Acquire),
+        unknown_clock_matches: UNKNOWN_CLOCK_MATCHES.load(Ordering::Acquire),
+        live_clock_seconds,
+        last_clock_match_tick,
         last_think_player,
         origin_label,
         seen_player_ids,
@@ -181,6 +210,7 @@ impl StablePlayerAi for DirectControlAi {
     ) -> Option<InputV1> {
         // Capture immutable context values before borrowing ctx mutably through sim().
         let player_id = ctx.player_id();
+        let tick = ctx.tick() as u64;
         THINK_CALLS.fetch_add(1, Ordering::Relaxed);
         LAST_THINK_PLAYER.store(player_id, Ordering::Relaxed);
         note_player_id(player_id);
@@ -191,11 +221,11 @@ impl StablePlayerAi for DirectControlAi {
         SELECTED_THINK_CALLS.fetch_add(1, Ordering::Relaxed);
 
         let Some(sim) = ctx.sim() else {
-            LAST_ORIGIN_CLASS.store(7, Ordering::Relaxed);
+            LAST_ORIGIN_CLASS.store(8, Ordering::Relaxed);
             return base_input;
         };
         let Some(origin) = sim.sim_origin() else {
-            LAST_ORIGIN_CLASS.store(8, Ordering::Relaxed);
+            LAST_ORIGIN_CLASS.store(9, Ordering::Relaxed);
             return base_input;
         };
 
@@ -205,6 +235,9 @@ impl StablePlayerAi for DirectControlAi {
         let is_replay = origin.kind == SimOriginKindV1::ClientReplay.code();
         let is_tool = origin.kind == SimOriginKindV1::Tool.code();
         let is_unknown = origin.kind == SimOriginKindV1::Unknown.code();
+
+        let live_clock = LIVE_CLOCK_SECONDS.load(Ordering::Acquire);
+        let unknown_matches_clock = is_unknown && live_clock != NO_CLOCK && tick / 60 == live_clock;
 
         LAST_ORIGIN_CLASS.store(
             if is_match_view {
@@ -217,21 +250,28 @@ impl StablePlayerAi for DirectControlAi {
                 4
             } else if is_tool {
                 5
+            } else if unknown_matches_clock {
+                7
             } else if is_unknown {
                 6
             } else {
-                9
+                10
             },
             Ordering::Relaxed,
         );
 
-        // StablePlayerAi participates in the game's simulation/presimulation machinery. The
-        // live match's authoritative AI decisions can therefore arrive through ServerPresim,
-        // not only through the presentation-side ClientMatchView/ClientSpectate origins. This
-        // mod deliberately bridges client input into that path for single-player direct-control
-        // testing; replay/tool/unknown simulations remain blocked.
-        if !is_match_view && !is_spectate && !is_server_presim {
+        // Named presentation-side client origins are accepted directly. TFM2 0.5.8 reports
+        // the dominant live-match StablePlayerAi traffic as Unknown, so Unknown is accepted
+        // only when its simulation tick falls in the exact second currently displayed by the
+        // live UI clock. Server presims, replays, tools, other Unknown ticks, and unrecognized
+        // origins remain untouched.
+        if !is_match_view && !is_spectate && !unknown_matches_clock {
             return base_input;
+        }
+
+        if unknown_matches_clock {
+            UNKNOWN_CLOCK_MATCHES.fetch_add(1, Ordering::Relaxed);
+            LAST_CLOCK_MATCH_TICK.store(tick, Ordering::Relaxed);
         }
 
         if let Some((x, y)) = move_target() {
