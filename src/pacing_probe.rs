@@ -1,24 +1,16 @@
-//! Continuous wall-clock pacing for the confirmed Candidate A watched-match simulation.
+//! Presentation-gated pacing for the confirmed Candidate A watched-match simulation.
 //!
-//! Stage 1 proved that StablePlayerAi callbacks on Candidate A's worker expose the watched
-//! simulation tick. Stage 2A/2B/2C failed to identify a direct presentation clock in the live
-//! match-view object. Stage 3A/3B/3C proved that Candidate A can be held near 60 simulation ticks
-//! per wall-clock second and can be irreversibly released with Ctrl+End.
+//! Candidate A normally races far ahead of the visible match. While the live match is actually
+//! running we hold it near 60 simulation ticks per wall-clock second. Before the InGame client
+//! scene is visible we deliberately bypass pacing so the normal loading/prebuffer step is not
+//! stretched into real time. While the game's pause UI is active we intentionally block Candidate
+//! A instead of letting hidden simulation time accumulate.
 //!
-//! Stage 4A keeps pacing and manual input on this same StablePlayerAi callback chain. After a
-//! player is selected and an RMB target is published by the client extension, only that player's
-//! Candidate-A callback returns a manual `InputV1::move_to`; all other callbacks keep vanilla AI.
-//!
-//! Safety boundaries:
-//! - only callbacks running on the confirmed Candidate A worker thread are delayed or overridden;
-//! - until a selected player has an RMB target, `base_input` remains untouched;
-//! - Ctrl+End permanently disables both pacing and manual input for the current match;
-//! - a pathological single-callback wait >=250 ms triggers a separate safety fail-open and also
-//!   disables manual input, because the simulation would no longer be safely near real time;
-//! - a ~35 ms lead is allowed to avoid excessive one-millisecond sleep jitter.
+//! Ctrl+End remains an irreversible per-match release: once requested, pacing and manual input are
+//! disabled and Candidate A is allowed to race to completion.
 
 use std::{
-    sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+    sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering},
     thread,
     time::Duration,
 };
@@ -33,6 +25,11 @@ const NO_PLAYER: usize = usize::MAX;
 const ALLOWED_LEAD_MS: u64 = 35;
 const MAX_SLEEP_SLICE_MS: u64 = 2;
 const MAX_SINGLE_CALLBACK_WAIT_MS: u64 = 250;
+const PAUSE_SLEEP_SLICE_MS: u64 = 2;
+
+const PHASE_PREMATCH_BYPASS: u8 = 0;
+const PHASE_RUNNING: u8 = 1;
+const PHASE_PAUSED: u8 = 2;
 
 #[link(name = "kernel32")]
 extern "system" {
@@ -47,12 +44,15 @@ static LAST_CANDIDATE_A_PLAYER: AtomicUsize = AtomicUsize::new(NO_PLAYER);
 static LAST_CANDIDATE_A_THREAD: AtomicU64 = AtomicU64::new(0);
 static SEEN_PLAYER_MASK: AtomicU64 = AtomicU64::new(0);
 
+static PRESENTATION_PHASE: AtomicU8 = AtomicU8::new(PHASE_PREMATCH_BYPASS);
 static PACER_ORIGIN_TICK: AtomicU64 = AtomicU64::new(NO_TICK);
 static PACER_ORIGIN_MS: AtomicU64 = AtomicU64::new(0);
 static MANUAL_FINISH_REQUESTED: AtomicBool = AtomicBool::new(false);
 static SAFETY_FAIL_OPEN: AtomicBool = AtomicBool::new(false);
 static PACER_WAIT_COUNT: AtomicU64 = AtomicU64::new(0);
 static PACER_TOTAL_WAIT_MS: AtomicU64 = AtomicU64::new(0);
+static PAUSE_WAIT_COUNT: AtomicU64 = AtomicU64::new(0);
+static PAUSE_TOTAL_WAIT_MS: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy)]
 pub struct PacingProbeSnapshot {
@@ -69,6 +69,9 @@ pub struct PacingProbeSnapshot {
     pub safety_fail_open: bool,
     pub pacer_wait_count: u64,
     pub pacer_total_wait_ms: u64,
+    pub pause_wait_count: u64,
+    pub pause_total_wait_ms: u64,
+    pub presentation_phase: u8,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -83,12 +86,53 @@ pub fn reset() {
     LAST_CANDIDATE_A_THREAD.store(0, Ordering::Release);
     SEEN_PLAYER_MASK.store(0, Ordering::Release);
 
-    PACER_ORIGIN_TICK.store(NO_TICK, Ordering::Release);
-    PACER_ORIGIN_MS.store(0, Ordering::Release);
+    PRESENTATION_PHASE.store(PHASE_PREMATCH_BYPASS, Ordering::Release);
+    reanchor_pacer();
     MANUAL_FINISH_REQUESTED.store(false, Ordering::Release);
     SAFETY_FAIL_OPEN.store(false, Ordering::Release);
     PACER_WAIT_COUNT.store(0, Ordering::Release);
     PACER_TOTAL_WAIT_MS.store(0, Ordering::Release);
+    PAUSE_WAIT_COUNT.store(0, Ordering::Release);
+    PAUSE_TOTAL_WAIT_MS.store(0, Ordering::Release);
+}
+
+fn reanchor_pacer() {
+    PACER_ORIGIN_TICK.store(NO_TICK, Ordering::Release);
+    PACER_ORIGIN_MS.store(0, Ordering::Release);
+}
+
+/// Publish the client-side presentation state.
+///
+/// - outside InGame: Candidate A is not delayed, preserving normal startup/prebuffer speed;
+/// - InGame + running: Candidate A is paced at ~60 Hz;
+/// - InGame + paused: Candidate A is intentionally blocked until presentation resumes.
+pub fn set_presentation_state(ingame: bool, paused: bool) {
+    let next = if !ingame {
+        PHASE_PREMATCH_BYPASS
+    } else if paused {
+        PHASE_PAUSED
+    } else {
+        PHASE_RUNNING
+    };
+
+    let previous = PRESENTATION_PHASE.swap(next, Ordering::AcqRel);
+    if next == PHASE_RUNNING && previous != PHASE_RUNNING {
+        // Time spent loading or paused must never count as runnable wall time. The next Candidate-A
+        // callback becomes the fresh tick/time origin.
+        reanchor_pacer();
+    }
+}
+
+pub fn presentation_phase_label() -> &'static str {
+    match PRESENTATION_PHASE.load(Ordering::Acquire) {
+        PHASE_RUNNING => "RUNNING",
+        PHASE_PAUSED => "PAUSED",
+        _ => "PREMATCH/BYPASS",
+    }
+}
+
+pub fn presentation_running() -> bool {
+    PRESENTATION_PHASE.load(Ordering::Acquire) == PHASE_RUNNING
 }
 
 /// Permanently releases direct control and pacing for the current match.
@@ -99,6 +143,10 @@ pub fn request_finish_simulation() {
 pub fn manual_control_released() -> bool {
     MANUAL_FINISH_REQUESTED.load(Ordering::Acquire)
         || SAFETY_FAIL_OPEN.load(Ordering::Acquire)
+}
+
+pub fn manual_input_enabled() -> bool {
+    presentation_running() && !manual_control_released()
 }
 
 pub fn snapshot() -> PacingProbeSnapshot {
@@ -127,6 +175,9 @@ pub fn snapshot() -> PacingProbeSnapshot {
         safety_fail_open: SAFETY_FAIL_OPEN.load(Ordering::Acquire),
         pacer_wait_count: PACER_WAIT_COUNT.load(Ordering::Acquire),
         pacer_total_wait_ms: PACER_TOTAL_WAIT_MS.load(Ordering::Acquire),
+        pause_wait_count: PAUSE_WAIT_COUNT.load(Ordering::Acquire),
+        pause_total_wait_ms: PAUSE_TOTAL_WAIT_MS.load(Ordering::Acquire),
+        presentation_phase: PRESENTATION_PHASE.load(Ordering::Acquire),
     }
 }
 
@@ -137,9 +188,41 @@ fn running_on_candidate_a_thread(thread_id: u32) -> bool {
         && candidate_a.last_thread_id == thread_id
 }
 
+fn wait_while_paused() -> bool {
+    loop {
+        if manual_control_released() {
+            return false;
+        }
+
+        match PRESENTATION_PHASE.load(Ordering::Acquire) {
+            PHASE_PAUSED => {
+                PAUSE_WAIT_COUNT.fetch_add(1, Ordering::Relaxed);
+                PAUSE_TOTAL_WAIT_MS.fetch_add(PAUSE_SLEEP_SLICE_MS, Ordering::Relaxed);
+                thread::sleep(Duration::from_millis(PAUSE_SLEEP_SLICE_MS));
+            }
+            PHASE_RUNNING => return true,
+            _ => return false,
+        }
+    }
+}
+
 fn pace_candidate_a(tick: u64) {
     if manual_control_released() {
         return;
+    }
+
+    match PRESENTATION_PHASE.load(Ordering::Acquire) {
+        PHASE_PREMATCH_BYPASS => return,
+        PHASE_PAUSED => {
+            if !wait_while_paused() {
+                return;
+            }
+            // Resume re-anchors the pacer. Re-enter with the current callback/tick so paused wall
+            // time cannot become catch-up budget.
+            return pace_candidate_a(tick);
+        }
+        PHASE_RUNNING => {}
+        _ => return,
     }
 
     let now_ms = unsafe { GetTickCount64() };
@@ -171,6 +254,18 @@ fn pace_candidate_a(tick: u64) {
             return;
         }
 
+        match PRESENTATION_PHASE.load(Ordering::Acquire) {
+            PHASE_PREMATCH_BYPASS => return,
+            PHASE_PAUSED => {
+                if !wait_while_paused() {
+                    return;
+                }
+                return pace_candidate_a(tick);
+            }
+            PHASE_RUNNING => {}
+            _ => return,
+        }
+
         let wall_now_ms = unsafe { GetTickCount64() };
         let wall_elapsed_ms = wall_now_ms.saturating_sub(origin_ms);
 
@@ -179,6 +274,8 @@ fn pace_candidate_a(tick: u64) {
         }
 
         if wall_now_ms.saturating_sub(callback_wait_start_ms) >= MAX_SINGLE_CALLBACK_WAIT_MS {
+            // This timeout applies only to ordinary 60-Hz pacing waits. Intentional pause waits use
+            // the separate loop above and are allowed to last as long as the user leaves paused.
             SAFETY_FAIL_OPEN.store(true, Ordering::Release);
             return;
         }
@@ -237,7 +334,7 @@ impl StablePlayerAi for CandidateAObserverAi {
 
             pace_candidate_a(tick);
 
-            if !manual_control_released() {
+            if manual_input_enabled() {
                 if let Some(input) = control::manual_input_for(player_id, tick) {
                     return Some(input);
                 }
