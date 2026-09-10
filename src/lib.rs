@@ -59,25 +59,12 @@ impl DirectControlExtension {
 
             let mut cursor = POINT { x: 0, y: 0 };
             if GetCursorPos(&mut cursor) == 0 || ScreenToClient(hwnd, &mut cursor) == 0 {
-                return MouseSnapshot {
-                    left_down,
-                    right_down,
-                    ..Default::default()
-                };
+                return MouseSnapshot { left_down, right_down, ..Default::default() };
             }
 
-            let mut rect = RECT {
-                left: 0,
-                top: 0,
-                right: 0,
-                bottom: 0,
-            };
+            let mut rect = RECT { left: 0, top: 0, right: 0, bottom: 0 };
             if GetClientRect(hwnd, &mut rect) == 0 {
-                return MouseSnapshot {
-                    left_down,
-                    right_down,
-                    ..Default::default()
-                };
+                return MouseSnapshot { left_down, right_down, ..Default::default() };
             }
 
             let client_w = rect.right - rect.left;
@@ -87,19 +74,10 @@ impl DirectControlExtension {
             }
 
             if cursor.x < 0 || cursor.y < 0 || cursor.x >= client_w || cursor.y >= client_h {
-                return MouseSnapshot {
-                    left_down,
-                    right_down,
-                    client_w,
-                    client_h,
-                    ..Default::default()
-                };
+                return MouseSnapshot { left_down, right_down, client_w, client_h, ..Default::default() };
             }
 
-            let (ui_w, ui_h) = ctx
-                .draw_map_size("UI")
-                .unwrap_or((UI_FALLBACK_W, UI_FALLBACK_H));
-
+            let (ui_w, ui_h) = ctx.draw_map_size("UI").unwrap_or((UI_FALLBACK_W, UI_FALLBACK_H));
             MouseSnapshot {
                 valid: true,
                 ui_x: cursor.x as f32 * ui_w / client_w as f32,
@@ -113,10 +91,7 @@ impl DirectControlExtension {
     }
 
     fn should_draw(ctx: &StableClient<'_>) -> bool {
-        matches!(
-            ctx.client_scene_kind(),
-            Some(ClientSceneKindV1::Match | ClientSceneKindV1::InGame)
-        )
+        matches!(ctx.client_scene_kind(), Some(ClientSceneKindV1::Match | ClientSceneKindV1::InGame))
     }
 
     fn draw_text_line(ctx: &mut StableClient<'_>, y: f32, text: &str, color: u32) {
@@ -124,7 +99,7 @@ impl DirectControlExtension {
             "UI",
             text,
             "asset/base/font/set/regular",
-            (28.0, y, 1_650.0, 22.0),
+            (28.0, y, 1_760.0, 22.0),
             19_999,
             13.0,
             color,
@@ -139,22 +114,17 @@ impl DirectControlExtension {
     }
 
     fn draw_probe(&self, ctx: &mut StableClient<'_>, mouse: MouseSnapshot) {
-        ctx.draw_rect("UI", 18.0, 58.0, 1_700.0, 158.0, 19_998, 6.0, 0x101018dd);
+        ctx.draw_rect("UI", 18.0, 58.0, 1_800.0, 206.0, 19_998, 6.0, 0x101018dd);
 
         match simulation_probe::ensure_installed() {
             Ok(()) => Self::draw_text_line(
                 ctx,
                 62.0,
-                "SIM TASK PROBE: INSTALLED | StablePlayerAi override disabled for this test",
+                "SIM TASK PROBE: A confirmed watched-match job | StablePlayerAi disabled",
                 0x80ff9fff,
             ),
             Err(error) => {
-                Self::draw_text_line(
-                    ctx,
-                    62.0,
-                    &format!("SIM TASK PROBE: FAILED - {error}"),
-                    0xff7070ff,
-                );
+                Self::draw_text_line(ctx, 62.0, &format!("SIM TASK PROBE: FAILED - {error}"), 0xff7070ff);
                 return;
             }
         }
@@ -165,39 +135,39 @@ impl DirectControlExtension {
                 84.0 + index as f32 * 22.0,
                 &format!(
                     "{} RVA 0x{:X} | enter {} active {} done {} | thread {} | ctx 0x{:X} | last {} ms max {} ms",
-                    probe.name,
-                    probe.rva,
-                    probe.entries,
-                    probe.active,
-                    probe.completions,
-                    probe.last_thread_id,
-                    probe.last_context,
-                    probe.last_duration_ms,
-                    probe.max_duration_ms,
+                    probe.name, probe.rva, probe.entries, probe.active, probe.completions,
+                    probe.last_thread_id, probe.last_context, probe.last_duration_ms, probe.max_duration_ms,
                 ),
                 0xffd080ff,
             );
         }
 
-        let clock = ctx
-            .ui_text("ingame.header.game_time.value")
-            .unwrap_or_else(|| "--:--".to_owned());
+        if let Ok(sig) = simulation_probe::core_signatures() {
+            Self::draw_text_line(
+                ctx,
+                150.0,
+                &format!("CORE WRAPPER RVA 0x{:X} first32: {}", sig.wrapper_rva, sig.wrapper_bytes),
+                0xffd080ff,
+            );
+            Self::draw_text_line(
+                ctx,
+                172.0,
+                &format!("CORE RUNNER  RVA 0x{:X} first32: {}", sig.runner_rva, sig.runner_bytes),
+                0xffd080ff,
+            );
+        }
 
+        let clock = ctx.ui_text("ingame.header.game_time.value").unwrap_or_else(|| "--:--".to_owned());
         match camera_probe::ensure_installed() {
             Ok(()) => {
                 let snapshots = camera_probe::snapshots();
                 if let Some(camera) = snapshots.iter().max_by_key(|candidate| candidate.calls) {
                     Self::draw_text_line(
                         ctx,
-                        150.0,
+                        194.0,
                         &format!(
                             "visible clock {} | camera calls {} mode {} zoom {:.2} center ({:.2},{:.2})",
-                            clock,
-                            camera.calls,
-                            camera.mode,
-                            camera.zoom,
-                            camera.center_x,
-                            camera.center_y,
+                            clock, camera.calls, camera.mode, camera.zoom, camera.center_x, camera.center_y,
                         ),
                         0xffffffff,
                     );
@@ -205,56 +175,23 @@ impl DirectControlExtension {
                     if let (Some(viewport), Some((game_w, game_h))) =
                         (ctx.ui_node_rect("ingame.center_log"), ctx.draw_map_size("Game"))
                     {
-                        if mouse.valid
-                            && game_w > 0.0
-                            && game_h > 0.0
-                            && Self::point_in_rect(mouse.ui_x, mouse.ui_y, viewport)
-                        {
+                        if mouse.valid && game_w > 0.0 && game_h > 0.0 && Self::point_in_rect(mouse.ui_x, mouse.ui_y, viewport) {
                             let (vx, vy, vw, vh) = viewport;
                             let dx = mouse.ui_x - (vx + vw * 0.5);
                             let dy = mouse.ui_y - (vy + vh * 0.5);
                             let world_x = camera.center_x + dx * (camera.extent_a / game_w);
                             let world_y = camera.center_y + dy * (camera.extent_b / game_h);
-                            let marker_units_per_px =
-                                ((camera.extent_a / game_w) + (camera.extent_b / game_h)) * 0.5;
-
-                            ctx.draw_set_camera(
-                                "Game",
-                                camera.center_x,
-                                camera.center_y,
-                                camera.extent_a,
-                                camera.extent_b,
-                            );
-                            ctx.draw_circle(
-                                "Game",
-                                world_x,
-                                world_y,
-                                11.0 * marker_units_per_px,
-                                100_000,
-                                CURSOR_WORLD_COLOR,
-                            );
-                            ctx.draw_circle(
-                                "Game",
-                                world_x,
-                                world_y,
-                                7.0 * marker_units_per_px,
-                                100_001,
-                                CURSOR_WORLD_COLOR,
-                            );
+                            let marker_units_per_px = ((camera.extent_a / game_w) + (camera.extent_b / game_h)) * 0.5;
+                            ctx.draw_set_camera("Game", camera.center_x, camera.center_y, camera.extent_a, camera.extent_b);
+                            ctx.draw_circle("Game", world_x, world_y, 11.0 * marker_units_per_px, 100_000, CURSOR_WORLD_COLOR);
+                            ctx.draw_circle("Game", world_x, world_y, 7.0 * marker_units_per_px, 100_001, CURSOR_WORLD_COLOR);
                         }
                     }
-                } else {
-                    Self::draw_text_line(
-                        ctx,
-                        150.0,
-                        &format!("visible clock {} | waiting for camera handler", clock),
-                        0xffffffff,
-                    );
                 }
             }
             Err(error) => Self::draw_text_line(
                 ctx,
-                150.0,
+                194.0,
                 &format!("visible clock {} | camera hook failed: {error}", clock),
                 0xff7070ff,
             ),
@@ -262,8 +199,8 @@ impl DirectControlExtension {
 
         Self::draw_text_line(
             ctx,
-            172.0,
-            "TEST: identify which A/B/C background job runs for the watched match; no direct-control commands are sent.",
+            216.0,
+            "NEXT: use wrapper/runner signatures to choose a safe inner simulation-step hook. No commands are sent.",
             0x80d8ffff,
         );
     }
@@ -277,47 +214,14 @@ impl StableExtension for DirectControlExtension {
             camera_probe::clear_candidates();
         }
 
-        if !Self::should_draw(ctx) {
-            return;
-        }
+        if !Self::should_draw(ctx) { return; }
 
         let mouse = self.read_mouse(ctx);
         if mouse.valid {
-            let crosshair_color = if mouse.right_down {
-                0xff4040ff
-            } else if mouse.left_down {
-                0x40ff80ff
-            } else {
-                0xffffffff
-            };
-            ctx.draw_line(
-                "UI",
-                mouse.ui_x - 14.0,
-                mouse.ui_y,
-                mouse.ui_x + 14.0,
-                mouse.ui_y,
-                2.0,
-                20_000,
-                crosshair_color,
-            );
-            ctx.draw_line(
-                "UI",
-                mouse.ui_x,
-                mouse.ui_y - 14.0,
-                mouse.ui_x,
-                mouse.ui_y + 14.0,
-                2.0,
-                20_000,
-                crosshair_color,
-            );
-            ctx.draw_circle(
-                "UI",
-                mouse.ui_x,
-                mouse.ui_y,
-                3.0,
-                20_001,
-                crosshair_color,
-            );
+            let crosshair_color = if mouse.right_down { 0xff4040ff } else if mouse.left_down { 0x40ff80ff } else { 0xffffffff };
+            ctx.draw_line("UI", mouse.ui_x - 14.0, mouse.ui_y, mouse.ui_x + 14.0, mouse.ui_y, 2.0, 20_000, crosshair_color);
+            ctx.draw_line("UI", mouse.ui_x, mouse.ui_y - 14.0, mouse.ui_x, mouse.ui_y + 14.0, 2.0, 20_000, crosshair_color);
+            ctx.draw_circle("UI", mouse.ui_x, mouse.ui_y, 3.0, 20_001, crosshair_color);
 
             ctx.draw_rect("UI", 18.0, 18.0, 900.0, 34.0, 19_998, 6.0, 0x101018dd);
             Self::draw_text_line(
@@ -325,10 +229,7 @@ impl StableExtension for DirectControlExtension {
                 24.0,
                 &format!(
                     "TFM2 Direct Control | cursor UI ({:.1},{:.1}) | client {}x{} | LMB {} | RMB {}",
-                    mouse.ui_x,
-                    mouse.ui_y,
-                    mouse.client_w,
-                    mouse.client_h,
+                    mouse.ui_x, mouse.ui_y, mouse.client_w, mouse.client_h,
                     if mouse.left_down { "DOWN" } else { "up" },
                     if mouse.right_down { "DOWN" } else { "up" },
                 ),
@@ -336,22 +237,14 @@ impl StableExtension for DirectControlExtension {
             );
         }
 
-        if ingame {
-            self.draw_probe(ctx, mouse);
-        }
+        if ingame { self.draw_probe(ctx, mouse); }
     }
 }
 
 fn init(host: &StableHost) -> StableMod {
     match simulation_probe::ensure_installed() {
-        Ok(()) => host.log(
-            LogLevel::Info,
-            "TFM2 Direct Control loaded (native client simulation task probe installed)",
-        ),
-        Err(error) => host.log(
-            LogLevel::Error,
-            &format!("TFM2 Direct Control simulation task probe failed: {error}"),
-        ),
+        Ok(()) => host.log(LogLevel::Info, "TFM2 Direct Control loaded (confirmed client simulation task probe)"),
+        Err(error) => host.log(LogLevel::Error, &format!("TFM2 Direct Control simulation task probe failed: {error}")),
     }
 
     let mut module = StableMod::new(MOD_ID);
