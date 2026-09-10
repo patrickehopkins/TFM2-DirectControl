@@ -54,16 +54,22 @@ fn score_candidate(
     entity_team: usize,
     alive: bool,
     targetable: bool,
+    visible: bool,
     x: u64,
     y: u64,
     collision_radius: usize,
     controlled_team: usize,
     relation: TeamRelation,
+    require_visible: bool,
     click_x: u64,
     click_y: u64,
     minimum_pick_radius: u64,
 ) -> Option<CandidateScore> {
-    if !alive || !targetable || !relation_matches(entity_team, controlled_team, relation) {
+    if !alive
+        || !targetable
+        || (require_visible && !visible)
+        || !relation_matches(entity_team, controlled_team, relation)
+    {
         return None;
     }
 
@@ -93,6 +99,7 @@ pub fn pick_entity(
     sim: &StableSim<'_>,
     controlled_team: usize,
     relation: TeamRelation,
+    require_visible: bool,
     click_x: u64,
     click_y: u64,
     minimum_pick_radius: u64,
@@ -111,11 +118,13 @@ pub fn pick_entity(
             entity.team(),
             entity.is_alive(),
             entity.is_targetable(),
+            sim.is_visible(controlled_team, entity.id()),
             x,
             y,
             collision_radius,
             controlled_team,
             relation,
+            require_visible,
             click_x,
             click_y,
             minimum_pick_radius,
@@ -165,6 +174,7 @@ pub fn pick_hostile_entity(
         sim,
         controlled_team,
         TeamRelation::Hostile,
+        true,
         click_x,
         click_y,
         minimum_pick_radius,
@@ -176,10 +186,11 @@ mod tests {
     use super::{score_candidate, score_is_better, CandidateScore, TeamRelation};
 
     #[test]
-    fn relation_filter_rejects_wrong_team_dead_and_untargetable_entities() {
+    fn relation_filter_rejects_wrong_team_dead_untargetable_and_hidden_entities() {
         assert!(score_candidate(
             1,
             0,
+            true,
             true,
             true,
             100,
@@ -187,6 +198,7 @@ mod tests {
             10,
             0,
             TeamRelation::Hostile,
+            true,
             100,
             100,
             10
@@ -197,11 +209,13 @@ mod tests {
             1,
             false,
             true,
+            true,
             100,
             100,
             10,
             0,
             TeamRelation::Any,
+            true,
             100,
             100,
             10
@@ -212,16 +226,56 @@ mod tests {
             1,
             true,
             false,
+            true,
             100,
             100,
             10,
             0,
             TeamRelation::Any,
+            true,
             100,
             100,
             10
         )
         .is_none());
+        assert!(score_candidate(
+            4,
+            1,
+            true,
+            true,
+            false,
+            100,
+            100,
+            10,
+            0,
+            TeamRelation::Hostile,
+            true,
+            100,
+            100,
+            10
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn visibility_filter_can_be_disabled_for_future_targeting_rules() {
+        assert!(score_candidate(
+            1,
+            1,
+            true,
+            true,
+            false,
+            100,
+            100,
+            10,
+            0,
+            TeamRelation::Any,
+            false,
+            100,
+            100,
+            10
+        )
+        .is_some());
     }
 
     #[test]
@@ -231,11 +285,13 @@ mod tests {
             0,
             true,
             true,
+            true,
             100,
             100,
             10,
             0,
             TeamRelation::Friendly,
+            true,
             100,
             100,
             10
@@ -246,11 +302,13 @@ mod tests {
             1,
             true,
             true,
+            true,
             100,
             100,
             10,
             0,
             TeamRelation::Any,
+            true,
             100,
             100,
             10
@@ -265,11 +323,13 @@ mod tests {
             1,
             true,
             true,
+            true,
             100,
             100,
             2,
             0,
             TeamRelation::Hostile,
+            true,
             108,
             100,
             10,
@@ -282,11 +342,13 @@ mod tests {
             1,
             true,
             true,
+            true,
             100,
             100,
             2,
             0,
             TeamRelation::Hostile,
+            true,
             111,
             100,
             10
