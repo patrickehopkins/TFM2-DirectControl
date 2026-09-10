@@ -1,4 +1,5 @@
 mod camera_probe;
+mod loop_probe;
 mod simulation_probe;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -114,7 +115,7 @@ impl DirectControlExtension {
     }
 
     fn draw_probe(&self, ctx: &mut StableClient<'_>, mouse: MouseSnapshot) {
-        ctx.draw_rect("UI", 18.0, 58.0, 1_800.0, 206.0, 19_998, 6.0, 0x101018dd);
+        ctx.draw_rect("UI", 18.0, 58.0, 1_800.0, 230.0, 19_998, 6.0, 0x101018dd);
 
         match simulation_probe::ensure_installed() {
             Ok(()) => Self::draw_text_line(
@@ -157,6 +158,31 @@ impl DirectControlExtension {
             );
         }
 
+        match loop_probe::ensure_installed() {
+            Ok(()) => {
+                let loop_state = loop_probe::snapshot();
+                let a_active = simulation_probe::snapshots()[0].active;
+                Self::draw_text_line(
+                    ctx,
+                    194.0,
+                    &format!(
+                        "RUNNER LOOP RVA 0x{:X} | entries {} | runner state 0x{:X} | Candidate A active {}",
+                        loop_probe::LOOP_HEAD_RVA,
+                        loop_state.entries,
+                        loop_state.last_runner_state,
+                        a_active,
+                    ),
+                    0xffd080ff,
+                );
+            }
+            Err(error) => Self::draw_text_line(
+                ctx,
+                194.0,
+                &format!("RUNNER LOOP PROBE: FAILED - {error}"),
+                0xff7070ff,
+            ),
+        }
+
         let clock = ctx.ui_text("ingame.header.game_time.value").unwrap_or_else(|| "--:--".to_owned());
         match camera_probe::ensure_installed() {
             Ok(()) => {
@@ -164,7 +190,7 @@ impl DirectControlExtension {
                 if let Some(camera) = snapshots.iter().max_by_key(|candidate| candidate.calls) {
                     Self::draw_text_line(
                         ctx,
-                        194.0,
+                        216.0,
                         &format!(
                             "visible clock {} | camera calls {} mode {} zoom {:.2} center ({:.2},{:.2})",
                             clock, camera.calls, camera.mode, camera.zoom, camera.center_x, camera.center_y,
@@ -191,7 +217,7 @@ impl DirectControlExtension {
             }
             Err(error) => Self::draw_text_line(
                 ctx,
-                194.0,
+                216.0,
                 &format!("visible clock {} | camera hook failed: {error}", clock),
                 0xff7070ff,
             ),
@@ -199,8 +225,8 @@ impl DirectControlExtension {
 
         Self::draw_text_line(
             ctx,
-            216.0,
-            "NEXT: use wrapper/runner signatures to choose a safe inner simulation-step hook. No commands are sent.",
+            238.0,
+            "TEST: if runner-loop entries finish near the match tick count, 0x18147F4 is the pacing boundary. No commands are sent.",
             0x80d8ffff,
         );
     }
@@ -245,6 +271,10 @@ fn init(host: &StableHost) -> StableMod {
     match simulation_probe::ensure_installed() {
         Ok(()) => host.log(LogLevel::Info, "TFM2 Direct Control loaded (confirmed client simulation task probe)"),
         Err(error) => host.log(LogLevel::Error, &format!("TFM2 Direct Control simulation task probe failed: {error}")),
+    }
+    match loop_probe::ensure_installed() {
+        Ok(()) => host.log(LogLevel::Info, "TFM2 Direct Control runner-loop counter installed"),
+        Err(error) => host.log(LogLevel::Error, &format!("TFM2 Direct Control runner-loop probe failed: {error}")),
     }
 
     let mut module = StableMod::new(MOD_ID);
