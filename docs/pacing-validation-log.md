@@ -91,45 +91,61 @@ while Candidate A and the rest of the match continued normally. Therefore none o
 
 ## Stage 2C — ranked match-view clock scan
 
+Status: **FAIL — no useful direct scalar presentation clock found in scanned prefix, physically tested 2026-09-10**.
+
+The probe scanned the entire known-live match-view prefix before the embedded camera object (`match_view + 0x000 .. +0x95C`) and evaluated common 32-bit and adjacent 64-bit scalar time interpretations.
+
+Screenshots at visible `00:05`, `00:10`, and `00:15` showed that the top-ranked fields remained static zero-valued words at `+0x000`, `+0x004`, and `+0x008`, with very large and worsening errors:
+
+```text
+00:05 -> error ~10300 ticks
+00:10 -> error ~10600 ticks
+00:15 -> error ~10900 ticks
+```
+
+No stable field/encoding converged toward the expected `visible_elapsed * 60` relationship. This does not prove presentation time is absent from all client state; it does show that continued blind scalar-offset hunting in this known-live prefix is low-value compared with testing direct simulation pacing.
+
+The clock scanner is therefore retired from the active build. Its source remains in repository history as research evidence.
+
+## Stage 3A — bounded 60 Hz wall-clock pacing proof
+
 Status: **implemented; awaiting physical validation**.
 
-Instead of guessing individual offsets, the current probe scans the entire known-live match-view prefix before the embedded camera object (`match_view + 0x000 .. +0x95C`, with the camera beginning at `+0x960`). It reads aligned 32-bit words and evaluates common scalar time interpretations at each offset, including adjacent 64-bit representations.
+This experiment tests the simpler direct hypothesis: pace Candidate A itself at approximately 60 simulation ticks per monotonic wall-clock second, without requiring a discovered replay/presentation clock.
 
-For each offset, only its best interpretation is retained. The overlay then shows the strongest three candidates ranked by how closely their delta matches:
+Implementation boundaries:
 
-```text
-visible elapsed seconds * 60 ticks/second
-```
+- only `StablePlayerAi::think()` callbacks executing on the confirmed Candidate-A worker are delayed;
+- the pacer records a simulation-tick origin and monotonic wall-clock origin;
+- the mod re-anchors pacing when the visible client first enters `InGame`;
+- Candidate A is allowed about `35 ms` of simulation lead to absorb scheduler/sleep jitter;
+- waits occur in small bounded sleep slices;
+- any single callback that would need more than `250 ms` of waiting fails open;
+- after `30 seconds` of wall-clock pacing the experiment automatically releases and Candidate A is allowed to finish at normal full speed;
+- `base_input` is returned unchanged: no manual player input is emitted.
 
-at normal 1x playback. Static/nearly-static fields are heavily penalized once enough visible time has elapsed, and fields with implausible absolute values are rejected.
-
-Expected overlay form:
-
-```text
-CLOCK #1: +0xXYZ <encoding> | ticks ... | delta ... | error ...
-CLOCK #2: ...
-CLOCK #3: ...
-```
-
-A useful candidate should converge toward a low error as the visible clock advances. One screenshot around 00:05 and another around 00:10-00:15 should be enough to determine whether a stable offset/encoding is emerging. A candidate must still pass a later pause/speed test before it can be trusted for pacing.
-
-This stage remains read-only. No sleeping, pacing, player selection, or manual `InputV1` is enabled.
-
-## Stage 3 — bounded pacing
-
-Status: **not implemented yet**.
-
-Only after a presentation clock source passes Stage 2, add cooperative waiting on one designated Candidate-A callback per simulation tick. Initial rule:
+Expected behavior during the first 30 seconds:
 
 ```text
-if simulation_tick > played_tick + allowed_lead:
-    wait briefly and re-check
+Candidate A: active 1
+ctx.tick delta ~= elapsed wall seconds * 60
+PACER released: no
+wait loops / slept ms: increasing
 ```
 
-Start with a conservative lead window and a bounded wait/fail-open path so the worker can never deadlock the match if presentation state disappears.
+At roughly 30 seconds:
+
+```text
+PACER released: YES
+Candidate A rapidly completes
+```
+
+The strongest success signal is that Candidate A remains active for tens of seconds instead of completing in roughly 4-7 seconds, while its simulation tick advances at approximately real-time speed and visible playback continues.
+
+If the visible match never starts, freezes, or the game/mod crashes, stop and report the symptom. That would mean pacing Candidate A this early interferes with the producer/consumer startup assumptions and the pacing origin/window will need adjustment.
 
 No manual `InputV1` should be reconnected until bounded pacing is physically stable.
 
 ## Parallel branch note
 
-`feat/cursor-entity-picking` was created from the Stage-1 pacing branch tip and therefore already contains the Stage-1 observer. Its substantive work is isolated in `src/entity_picker.rs` and `docs/entity-picking.md`; it also has a small wiring change in `src/lib.rs`. The pacing branch has since diverged. Future pacing work should remain modular. A later merge may require a small manual resolution in `src/lib.rs`, but no architectural conflict is currently expected.
+`feat/cursor-entity-picking` was created from the Stage-1 pacing branch tip and therefore already contains the Stage-1 observer. Its substantive work is isolated in `src/entity_picker.rs` and `docs/entity-picking.md`; it also has a small wiring change in `src/lib.rs`. The pacing branch has since diverged. Future pacing work remains modular. A later merge may require a small manual resolution in `src/lib.rs`, but no architectural conflict is currently expected.
