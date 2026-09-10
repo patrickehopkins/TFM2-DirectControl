@@ -1,8 +1,9 @@
 mod camera_probe;
+mod control;
 mod pacing_probe;
 mod simulation_probe;
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
 use mod_api_stable::{
     declare_stable_mod, ClientSceneKindV1, LogLevel, StableClient, StableExtension, StableHost,
@@ -26,9 +27,14 @@ const MOD_ID: &str = "tfm2_direct_control";
 const UI_FALLBACK_W: f32 = 1920.0;
 const UI_FALLBACK_H: f32 = 1080.0;
 const CURSOR_WORLD_COLOR: u32 = 0xffd040ff;
+const VK_F6_CODE: i32 = 0x75;
+const USER_PLAYER_FIRST: usize = 5;
+const USER_PLAYER_COUNT: usize = 5;
 
 static WAS_INGAME: AtomicBool = AtomicBool::new(false);
 static FINISH_CHORD_WAS_DOWN: AtomicBool = AtomicBool::new(false);
+static SELECT_KEYS_WERE_DOWN: AtomicU8 = AtomicU8::new(0);
+static RMB_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Copy, Default)]
 struct MouseSnapshot {
@@ -156,14 +162,93 @@ impl DirectControlExtension {
         }
     }
 
+    fn poll_player_selection(ingame: bool) {
+        if !ingame {
+            SELECT_KEYS_WERE_DOWN.store(0, Ordering::Release);
+            return;
+        }
+
+        let mut down_mask = 0u8;
+        for index in 0..USER_PLAYER_COUNT {
+            let vk = VK_F6_CODE + index as i32;
+            if unsafe { GetAsyncKeyState(vk) } < 0 {
+                down_mask |= 1u8 << index;
+            }
+        }
+
+        let previous = SELECT_KEYS_WERE_DOWN.swap(down_mask, Ordering::AcqRel);
+        if pacing_probe::manual_control_released() {
+            return;
+        }
+
+        let rising = down_mask & !previous;
+        if rising != 0 {
+            let index = rising.trailing_zeros() as usize;
+            control::select_player(USER_PLAYER_FIRST + index);
+        }
+    }
+
+    fn cursor_world(
+        ctx: &StableClient<'_>,
+        mouse: MouseSnapshot,
+        camera: camera_probe::CameraSnapshot,
+    ) -> Option<(f32, f32, f32)> {
+        let viewport = ctx.ui_node_rect("ingame.center_log")?;
+        let (game_w, game_h) = ctx.draw_map_size("Game")?;
+        if !mouse.valid
+            || game_w <= 0.0
+            || game_h <= 0.0
+            || !Self::point_in_rect(mouse.ui_x, mouse.ui_y, viewport)
+        {
+            return None;
+        }
+
+        let (vx, vy, vw, vh) = viewport;
+        let dx = mouse.ui_x - (vx + vw * 0.5);
+        let dy = mouse.ui_y - (vy + vh * 0.5);
+        let world_x = camera.center_x + dx * (camera.extent_a / game_w);
+        let world_y = camera.center_y + dy * (camera.extent_b / game_h);
+        let marker_units_per_px = ((camera.extent_a / game_w) + (camera.extent_b / game_h)) * 0.5;
+        Some((world_x, world_y, marker_units_per_px))
+    }
+
+    fn poll_rmb_move(&self, ctx: &StableClient<'_>, mouse: MouseSnapshot, ingame: bool) {
+        if !ingame {
+            RMB_WAS_DOWN.store(false, Ordering::Release);
+            return;
+        }
+
+        let was_down = RMB_WAS_DOWN.swap(mouse.right_down, Ordering::AcqRel);
+        if !mouse.right_down
+            || was_down
+            || pacing_probe::manual_control_released()
+            || control::selected_player().is_none()
+        {
+            return;
+        }
+
+        let snapshots = camera_probe::snapshots();
+        let Some(camera) = snapshots.iter().max_by_key(|candidate| candidate.calls).copied() else {
+            return;
+        };
+        let Some((world_x, world_y, _)) = Self::cursor_world(ctx, mouse, camera) else {
+            return;
+        };
+        if !world_x.is_finite() || !world_y.is_finite() || world_x < 0.0 || world_y < 0.0 {
+            return;
+        }
+
+        control::publish_move_target(world_x.round() as u64, world_y.round() as u64);
+    }
+
     fn draw_probe(&self, ctx: &mut StableClient<'_>, mouse: MouseSnapshot) {
-        ctx.draw_rect("UI", 18.0, 58.0, 1_800.0, 272.0, 19_998, 6.0, 0x101018dd);
+        ctx.draw_rect("UI", 18.0, 58.0, 1_800.0, 316.0, 19_998, 6.0, 0x101018dd);
 
         match simulation_probe::ensure_installed() {
             Ok(()) => Self::draw_text_line(
                 ctx,
                 62.0,
-                "SIM TASK PROBE: A confirmed watched-match job | Stage 3C continuous 60Hz + manual finish",
+                "SIM TASK PROBE: A confirmed watched-match job | Stage 4A paced manual RMB move",
                 0x80ff9fff,
             ),
             Err(error) => {
@@ -201,19 +286,13 @@ impl DirectControlExtension {
             Self::draw_text_line(
                 ctx,
                 150.0,
-                &format!(
-                    "CORE WRAPPER RVA 0x{:X} first32: {}",
-                    sig.wrapper_rva, sig.wrapper_bytes
-                ),
+                &format!("CORE WRAPPER RVA 0x{:X} first32: {}", sig.wrapper_rva, sig.wrapper_bytes),
                 0xffd080ff,
             );
             Self::draw_text_line(
                 ctx,
                 172.0,
-                &format!(
-                    "CORE RUNNER  RVA 0x{:X} first32: {}",
-                    sig.runner_rva, sig.runner_bytes
-                ),
+                &format!("CORE RUNNER  RVA 0x{:X} first32: {}", sig.runner_rva, sig.runner_bytes),
                 0xffd080ff,
             );
         }
@@ -225,61 +304,43 @@ impl DirectControlExtension {
         match camera_probe::ensure_installed() {
             Ok(()) => {
                 let snapshots = camera_probe::snapshots();
-                if let Some(camera) = snapshots.iter().max_by_key(|candidate| candidate.calls) {
+                if let Some(camera) = snapshots.iter().max_by_key(|candidate| candidate.calls).copied() {
                     Self::draw_text_line(
                         ctx,
                         194.0,
                         &format!(
                             "visible clock {} | camera calls {} mode {} zoom {:.2} center ({:.2},{:.2})",
-                            clock,
-                            camera.calls,
-                            camera.mode,
-                            camera.zoom,
-                            camera.center_x,
-                            camera.center_y,
+                            clock, camera.calls, camera.mode, camera.zoom, camera.center_x, camera.center_y,
                         ),
                         0xffffffff,
                     );
 
-                    if let (Some(viewport), Some((game_w, game_h))) =
-                        (ctx.ui_node_rect("ingame.center_log"), ctx.draw_map_size("Game"))
+                    if let Some((world_x, world_y, marker_units_per_px)) =
+                        Self::cursor_world(ctx, mouse, camera)
                     {
-                        if mouse.valid
-                            && game_w > 0.0
-                            && game_h > 0.0
-                            && Self::point_in_rect(mouse.ui_x, mouse.ui_y, viewport)
-                        {
-                            let (vx, vy, vw, vh) = viewport;
-                            let dx = mouse.ui_x - (vx + vw * 0.5);
-                            let dy = mouse.ui_y - (vy + vh * 0.5);
-                            let world_x = camera.center_x + dx * (camera.extent_a / game_w);
-                            let world_y = camera.center_y + dy * (camera.extent_b / game_h);
-                            let marker_units_per_px =
-                                ((camera.extent_a / game_w) + (camera.extent_b / game_h)) * 0.5;
-                            ctx.draw_set_camera(
-                                "Game",
-                                camera.center_x,
-                                camera.center_y,
-                                camera.extent_a,
-                                camera.extent_b,
-                            );
-                            ctx.draw_circle(
-                                "Game",
-                                world_x,
-                                world_y,
-                                11.0 * marker_units_per_px,
-                                100_000,
-                                CURSOR_WORLD_COLOR,
-                            );
-                            ctx.draw_circle(
-                                "Game",
-                                world_x,
-                                world_y,
-                                7.0 * marker_units_per_px,
-                                100_001,
-                                CURSOR_WORLD_COLOR,
-                            );
-                        }
+                        ctx.draw_set_camera(
+                            "Game",
+                            camera.center_x,
+                            camera.center_y,
+                            camera.extent_a,
+                            camera.extent_b,
+                        );
+                        ctx.draw_circle(
+                            "Game",
+                            world_x,
+                            world_y,
+                            11.0 * marker_units_per_px,
+                            100_000,
+                            CURSOR_WORLD_COLOR,
+                        );
+                        ctx.draw_circle(
+                            "Game",
+                            world_x,
+                            world_y,
+                            7.0 * marker_units_per_px,
+                            100_001,
+                            CURSOR_WORLD_COLOR,
+                        );
                     }
                 }
             }
@@ -338,9 +399,46 @@ impl DirectControlExtension {
             ),
             0x80ffbfff,
         );
+
+        let control_state = control::diagnostics();
+        let selection = control_state
+            .selected_player
+            .map(|player| format!("F{} / player {}", player + 1, player))
+            .unwrap_or_else(|| "none (press F6-F10)".to_owned());
+        let target = control_state
+            .move_target
+            .map(|(x, y)| format!("({x},{y})"))
+            .unwrap_or_else(|| "--".to_owned());
+        let manual_tick = control_state
+            .last_manual_tick
+            .map(|tick| tick.to_string())
+            .unwrap_or_else(|| "--".to_owned());
         Self::draw_text_line(
             ctx,
             260.0,
+            &format!(
+                "CONTROL: selected {} | target {} | RMB cmds {} | manual returns {} | last tick {}",
+                selection,
+                target,
+                control_state.move_command_count,
+                control_state.manual_input_returns,
+                manual_tick,
+            ),
+            if pacing_probe::manual_control_released() {
+                0xff7070ff
+            } else {
+                0x80ffffff
+            },
+        );
+        Self::draw_text_line(
+            ctx,
+            282.0,
+            "F6-F10: select one of your five players | RMB in viewport: force MoveTo cursor position",
+            0x80d8ffff,
+        );
+        Self::draw_text_line(
+            ctx,
+            304.0,
             "CTRL+END: release direct control and let simulation finish now — CANNOT RESUME THIS MATCH",
             if pacing.manual_finish_requested {
                 0xff7070ff
@@ -350,8 +448,8 @@ impl DirectControlExtension {
         );
         Self::draw_text_line(
             ctx,
-            282.0,
-            "TEST TARGET: pacing remains ~60Hz until Ctrl+End; then Candidate A races to completion. Input remains vanilla AI.",
+            326.0,
+            "TEST TARGET: select F6-F10, RMB far away, verify selected champion visibly obeys while A stays paced.",
             0x80d8ffff,
         );
     }
@@ -364,16 +462,22 @@ impl StableExtension for DirectControlExtension {
         if ingame && !was_ingame {
             camera_probe::clear_candidates();
             pacing_probe::reset();
+            control::reset();
             FINISH_CHORD_WAS_DOWN.store(false, Ordering::Release);
+            SELECT_KEYS_WERE_DOWN.store(0, Ordering::Release);
+            RMB_WAS_DOWN.store(false, Ordering::Release);
         }
 
         Self::poll_finish_chord(ingame);
+        Self::poll_player_selection(ingame);
 
         if !Self::should_draw(ctx) {
             return;
         }
 
         let mouse = self.read_mouse(ctx);
+        self.poll_rmb_move(ctx, mouse, ingame);
+
         if mouse.valid {
             let crosshair_color = if mouse.right_down {
                 0xff4040ff
@@ -438,7 +542,7 @@ fn init(host: &StableHost) -> StableMod {
     match simulation_probe::ensure_installed() {
         Ok(()) => host.log(
             LogLevel::Info,
-            "TFM2 Direct Control loaded (Candidate A + continuous 60Hz pacing + Ctrl+End finish release)",
+            "TFM2 Direct Control loaded (Stage 4A: paced Candidate A + F6-F10 RMB MoveTo + Ctrl+End release)",
         ),
         Err(error) => host.log(
             LogLevel::Error,
