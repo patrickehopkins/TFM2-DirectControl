@@ -1,18 +1,20 @@
 //! Live-control pacing for the confirmed Candidate A watched-match simulation.
 //!
 //! Stage 3 proved Candidate A can be paced at ~60 ticks/s and irreversibly released with Ctrl+End.
-//! Stage 4 proved manual `InputV1::move_to` commands reach that live simulation. Runtime testing
-//! then exposed the remaining startup problem: Candidate A can accumulate a sizeable hidden lead
-//! before the interactive match UI appears.
+//! Stage 4 proved manual `InputV1::move_to` commands reach that live simulation.
 //!
-//! Stage 5A tests the cleanest possible separation: Candidate A is held at its first observed AI
-//! callback until the user explicitly presses Ctrl+Home. If the battlefield can finish loading
-//! while this worker is held, loading and simulation are separable and direct control can begin
-//! without any pre-simulation lead. Ctrl+Home is also accepted on the Match/loading scene as an
-//! escape hatch if the client proves to depend on simulation progress before entering InGame.
+//! Stage 5A's zero-tick prematch hold was physically rejected: blocking the very first AI callback
+//! prevents Start Match from completing, and the render thread stops pumping while it waits. This
+//! revision allows one complete Candidate-A simulation tick through before holding on the next tick.
+//! That tests whether the client only needs an initial simulation frame/state to construct InGame.
 //!
-//! Pause uses a separate presentation gate. Ctrl+End permanently releases both pacing and manual
-//! input for the current match.
+//! The held Candidate-A worker now also polls Ctrl+Home directly. That escape does not depend on
+//! `post_render`, so it still works if the Start Match UI thread is synchronously waiting. If one
+//! tick is insufficient and the client has not reached InGame after two seconds, the gate
+//! automatically releases into the known-good 60 Hz pacer rather than leaving the process hung.
+//!
+//! Pause uses a separate presentation gate. Ctrl+End permanently releases pacing and manual input
+//! for the current match.
 
 use std::{
     sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering},
@@ -21,7 +23,10 @@ use std::{
 };
 
 use mod_api_stable::{InputV1, StableAiContext, StableAiInit, StablePlayerAi};
-use windows_sys::Win32::System::Threading::GetCurrentThreadId;
+use windows_sys::Win32::{
+    System::Threading::GetCurrentThreadId,
+    UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_CONTROL, VK_HOME},
+};
 
 use crate::{control, simulation_probe};
 
@@ -31,6 +36,7 @@ const ALLOWED_LEAD_MS: u64 = 35;
 const MAX_SLEEP_SLICE_MS: u64 = 2;
 const MAX_SINGLE_CALLBACK_WAIT_MS: u64 = 250;
 const BLOCK_SLEEP_SLICE_MS: u64 = 2;
+const PREMATCH_AUTO_RELEASE_MS: u64 = 2_000;
 
 const PHASE_WAITING_START: u8 = 0;
 const PHASE_RUNNING: u8 = 1;
@@ -50,13 +56,13 @@ static LAST_CANDIDATE_A_ATHLETE: AtomicUsize = AtomicUsize::new(NO_PLAYER);
 static LAST_CANDIDATE_A_THREAD: AtomicU64 = AtomicU64::new(0);
 static SEEN_PLAYER_MASK: AtomicU64 = AtomicU64::new(0);
 
-// The Candidate-A wrapper exposes a stable job context/entry count before StablePlayerAi runs.
-// Tracking those lets us reset the start gate at the actual simulation-job boundary instead of at
-// the later InGame scene transition (which was the source of the hidden-lead reset bug).
+// Candidate-A's detoured wrapper gives us a stable job identity before StablePlayerAi executes.
+// Reset the per-match latches at that boundary rather than at the later InGame scene transition.
 static ACTIVE_JOB_CONTEXT: AtomicUsize = AtomicUsize::new(0);
 static ACTIVE_JOB_ENTRY: AtomicU64 = AtomicU64::new(0);
 
 static START_REQUESTED: AtomicBool = AtomicBool::new(false);
+static START_AUTO_RELEASED: AtomicBool = AtomicBool::new(false);
 static INTERACTIVE_MATCH: AtomicBool = AtomicBool::new(false);
 static PRESENTATION_PHASE: AtomicU8 = AtomicU8::new(PHASE_WAITING_START);
 static PACER_ORIGIN_TICK: AtomicU64 = AtomicU64::new(NO_TICK);
@@ -83,6 +89,7 @@ pub struct PacingProbeSnapshot {
     pub pacer_origin_tick: Option<u64>,
     pub pacer_elapsed_ms: u64,
     pub start_requested: bool,
+    pub start_auto_released: bool,
     pub manual_finish_requested: bool,
     pub safety_fail_open: bool,
     pub pacer_wait_count: u64,
@@ -115,6 +122,7 @@ fn reset_job_runtime() {
     SEEN_PLAYER_MASK.store(0, Ordering::Release);
 
     START_REQUESTED.store(false, Ordering::Release);
+    START_AUTO_RELEASED.store(false, Ordering::Release);
     PRESENTATION_PHASE.store(PHASE_WAITING_START, Ordering::Release);
     reanchor_pacer();
     MANUAL_FINISH_REQUESTED.store(false, Ordering::Release);
@@ -127,9 +135,8 @@ fn reset_job_runtime() {
     PAUSE_TOTAL_WAIT_MS.store(0, Ordering::Release);
 }
 
-/// Called when the client leaves an interactive match. The next Candidate-A entry will still
-/// perform its own job-boundary reset; this just prevents stale controls from surviving between
-/// matches if there is a long menu interval.
+/// Called when the client leaves an interactive match. The actual Candidate-A job boundary is also
+/// detected on the simulation thread; this prevents stale controls surviving a long menu interval.
 pub fn prepare_next_match() {
     INTERACTIVE_MATCH.store(false, Ordering::Release);
     ACTIVE_JOB_CONTEXT.store(0, Ordering::Release);
@@ -149,8 +156,7 @@ fn observe_candidate_job(probe: simulation_probe::SimulationProbeSnapshot) {
     reset_job_runtime();
 }
 
-/// Explicitly starts the held Candidate-A simulation. Safe to call from either the Match/loading
-/// scene or InGame; the former is intentionally an escape hatch for the Stage-5A coupling test.
+/// Starts the held Candidate-A simulation and re-anchors the 60 Hz wall-clock pacer.
 pub fn request_start_simulation() {
     if manual_control_released() {
         return;
@@ -178,7 +184,7 @@ pub fn set_presentation_state(interactive_match: bool, paused: bool) {
 
     let previous = PRESENTATION_PHASE.swap(next, Ordering::AcqRel);
     if next == PHASE_RUNNING && previous == PHASE_PAUSED {
-        // Paused wall time must never become runnable budget.
+        // Paused wall time must never become runnable catch-up budget.
         reanchor_pacer();
     }
 }
@@ -193,13 +199,15 @@ pub fn presentation_phase_label() -> &'static str {
             if INTERACTIVE_MATCH.load(Ordering::Acquire) {
                 "READY / WAITING CTRL+HOME"
             } else {
-                "HOLDING PREMATCH"
+                "HOLDING AFTER 1 STARTUP TICK"
             }
         }
         PHASE_PAUSED => "PAUSED",
         PHASE_RUNNING => {
             if INTERACTIVE_MATCH.load(Ordering::Acquire) {
                 "RUNNING"
+            } else if START_AUTO_RELEASED.load(Ordering::Acquire) {
+                "PREMATCH / AUTO-RELEASED TO 60HZ"
             } else {
                 "PREMATCH / RUNNING"
             }
@@ -258,6 +266,7 @@ pub fn snapshot() -> PacingProbeSnapshot {
             now_ms.saturating_sub(pacer_origin_ms)
         },
         start_requested: START_REQUESTED.load(Ordering::Acquire),
+        start_auto_released: START_AUTO_RELEASED.load(Ordering::Acquire),
         manual_finish_requested: MANUAL_FINISH_REQUESTED.load(Ordering::Acquire),
         safety_fail_open: SAFETY_FAIL_OPEN.load(Ordering::Acquire),
         pacer_wait_count: PACER_WAIT_COUNT.load(Ordering::Acquire),
@@ -281,12 +290,39 @@ fn candidate_a_probe_for_thread(thread_id: u32) -> Option<simulation_probe::Simu
         .then_some(candidate_a)
 }
 
+fn ctrl_home_down() -> bool {
+    unsafe {
+        GetAsyncKeyState(VK_CONTROL as i32) < 0 && GetAsyncKeyState(VK_HOME as i32) < 0
+    }
+}
+
 fn wait_until_started() -> bool {
+    let wait_started_ms = unsafe { GetTickCount64() };
+
     loop {
         if manual_control_released() {
             return false;
         }
         if START_REQUESTED.load(Ordering::Acquire) {
+            return true;
+        }
+
+        // `post_render` is not guaranteed to run while Start Match waits. Poll the escape chord on
+        // this worker too, so Ctrl+Home can always release a rejected prematch gate experiment.
+        if ctrl_home_down() {
+            request_start_simulation();
+            return true;
+        }
+
+        // If the one-tick runway was insufficient, recover automatically before Windows decides
+        // the process is hung. Once InGame is actually visible, do NOT auto-start: leave the held
+        // tick waiting for the user's deliberate Ctrl+Home.
+        let now_ms = unsafe { GetTickCount64() };
+        if !INTERACTIVE_MATCH.load(Ordering::Acquire)
+            && now_ms.saturating_sub(wait_started_ms) >= PREMATCH_AUTO_RELEASE_MS
+        {
+            START_AUTO_RELEASED.store(true, Ordering::Release);
+            request_start_simulation();
             return true;
         }
 
@@ -317,11 +353,20 @@ fn pace_candidate_a(tick: u64) {
     }
 
     if !START_REQUESTED.load(Ordering::Acquire) {
+        let first_tick = FIRST_CANDIDATE_A_TICK.load(Ordering::Acquire);
+
+        // Let every player callback belonging to the first observed simulation tick pass. The hold
+        // begins only when Candidate A asks for input on a later tick, which proves the first tick
+        // completed rather than freezing halfway through its ten players.
+        if first_tick == NO_TICK || tick <= first_tick {
+            return;
+        }
+
         if !wait_until_started() {
             return;
         }
-        // Ctrl+Home releases the exact callback that was held. Make that tick/time the pacing
-        // origin, so no wall time spent waiting becomes catch-up budget.
+        // The exact held tick becomes the fresh pacing origin. Time spent waiting is never catch-up
+        // budget, whether release came from the visible UI, worker-local Ctrl+Home, or auto-recovery.
         reanchor_pacer();
         return pace_candidate_a(tick);
     }
