@@ -1,20 +1,21 @@
-//! Continuous wall-clock pacing proof for the confirmed Candidate A watched-match simulation.
+//! Continuous wall-clock pacing for the confirmed Candidate A watched-match simulation.
 //!
-//! Stage 3A physically proved that StablePlayerAi can cooperatively hold Candidate A at ~60
-//! simulation ticks per wall-clock second while visible playback continues normally. The earlier
-//! build intentionally released after 30 seconds as a safety boundary; this follow-up removes only
-//! that artificial timeout so we can verify that Candidate A stays live for the full match.
+//! Stage 1 proved that StablePlayerAi callbacks on Candidate A's worker expose the watched
+//! simulation tick. Stage 2A/2B/2C failed to identify a direct presentation clock in the live
+//! match-view object. Stage 3A proved that Candidate A can be held near 60 simulation ticks per
+//! wall-clock second without breaking playback. Stage 3B removed the temporary 30-second release.
 //!
-//! Safety boundaries remain:
+//! This module now also owns the irreversible per-match manual-control release latch. Ctrl+End
+//! (detected by the client extension) requests release; once requested, Candidate A is no longer
+//! paced and is allowed to race to completion. Future manual InputV1 code should consult the same
+//! latch so direct control cannot be resumed for that match after release.
+//!
+//! Safety boundaries:
 //! - only callbacks running on the confirmed Candidate A worker thread are delayed;
-//! - `base_input` is returned unchanged, so player behavior remains AI-controlled;
+//! - `base_input` is returned unchanged, so player behavior remains AI-controlled in this stage;
 //! - a ~35 ms lead is allowed to avoid excessive one-millisecond sleep jitter;
-//! - if any single callback would have to wait 250 ms, the pacer permanently fails open rather
-//!   than risking a stuck worker;
+//! - a pathological single-callback wait >=250 ms triggers a separate safety fail-open;
 //! - no replay/presentation object is read or written here.
-//!
-//! This is deliberately a fixed 1x / 60 Hz pacing test. Playback-speed and pause synchronization
-//! are separate concerns to solve after full-match pacing is physically validated.
 
 use std::{
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -48,7 +49,8 @@ static SEEN_PLAYER_MASK: AtomicU64 = AtomicU64::new(0);
 
 static PACER_ORIGIN_TICK: AtomicU64 = AtomicU64::new(NO_TICK);
 static PACER_ORIGIN_MS: AtomicU64 = AtomicU64::new(0);
-static PACER_RELEASED: AtomicBool = AtomicBool::new(false);
+static MANUAL_FINISH_REQUESTED: AtomicBool = AtomicBool::new(false);
+static SAFETY_FAIL_OPEN: AtomicBool = AtomicBool::new(false);
 static PACER_WAIT_COUNT: AtomicU64 = AtomicU64::new(0);
 static PACER_TOTAL_WAIT_MS: AtomicU64 = AtomicU64::new(0);
 
@@ -63,7 +65,8 @@ pub struct PacingProbeSnapshot {
     pub seen_player_mask: u64,
     pub pacer_origin_tick: Option<u64>,
     pub pacer_elapsed_ms: u64,
-    pub pacer_released: bool,
+    pub manual_finish_requested: bool,
+    pub safety_fail_open: bool,
     pub pacer_wait_count: u64,
     pub pacer_total_wait_ms: u64,
 }
@@ -82,9 +85,22 @@ pub fn reset() {
 
     PACER_ORIGIN_TICK.store(NO_TICK, Ordering::Release);
     PACER_ORIGIN_MS.store(0, Ordering::Release);
-    PACER_RELEASED.store(false, Ordering::Release);
+    MANUAL_FINISH_REQUESTED.store(false, Ordering::Release);
+    SAFETY_FAIL_OPEN.store(false, Ordering::Release);
     PACER_WAIT_COUNT.store(0, Ordering::Release);
     PACER_TOTAL_WAIT_MS.store(0, Ordering::Release);
+}
+
+/// Permanently releases direct-control pacing for the current match.
+///
+/// Future manual-input code should use `manual_control_released()` to honor the same irreversible
+/// transition and keep returning vanilla AI input after this is set.
+pub fn request_finish_simulation() {
+    MANUAL_FINISH_REQUESTED.store(true, Ordering::Release);
+}
+
+pub fn manual_control_released() -> bool {
+    MANUAL_FINISH_REQUESTED.load(Ordering::Acquire)
 }
 
 pub fn snapshot() -> PacingProbeSnapshot {
@@ -109,7 +125,8 @@ pub fn snapshot() -> PacingProbeSnapshot {
         } else {
             now_ms.saturating_sub(pacer_origin_ms)
         },
-        pacer_released: PACER_RELEASED.load(Ordering::Acquire),
+        manual_finish_requested: MANUAL_FINISH_REQUESTED.load(Ordering::Acquire),
+        safety_fail_open: SAFETY_FAIL_OPEN.load(Ordering::Acquire),
         pacer_wait_count: PACER_WAIT_COUNT.load(Ordering::Acquire),
         pacer_total_wait_ms: PACER_TOTAL_WAIT_MS.load(Ordering::Acquire),
     }
@@ -123,7 +140,9 @@ fn running_on_candidate_a_thread(thread_id: u32) -> bool {
 }
 
 fn pace_candidate_a(tick: u64) {
-    if PACER_RELEASED.load(Ordering::Acquire) {
+    if MANUAL_FINISH_REQUESTED.load(Ordering::Acquire)
+        || SAFETY_FAIL_OPEN.load(Ordering::Acquire)
+    {
         return;
     }
 
@@ -152,6 +171,12 @@ fn pace_candidate_a(tick: u64) {
     let callback_wait_start_ms = now_ms;
 
     loop {
+        if MANUAL_FINISH_REQUESTED.load(Ordering::Acquire)
+            || SAFETY_FAIL_OPEN.load(Ordering::Acquire)
+        {
+            return;
+        }
+
         let wall_now_ms = unsafe { GetTickCount64() };
         let wall_elapsed_ms = wall_now_ms.saturating_sub(origin_ms);
 
@@ -162,7 +187,7 @@ fn pace_candidate_a(tick: u64) {
         if wall_now_ms.saturating_sub(callback_wait_start_ms) >= MAX_SINGLE_CALLBACK_WAIT_MS {
             // A normal 60 Hz tick should need only a few milliseconds of waiting. If one callback
             // ever wants hundreds of milliseconds, fail open rather than risking a stuck worker.
-            PACER_RELEASED.store(true, Ordering::Release);
+            SAFETY_FAIL_OPEN.store(true, Ordering::Release);
             return;
         }
 
@@ -221,7 +246,7 @@ impl StablePlayerAi for CandidateAObserverAi {
             pace_candidate_a(tick);
         }
 
-        // Pacing proof only: preserve exactly the AI input passed to this hook.
+        // Pacing stage only: preserve exactly the AI input passed to this hook.
         base_input
     }
 }
