@@ -145,7 +145,7 @@ impl DirectControlExtension {
             Ok(()) => Self::draw_text_line(
                 ctx,
                 62.0,
-                "SIM TASK PROBE: A confirmed watched-match job | Stage 3A bounded 60Hz pacer ACTIVE",
+                "SIM TASK PROBE: A confirmed watched-match job | Stage 3B continuous 60Hz pacer ACTIVE",
                 0x80ff9fff,
             ),
             Err(error) => {
@@ -310,7 +310,7 @@ impl DirectControlExtension {
             ctx,
             238.0,
             &format!(
-                "PACER: origin tick {} | elapsed {} ms | released {} | wait loops {} | slept ~{} ms",
+                "PACER: origin tick {} | elapsed {} ms | fail-open {} | wait loops {} | slept ~{} ms",
                 origin_tick,
                 pacing.pacer_elapsed_ms,
                 if pacing.pacer_released { "YES" } else { "no" },
@@ -322,7 +322,7 @@ impl DirectControlExtension {
         Self::draw_text_line(
             ctx,
             260.0,
-            "TEST TARGET: A stays active ~30s and ctx.tick advances ~60/s; pacing then auto-releases. Input remains vanilla AI.",
+            "TEST TARGET: A stays active for the full match and ctx.tick advances ~60/s at 1x. Input remains vanilla AI.",
             0x80d8ffff,
         );
     }
@@ -334,7 +334,7 @@ impl StableExtension for DirectControlExtension {
         let was_ingame = WAS_INGAME.swap(ingame, Ordering::AcqRel);
         if ingame && !was_ingame {
             camera_probe::clear_candidates();
-            // Re-anchor the bounded pacer when the visible match actually enters InGame.
+            // Re-anchor the pacer when the visible match actually enters InGame.
             pacing_probe::reset();
         }
 
@@ -407,7 +407,7 @@ fn init(host: &StableHost) -> StableMod {
     match simulation_probe::ensure_installed() {
         Ok(()) => host.log(
             LogLevel::Info,
-            "TFM2 Direct Control loaded (Candidate A probe + bounded 60Hz pacing proof)",
+            "TFM2 Direct Control loaded (Candidate A probe + continuous 60Hz pacing test)",
         ),
         Err(error) => host.log(
             LogLevel::Error,
