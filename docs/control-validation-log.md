@@ -60,4 +60,46 @@ The next diagnostic/control build therefore uses a narrow 0.5.8 compatibility ru
 - `Unknown` is accepted only when `ctx.tick() / 60` equals the visible UI match-second exactly;
 - the overlay reports `unk@clock` match count, visible clock, and the most recent matching simulation tick.
 
-The purpose is to isolate the on-screen simulation from the millions of unrelated `Unknown` callbacks without globally injecting mouse-driven input into every predictive simulation.
+The purpose was to isolate the on-screen simulation from the millions of unrelated `Unknown` callbacks without globally injecting mouse-driven input into every predictive simulation.
+
+### Physical result
+
+The clock gate worked exactly as a diagnostic filter but did not create interactive control:
+
+- visible `00:11` matched approximately tick `719`, `00:16` matched tick `959`, and `00:22` matched tick `1379`, confirming the 60 Hz time relationship;
+- `unk@clock` increased and `InputV1::move_to(...)` was actually returned on matching ticks;
+- after one RMB destination was published, `move returns` increased continuously even without additional clicks. This is expected because movement commands are persistent and the hook returns the same target every accepted tick until another command replaces it;
+- the watched champion still did not react to the returned movement input;
+- the decisive observation was that all AI diagnostic counters eventually froze while the visible match clock continued advancing.
+
+Conclusion: the `StablePlayerAi` callback stream being observed is decoupled from presentation time and runs ahead of the match being watched. Matching a callback tick to the current displayed second proves that the command reaches a corresponding simulation tick, but it does not make that callback an interactive presentation-time input point. The clock-gated `Unknown` path is diagnostic only and should not become the production architecture.
+
+## Native architecture evidence after the clock-gated test
+
+Static inspection of Teamfight Manager 2 v0.5.8 added two important findings.
+
+### Server precomputed result versus watched/live result
+
+The executable contains `GamePlayDone` diagnostics stating that:
+
+- a precomputed server result can be overridden by a different live result;
+- the `server/live simulation` can diverge;
+- stored statistics and replay remain from the server run, so they can differ from what was watched.
+
+This demonstrates that TFM2 distinguishes its server precomputed run from a separate result associated with the watched match. Therefore the failed stable-AI experiment does **not** imply that interactive direct control is impossible; it means we have not yet reached the local simulation path that feeds the watched result.
+
+### Match-view object is also the playback object
+
+The native object already captured by the camera hook is broader than a camera structure. The same object contains:
+
+- camera zoom at `+0xE0`;
+- camera center at `+0xE4/+0xE8`;
+- camera extents at `+0xEC/+0xF0`;
+- displayed/played match tick at `+0x250`;
+- an elapsed-time accumulator at `+0x258` used by the match-view update to derive `+0x250`.
+
+The match-view update advances the played tick and then processes visual/event data for that playback position. This is consistent with a local simulation producing a result/event stream ahead of the visible presentation, followed by a separate real-time playback layer.
+
+### Current engineering target
+
+The direct-control problem is no longer mouse projection or `InputV1` construction. Both are validated. The next target is the **local-simulation -> playback boundary**: identify the simulation instance that produces the watched event stream and either pace it with presentation time or hook its actual input-decision point before it runs ahead.
