@@ -1,19 +1,18 @@
 //! Minimal cross-thread manual-control state for the paced Candidate-A simulation.
 //!
-//! The client/render extension owns physical keyboard/mouse sampling and publishes selection and
-//! RMB world targets here. `pacing_probe` owns the single StablePlayerAi hook and consults this
-//! state only for callbacks already proven to belong to Candidate A. This avoids the old
-//! visible-clock/origin heuristic and keeps simulation pacing + manual input on one AI callback
-//! chain.
+//! Physical F-key selection is resolved by the client to an athlete identity. The Candidate-A AI
+//! hook then compares `StableAiContext::athlete_id()` rather than assuming the visible F-key order
+//! matches the simulation's internal `player_id` order. This remains team-neutral and avoids
+//! hard-coded side/order policy.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use mod_api_stable::InputV1;
 
-const NO_PLAYER: usize = usize::MAX;
+const NO_ATHLETE: usize = usize::MAX;
 const NO_TICK: u64 = u64::MAX;
 
-static SELECTED_PLAYER: AtomicUsize = AtomicUsize::new(NO_PLAYER);
+static SELECTED_ATHLETE: AtomicUsize = AtomicUsize::new(NO_ATHLETE);
 static MOVE_ACTIVE: AtomicBool = AtomicBool::new(false);
 static MOVE_X: AtomicU64 = AtomicU64::new(0);
 static MOVE_Y: AtomicU64 = AtomicU64::new(0);
@@ -26,7 +25,7 @@ static LAST_MANUAL_TICK: AtomicU64 = AtomicU64::new(NO_TICK);
 
 #[derive(Debug, Clone, Copy)]
 pub struct ControlDiagnostics {
-    pub selected_player: Option<usize>,
+    pub selected_athlete: Option<usize>,
     pub move_target: Option<(u64, u64)>,
     pub select_count: u64,
     pub move_command_count: u64,
@@ -35,7 +34,7 @@ pub struct ControlDiagnostics {
 }
 
 pub fn reset() {
-    SELECTED_PLAYER.store(NO_PLAYER, Ordering::Release);
+    SELECTED_ATHLETE.store(NO_ATHLETE, Ordering::Release);
     clear_move_target();
     SELECT_COUNT.store(0, Ordering::Release);
     MOVE_COMMAND_COUNT.store(0, Ordering::Release);
@@ -43,19 +42,19 @@ pub fn reset() {
     LAST_MANUAL_TICK.store(NO_TICK, Ordering::Release);
 }
 
-pub fn selected_player() -> Option<usize> {
-    match SELECTED_PLAYER.load(Ordering::Acquire) {
-        NO_PLAYER => None,
-        player_id => Some(player_id),
+pub fn selected_athlete() -> Option<usize> {
+    match SELECTED_ATHLETE.load(Ordering::Acquire) {
+        NO_ATHLETE => None,
+        athlete_id => Some(athlete_id),
     }
 }
 
-pub fn select_player(player_id: usize) {
-    // Briefly clear selection/target so a newly selected champion can never inherit the previous
-    // champion's destination across the client -> simulation thread boundary.
-    SELECTED_PLAYER.store(NO_PLAYER, Ordering::Release);
+pub fn select_athlete(athlete_id: usize) {
+    // Clear the old destination before publishing the new identity so the newly selected athlete
+    // can never inherit the previous athlete's persistent MoveTo target.
+    SELECTED_ATHLETE.store(NO_ATHLETE, Ordering::Release);
     clear_move_target();
-    SELECTED_PLAYER.store(player_id, Ordering::Release);
+    SELECTED_ATHLETE.store(athlete_id, Ordering::Release);
     SELECT_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
@@ -98,10 +97,9 @@ pub fn move_target() -> Option<(u64, u64)> {
     None
 }
 
-/// Returns a manual move only for the currently selected player after at least one RMB target has
-/// been published. Selection by itself does not suppress vanilla AI in this first movement proof.
-pub fn manual_input_for(player_id: usize, tick: u64) -> Option<InputV1> {
-    if selected_player() != Some(player_id) {
+/// Returns a manual move only for the selected athlete after an RMB target has been published.
+pub fn manual_input_for(athlete_id: usize, tick: u64) -> Option<InputV1> {
+    if selected_athlete() != Some(athlete_id) {
         return None;
     }
 
@@ -114,7 +112,7 @@ pub fn manual_input_for(player_id: usize, tick: u64) -> Option<InputV1> {
 pub fn diagnostics() -> ControlDiagnostics {
     let last_tick = LAST_MANUAL_TICK.load(Ordering::Acquire);
     ControlDiagnostics {
-        selected_player: selected_player(),
+        selected_athlete: selected_athlete(),
         move_target: move_target(),
         select_count: SELECT_COUNT.load(Ordering::Acquire),
         move_command_count: MOVE_COMMAND_COUNT.load(Ordering::Acquire),
