@@ -2,30 +2,21 @@
 
 Experimental direct champion control for **Teamfight Manager 2**.
 
-The goal is to expose a small, reusable set of low-level direct-control primitives for the game's ten live player slots: real-time simulation pacing, raw slot selection, mouse/world targeting, and native player inputs. This core deliberately does **not** decide which team a human is allowed to control. Ownership, permissions, game-mode rules, and richer policy belong in higher-level mods that may build on top of this project.
+The goal is to expose a small, reusable set of low-level direct-control primitives for the game's ten live actors: real-time simulation pacing, actor selection, mouse/world targeting, and native player inputs. This core deliberately does **not** decide which team a human is allowed to control. Ownership, permissions, game-mode rules, and richer policy belong in higher-level mods that may build on top of this project.
 
 ## Status
 
 Bootstrap loading is verified on Teamfight Manager 2 v0.5.8. The watched-match simulation has been identified and continuous ~60 Hz wall-clock pacing has been physically validated for at least ten visible minutes without a safety fail-open. Native `InputV1::move_to` injection into the paced watched simulation is also physically verified: selected actors respond in real time and other AI actors react to the changed behavior.
 
-Current cleanup work is presentation gating: pacing should be bypassed during the normal pre-match loading/prebuffer phase, freeze while the visible match is paused, and re-anchor cleanly on resume. Mouse/world scale is proven; a remaining constant screen-space cursor-origin offset is also being calibrated. Actor/entity clickability is being developed on the parallel `feat/cursor-entity-picking` branch.
+Runtime testing also established two important implementation details. First, the visible F1-F10 card order is **not** the same as Candidate A's internal `player_id` order, so UI selection is resolved through stable athlete identity rather than hard-coded player ids. Second, allowing Candidate A to pre-simulate during loading creates a hidden lead that can desynchronize camera/control. Stage 5A therefore tests holding Candidate A at its first observed callback until an explicit start command.
+
+Mouse/world scale is proven; a remaining constant screen-space cursor-origin offset is still being calibrated. Actor/entity clickability is being developed on the parallel `feat/cursor-entity-picking` branch.
 
 ## Core selection contract
 
-For the low-level control layer, function keys address raw player slots directly:
+F1-F10 refer to the **ten visible match cards**, exactly as Teamfight Manager 2 labels them. They are convenience selectors, not raw simulation `player_id` values.
 
-| Input | Raw slot |
-| --- | ---: |
-| F1 | 0 |
-| F2 | 1 |
-| F3 | 2 |
-| F4 | 3 |
-| F5 | 4 |
-| F6 | 5 |
-| F7 | 6 |
-| F8 | 7 |
-| F9 | 8 |
-| F10 | 9 |
+The current implementation resolves the selected card's displayed athlete to the stable athlete id, then matches `StableAiContext::athlete_id()` on Candidate A. This avoids depending on the game's opaque internal player ordering.
 
 There is intentionally no blue-side/red-side or player-team restriction here. A future mod may impose one without changing the underlying control primitive.
 
@@ -33,8 +24,9 @@ There is intentionally no blue-side/red-side or player-team restriction here. A 
 
 | Input | Behavior |
 | --- | --- |
-| F1-F10 | Select raw player slot 0-9 |
-| RMB on ground | Move the selected slot's champion to the clicked world position |
+| **Ctrl+Home** | Start/release the held watched-match simulation into 1x live pacing. Stage 5A currently uses this as an explicit start gate. |
+| F1-F10 | Select the athlete shown on that visible match card |
+| RMB on ground | Move the selected athlete's champion to the clicked world position |
 | RMB on hostile unit | Attack that specific target; normal game movement/range behavior handles approach |
 | Q | Arm Skill 1 |
 | W | Arm Skill 2 |
@@ -50,6 +42,12 @@ Skill handling should follow each ability's native casting type:
 - `Position` -> click a world position.
 - `Direction` -> cast from the controlled champion toward the clicked mouse position.
 - `None` -> cast immediately when the key is pressed.
+
+### Starting live simulation
+
+Stage 5A deliberately holds Candidate A at its first observed player-AI callback. `Ctrl+Home` releases that hold and establishes a fresh 60 Hz pacing origin at the held simulation tick.
+
+This is currently an experiment to answer whether Teamfight Manager 2 can finish loading/rendering the interactive battlefield while the watched-match simulation worker is blocked. If the battlefield cannot appear until Candidate A advances, `Ctrl+Home` is also accepted on the Match/loading scene as an escape hatch. In that case the next implementation will preserve the minimum setup prefix and gate the inner simulation loop after loading dependencies are satisfied.
 
 ### Releasing manual control
 
@@ -76,6 +74,9 @@ The input path is:
 
 ```text
 Windows mouse / keyboard state
+        |
+        v
+visible F-key card -> stable athlete identity
         |
         v
 window/client coordinates
@@ -175,8 +176,8 @@ The GitHub repository/folder may remain named `TFM2-DirectControl`; the installe
 2. Read physical mouse position/buttons while a match is active. **Verified.**
 3. Prove a correct mouse-screen -> match-world scale with a debug marker. **Scale verified; constant screen-origin calibration under cleanup.**
 4. Identify and pace the watched-match simulation near real time. **Verified at continuous ~60 Hz for 10+ visible minutes.**
-5. RMB ground -> native `Move` input for an arbitrary raw player slot. **Verified in real time.**
-6. Freeze simulation while the visible match is paused and bypass pacing during loading/prebuffer. **Implemented; awaiting physical validation.**
+5. RMB ground -> native `Move` input for an arbitrary actor. **Verified in real time; F-key-to-athlete identity mapping is under correction.**
+6. Start the watched simulation without hidden pre-simulation lead and freeze/resume it with the visible pause UI. **Stage 5A implemented; awaiting physical validation.**
 7. RMB hostile -> native `Attack` input against the clicked entity.
 8. Q/W/R + LMB normal-cast targeting.
 9. B -> return to base.
