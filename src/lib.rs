@@ -21,6 +21,8 @@ use windows_sys::Win32::{
 const MOD_ID: &str = "tfm2_direct_control";
 const UI_FALLBACK_W: f32 = 1920.0;
 const UI_FALLBACK_H: f32 = 1080.0;
+const SIM_UNITS_PER_CAMERA_UNIT: f32 = 1000.0;
+const GAME_MARKER_COLOR: u32 = 0xffd040ff;
 
 static WAS_INGAME: AtomicBool = AtomicBool::new(false);
 
@@ -109,7 +111,7 @@ impl DirectControlExtension {
             "UI",
             text,
             "asset/base/font/set/regular",
-            (28.0, y, 1_260.0, 22.0),
+            (28.0, y, 1_500.0, 22.0),
             19_999,
             13.0,
             color,
@@ -118,13 +120,16 @@ impl DirectControlExtension {
         );
     }
 
-    fn draw_camera_probe(ctx: &mut StableClient<'_>) {
+    fn point_in_rect(px: f32, py: f32, rect: (f32, f32, f32, f32)) -> bool {
+        let (x, y, w, h) = rect;
+        px >= x && py >= y && px < x + w && py < y + h
+    }
+
+    fn draw_camera_probe(ctx: &mut StableClient<'_>, mouse: MouseSnapshot) {
         let install = camera_probe::ensure_installed();
         let snapshots = camera_probe::snapshots();
-        let rows = snapshots.len().max(1) as f32;
-        let height = 32.0 + rows * 22.0;
 
-        ctx.draw_rect("UI", 18.0, 58.0, 1_300.0, height, 19_998, 6.0, 0x101018dd);
+        ctx.draw_rect("UI", 18.0, 58.0, 1_560.0, 112.0, 19_998, 6.0, 0x101018dd);
 
         match install {
             Ok(()) => Self::draw_text_line(
@@ -139,7 +144,7 @@ impl DirectControlExtension {
             }
         }
 
-        if snapshots.is_empty() {
+        let Some(camera) = snapshots.iter().max_by_key(|candidate| candidate.calls) else {
             Self::draw_text_line(
                 ctx,
                 84.0,
@@ -147,35 +152,92 @@ impl DirectControlExtension {
                 0xffffffff,
             );
             return;
-        }
+        };
 
-        for (index, camera) in snapshots.iter().enumerate() {
-            let scaled_a = if camera.zoom != 0.0 {
-                camera.extent_a / camera.zoom
-            } else {
-                0.0
-            };
-            let scaled_b = if camera.zoom != 0.0 {
-                camera.extent_b / camera.zoom
-            } else {
-                0.0
-            };
-            let line = format!(
-                "Cam{} 0x{:016X} | zoom {:.2} | center ({:.2}, {:.2}) | raw ext ({:.2}, {:.2}) | ext/zoom ({:.2}, {:.2}) | mode {} | calls {}",
-                index + 1,
+        Self::draw_text_line(
+            ctx,
+            84.0,
+            &format!(
+                "Camera 0x{:016X} | candidates {} | zoom {:.2} | center ({:.2}, {:.2}) | extent ({:.2}, {:.2}) | mode {} | calls {}",
                 camera.address,
+                snapshots.len(),
                 camera.zoom,
                 camera.center_x,
                 camera.center_y,
                 camera.extent_a,
                 camera.extent_b,
-                scaled_a,
-                scaled_b,
                 camera.mode,
                 camera.calls,
+            ),
+            0xffffffff,
+        );
+
+        let Some(viewport) = ctx.ui_node_rect("ingame.center_log") else {
+            Self::draw_text_line(ctx, 106.0, "Viewport: ingame.center_log unavailable", 0xffd080ff);
+            return;
+        };
+        let Some((game_w, game_h)) = ctx.draw_map_size("Game") else {
+            Self::draw_text_line(ctx, 106.0, "Game render-map size unavailable", 0xffd080ff);
+            return;
+        };
+
+        let (vx, vy, vw, vh) = viewport;
+        let viewport_cx = vx + vw * 0.5;
+        let viewport_cy = vy + vh * 0.5;
+        let inside = mouse.valid && Self::point_in_rect(mouse.ui_x, mouse.ui_y, viewport);
+
+        Self::draw_text_line(
+            ctx,
+            106.0,
+            &format!(
+                "Viewport ({vx:.1},{vy:.1},{vw:.1},{vh:.1}) center ({viewport_cx:.1},{viewport_cy:.1}) | Game {game_w:.0}x{game_h:.0} | cursor inside {}",
+                if inside { "YES" } else { "no" }
+            ),
+            0xffffffff,
+        );
+
+        if !inside || game_w <= 0.0 || game_h <= 0.0 {
+            Self::draw_text_line(
+                ctx,
+                128.0,
+                "Move the cursor over the battlefield to test UI -> Game -> world projection.",
+                0xffd080ff,
             );
-            Self::draw_text_line(ctx, 84.0 + index as f32 * 22.0, &line, 0xffffffff);
+            return;
         }
+
+        // TFM2 renders the match into a square Game map, then composes the visible battlefield
+        // as a centered crop. This deliberately tests that last composition step directly:
+        // the yellow Game-space ring should stay centered on the white UI-space crosshair.
+        let dx = mouse.ui_x - viewport_cx;
+        let dy = mouse.ui_y - viewport_cy;
+        let game_x = game_w * 0.5 + dx;
+        let game_y = game_h * 0.5 + dy;
+
+        ctx.draw_circle("Game", game_x, game_y, 11.0, 100_000, GAME_MARKER_COLOR);
+        ctx.draw_circle("Game", game_x, game_y, 7.0, 100_001, GAME_MARKER_COLOR);
+
+        let units_per_px_x = camera.extent_a / game_w;
+        let units_per_px_y = camera.extent_b / game_h;
+        let world_x = camera.center_x + dx * units_per_px_x;
+        let world_y = camera.center_y + dy * units_per_px_y;
+        let sim_x = world_x * SIM_UNITS_PER_CAMERA_UNIT;
+        let sim_y = world_y * SIM_UNITS_PER_CAMERA_UNIT;
+
+        Self::draw_text_line(
+            ctx,
+            128.0,
+            &format!(
+                "Game point ({game_x:.1},{game_y:.1}) | units/px ({units_per_px_x:.5},{units_per_px_y:.5}) | world ({world_x:.2},{world_y:.2}) | sim ({sim_x:.0},{sim_y:.0})"
+            ),
+            0xffffffff,
+        );
+        Self::draw_text_line(
+            ctx,
+            150.0,
+            "TEST: yellow Game-space rings should remain centered on the white cursor crosshair while panning/zooming/toggling layout.",
+            GAME_MARKER_COLOR,
+        );
     }
 }
 
@@ -232,7 +294,7 @@ impl StableExtension for DirectControlExtension {
         }
 
         if ingame {
-            Self::draw_camera_probe(ctx);
+            Self::draw_camera_probe(ctx, mouse);
         }
     }
 }
@@ -240,7 +302,7 @@ impl StableExtension for DirectControlExtension {
 fn init(host: &StableHost) -> StableMod {
     host.log(
         LogLevel::Info,
-        "TFM2 Direct Control loaded (mouse + version-checked live camera probe)",
+        "TFM2 Direct Control loaded (camera composition/projection validation build)",
     );
 
     let mut module = StableMod::new(MOD_ID);
