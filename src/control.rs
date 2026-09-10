@@ -99,7 +99,10 @@ impl StablePlayerAi for DirectControlAi {
         ctx: &mut StableAiContext<'_>,
         base_input: Option<InputV1>,
     ) -> Option<InputV1> {
-        if selected_player() != Some(ctx.player_id()) {
+        // Capture immutable context values before borrowing ctx mutably through sim().
+        let player_id = ctx.player_id();
+
+        if selected_player() != Some(player_id) {
             return base_input;
         }
 
@@ -122,7 +125,7 @@ impl StablePlayerAi for DirectControlAi {
         // Selection itself should hand control to the user immediately, not let the selected
         // champion keep following vanilla AI until the first click. A move-to-self input is
         // the least invasive idle/stop command available through the stable API.
-        let Some(player) = sim.get_player(ctx.player_id()) else {
+        let Some(player) = sim.get_player(player_id) else {
             return base_input;
         };
         let Some(champion) = player.champion() else {
