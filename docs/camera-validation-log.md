@@ -34,7 +34,7 @@ At that zoom only, the incorrect raw-pixel assumption happens to match the live 
 
 This result does **not** invalidate the captured camera center, zoom, extent, or the UI-to-world formula. It invalidates only the way the diagnostic marker was rendered.
 
-## Projection validation v2
+## 2026-09-09 - Projection validation v2
 
 The corrected test explicitly matches the stable Game draw camera to the captured TFM2 camera:
 
@@ -55,6 +55,18 @@ sim_x = world_x * 1000
 sim_y = world_y * 1000
 ```
 
-After setting the Game drawing camera, the diagnostic draws the yellow rings directly at `(world_x, world_y)` in match-world space. The expected result is that the yellow rings stay centered on the white UI cursor crosshair at every zoom level and in both wide/fullscreen and Match Info layouts.
+After setting the Game drawing camera, the diagnostic draws the yellow rings directly at `(world_x, world_y)` in match-world space.
 
-No gameplay movement commands are enabled during this validation.
+Result: **PASS**.
+
+Physical testing confirmed that the yellow world-space marker stayed centered on the white UI cursor crosshair while:
+
+- panning freely across the map;
+- changing zoom, including `0.50x`, `1.00x`, `2.50x`, and `3.00x` captures;
+- using the wide/fullscreen battlefield layout;
+- displaying Match Info;
+- moving the cursor around the visible battlefield.
+
+The off-viewport behavior also passed. When the cursor moved outside `ingame.center_log`, the overlay reported `cursor inside no` and stopped producing/drawing a world target. This prevents clicks on scoreboard, side panels, and other UI from being converted into battlefield commands.
+
+Conclusion: the v0.5.8 physical mouse -> logical UI -> live battlefield viewport -> captured camera -> simulation-world projection is validated and is ready to feed the first real movement-control test.
