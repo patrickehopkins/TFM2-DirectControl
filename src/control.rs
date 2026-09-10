@@ -1,4 +1,7 @@
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{
+    atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering},
+    Mutex,
+};
 
 use mod_api_stable::{
     InputV1, SimOriginKindV1, StableAiContext, StableAiInit, StablePlayerAi,
@@ -12,12 +15,47 @@ static MOVE_X: AtomicU64 = AtomicU64::new(0);
 static MOVE_Y: AtomicU64 = AtomicU64::new(0);
 static MOVE_VERSION: AtomicU64 = AtomicU64::new(0);
 
+// Runtime diagnostics for the client -> StablePlayerAi boundary. These are intentionally
+// small atomics plus a short unique-ID list so the UI can tell us whether the AI callback is
+// running for the player IDs we expect and which live-client simulation origin it sees.
+static THINK_CALLS: AtomicU64 = AtomicU64::new(0);
+static SELECTED_THINK_CALLS: AtomicU64 = AtomicU64::new(0);
+static MANUAL_MOVE_RETURNS: AtomicU64 = AtomicU64::new(0);
+static MANUAL_IDLE_RETURNS: AtomicU64 = AtomicU64::new(0);
+static LAST_THINK_PLAYER: AtomicUsize = AtomicUsize::new(NO_PLAYER);
+static LAST_ORIGIN_CLASS: AtomicU8 = AtomicU8::new(0);
+static SEEN_PLAYER_IDS: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+
+#[derive(Debug, Clone)]
+pub struct ControlDiagnostics {
+    pub think_calls: u64,
+    pub selected_think_calls: u64,
+    pub manual_move_returns: u64,
+    pub manual_idle_returns: u64,
+    pub last_think_player: Option<usize>,
+    pub origin_label: &'static str,
+    pub seen_player_ids: Vec<usize>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct DirectControlAi;
+
+fn reset_diagnostics() {
+    THINK_CALLS.store(0, Ordering::Release);
+    SELECTED_THINK_CALLS.store(0, Ordering::Release);
+    MANUAL_MOVE_RETURNS.store(0, Ordering::Release);
+    MANUAL_IDLE_RETURNS.store(0, Ordering::Release);
+    LAST_THINK_PLAYER.store(NO_PLAYER, Ordering::Release);
+    LAST_ORIGIN_CLASS.store(0, Ordering::Release);
+    if let Ok(mut ids) = SEEN_PLAYER_IDS.lock() {
+        ids.clear();
+    }
+}
 
 pub fn reset() {
     SELECTED_PLAYER.store(NO_PLAYER, Ordering::Release);
     clear_move_target();
+    reset_diagnostics();
 }
 
 pub fn selected_player() -> Option<usize> {
@@ -75,6 +113,42 @@ pub fn move_target() -> Option<(u64, u64)> {
     None
 }
 
+pub fn diagnostics() -> ControlDiagnostics {
+    let last_think_player = match LAST_THINK_PLAYER.load(Ordering::Acquire) {
+        NO_PLAYER => None,
+        player_id => Some(player_id),
+    };
+    let origin_label = match LAST_ORIGIN_CLASS.load(Ordering::Acquire) {
+        1 => "ClientMatchView",
+        2 => "ClientSpectate",
+        3 => "other/rejected",
+        _ => "not observed",
+    };
+    let seen_player_ids = SEEN_PLAYER_IDS
+        .lock()
+        .map(|ids| ids.clone())
+        .unwrap_or_default();
+
+    ControlDiagnostics {
+        think_calls: THINK_CALLS.load(Ordering::Acquire),
+        selected_think_calls: SELECTED_THINK_CALLS.load(Ordering::Acquire),
+        manual_move_returns: MANUAL_MOVE_RETURNS.load(Ordering::Acquire),
+        manual_idle_returns: MANUAL_IDLE_RETURNS.load(Ordering::Acquire),
+        last_think_player,
+        origin_label,
+        seen_player_ids,
+    }
+}
+
+fn note_player_id(player_id: usize) {
+    if let Ok(mut ids) = SEEN_PLAYER_IDS.lock() {
+        if !ids.contains(&player_id) {
+            ids.push(player_id);
+            ids.sort_unstable();
+        }
+    }
+}
+
 impl StablePlayerAi for DirectControlAi {
     fn clone_box(&self) -> Box<dyn StablePlayerAi> {
         Box::new(self.clone())
@@ -101,24 +175,47 @@ impl StablePlayerAi for DirectControlAi {
     ) -> Option<InputV1> {
         // Capture immutable context values before borrowing ctx mutably through sim().
         let player_id = ctx.player_id();
+        THINK_CALLS.fetch_add(1, Ordering::Relaxed);
+        LAST_THINK_PLAYER.store(player_id, Ordering::Relaxed);
+        note_player_id(player_id);
 
         if selected_player() != Some(player_id) {
             return base_input;
         }
+        SELECTED_THINK_CALLS.fetch_add(1, Ordering::Relaxed);
 
-        // StablePlayerAi may also run in server pre-sims, replays, tools, or other invisible
-        // simulations. Never let client mouse state leak into those simulations.
+        // StablePlayerAi can run in several simulation origins. The live coach/spectator
+        // presentation is represented by either ClientMatchView or ClientSpectate depending
+        // on how the match was entered. Both are visible client simulations and are valid for
+        // direct control; server pre-sims, replays, tools, and unknown origins remain blocked.
         let Some(sim) = ctx.sim() else {
+            LAST_ORIGIN_CLASS.store(3, Ordering::Relaxed);
             return base_input;
         };
         let Some(origin) = sim.sim_origin() else {
+            LAST_ORIGIN_CLASS.store(3, Ordering::Relaxed);
             return base_input;
         };
-        if origin.kind != SimOriginKindV1::ClientMatchView.code() {
+
+        let is_match_view = origin.kind == SimOriginKindV1::ClientMatchView.code();
+        let is_spectate = origin.kind == SimOriginKindV1::ClientSpectate.code();
+        LAST_ORIGIN_CLASS.store(
+            if is_match_view {
+                1
+            } else if is_spectate {
+                2
+            } else {
+                3
+            },
+            Ordering::Relaxed,
+        );
+
+        if !is_match_view && !is_spectate {
             return base_input;
         }
 
         if let Some((x, y)) = move_target() {
+            MANUAL_MOVE_RETURNS.fetch_add(1, Ordering::Relaxed);
             return Some(InputV1::move_to(x, y));
         }
 
@@ -133,6 +230,7 @@ impl StablePlayerAi for DirectControlAi {
         };
         let (x, y) = champion.pos();
 
+        MANUAL_IDLE_RETURNS.fetch_add(1, Ordering::Relaxed);
         Some(InputV1::move_to(x, y))
     }
 }
