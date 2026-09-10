@@ -153,6 +153,25 @@ impl DirectControlExtension {
         px >= x && py >= y && px < x + w && py < y + h
     }
 
+    fn parse_match_clock_seconds(text: &str) -> Option<u64> {
+        let mut parts = text.trim().split(':');
+        let minutes = parts.next()?.parse::<u64>().ok()?;
+        let seconds = parts.next()?.parse::<u64>().ok()?;
+        if parts.next().is_some() || seconds >= 60 {
+            return None;
+        }
+        Some(minutes.saturating_mul(60).saturating_add(seconds))
+    }
+
+    fn publish_visible_match_clock(ctx: &StableClient<'_>) {
+        let Some(text) = ctx.ui_text("ingame.header.game_time.value") else {
+            return;
+        };
+        if let Some(seconds) = Self::parse_match_clock_seconds(&text) {
+            control::publish_live_clock_seconds(seconds);
+        }
+    }
+
     fn handle_player_selection(ctx: &StableClient<'_>) {
         for (player_id, key) in PLAYER_KEYS.iter().enumerate() {
             if ctx.key_pressed(key) {
@@ -206,20 +225,26 @@ impl DirectControlExtension {
                 .collect::<Vec<_>>()
                 .join(",")
         };
-        let last_player = ai_diag
-            .last_think_player
-            .map(|id| id.to_string())
+        let clock_text = ai_diag
+            .live_clock_seconds
+            .map(|seconds| format!("{:02}:{:02}", seconds / 60, seconds % 60))
+            .unwrap_or_else(|| "none".to_owned());
+        let clock_hit_tick = ai_diag
+            .last_clock_match_tick
+            .map(|tick| tick.to_string())
             .unwrap_or_else(|| "none".to_owned());
         Self::draw_text_line(
             ctx,
             106.0,
             &format!(
-                "AI diag: think {} | selected hits {} | move returns {} | idle returns {} | last player {} | origin {} | seen IDs [{}]",
+                "AI diag: think {} | selected {} | move {} | idle {} | unk@clock {} | clock {} | hit tick {} | origin {} | IDs [{}]",
                 ai_diag.think_calls,
                 ai_diag.selected_think_calls,
                 ai_diag.manual_move_returns,
                 ai_diag.manual_idle_returns,
-                last_player,
+                ai_diag.unknown_clock_matches,
+                clock_text,
+                clock_hit_tick,
                 ai_diag.origin_label,
                 seen_ids,
             ),
@@ -398,6 +423,7 @@ impl StableExtension for DirectControlExtension {
         }
 
         if ingame {
+            Self::publish_visible_match_clock(ctx);
             Self::handle_player_selection(ctx);
         }
 
@@ -453,7 +479,7 @@ impl StableExtension for DirectControlExtension {
 fn init(host: &StableHost) -> StableMod {
     host.log(
         LogLevel::Info,
-        "TFM2 Direct Control loaded (manual movement origin-gate diagnostic; single-player)",
+        "TFM2 Direct Control loaded (Unknown-origin live-clock gate diagnostic; single-player)",
     );
 
     let mut module = StableMod::new(MOD_ID);
