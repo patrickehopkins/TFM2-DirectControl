@@ -1,6 +1,8 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
-use mod_api_stable::{InputV1, StableAiContext, StableAiInit, StablePlayerAi};
+use mod_api_stable::{
+    InputV1, SimOriginKindV1, StableAiContext, StableAiInit, StablePlayerAi,
+};
 
 const NO_PLAYER: usize = usize::MAX;
 
@@ -101,6 +103,18 @@ impl StablePlayerAi for DirectControlAi {
             return base_input;
         }
 
+        // StablePlayerAi may also run in server pre-sims, replays, tools, or other invisible
+        // simulations. Never let client mouse state leak into those simulations.
+        let Some(sim) = ctx.sim() else {
+            return base_input;
+        };
+        let Some(origin) = sim.sim_origin() else {
+            return base_input;
+        };
+        if origin.kind != SimOriginKindV1::ClientMatchView.code() {
+            return base_input;
+        }
+
         if let Some((x, y)) = move_target() {
             return Some(InputV1::move_to(x, y));
         }
@@ -108,9 +122,6 @@ impl StablePlayerAi for DirectControlAi {
         // Selection itself should hand control to the user immediately, not let the selected
         // champion keep following vanilla AI until the first click. A move-to-self input is
         // the least invasive idle/stop command available through the stable API.
-        let Some(sim) = ctx.sim() else {
-            return base_input;
-        };
         let Some(player) = sim.get_player(ctx.player_id()) else {
             return base_input;
         };
