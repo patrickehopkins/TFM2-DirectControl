@@ -1,6 +1,5 @@
 mod camera_probe;
 mod pacing_probe;
-mod played_tick_probe;
 mod simulation_probe;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -140,13 +139,13 @@ impl DirectControlExtension {
     }
 
     fn draw_probe(&self, ctx: &mut StableClient<'_>, mouse: MouseSnapshot) {
-        ctx.draw_rect("UI", 18.0, 58.0, 1_800.0, 338.0, 19_998, 6.0, 0x101018dd);
+        ctx.draw_rect("UI", 18.0, 58.0, 1_800.0, 250.0, 19_998, 6.0, 0x101018dd);
 
         match simulation_probe::ensure_installed() {
             Ok(()) => Self::draw_text_line(
                 ctx,
                 62.0,
-                "SIM TASK PROBE: A confirmed watched-match job | Stage 2C match-view clock scan READ ONLY",
+                "SIM TASK PROBE: A confirmed watched-match job | Stage 3A bounded 60Hz pacer ACTIVE",
                 0x80ff9fff,
             ),
             Err(error) => {
@@ -209,51 +208,20 @@ impl DirectControlExtension {
             Ok(()) => {
                 let snapshots = camera_probe::snapshots();
                 if let Some(camera) = snapshots.iter().max_by_key(|candidate| candidate.calls) {
-                    let scan = played_tick_probe::scan_from_camera_address(camera.address, &clock);
-                    let match_view = scan
-                        .as_ref()
-                        .map(|snapshot| format!("0x{:X}", snapshot.match_view_address))
-                        .unwrap_or_else(|| "--".to_owned());
-                    let elapsed = scan
-                        .as_ref()
-                        .map(|snapshot| snapshot.elapsed_visible_seconds.to_string())
-                        .unwrap_or_else(|| "--".to_owned());
-
                     Self::draw_text_line(
                         ctx,
                         194.0,
                         &format!(
-                            "visible clock {} | match-view {} | scan elapsed {}s | camera calls {} mode {} zoom {:.2}",
-                            clock, match_view, elapsed, camera.calls, camera.mode, camera.zoom,
+                            "visible clock {} | camera calls {} mode {} zoom {:.2} center ({:.2},{:.2})",
+                            clock,
+                            camera.calls,
+                            camera.mode,
+                            camera.zoom,
+                            camera.center_x,
+                            camera.center_y,
                         ),
                         0xffffffff,
                     );
-
-                    if let Some(scan) = scan {
-                        for (index, candidate) in scan.candidates.iter().take(3).enumerate() {
-                            Self::draw_text_line(
-                                ctx,
-                                216.0 + index as f32 * 22.0,
-                                &format!(
-                                    "CLOCK #{}: +0x{:03X} {} | ticks {:.2} | delta {:.2} | error {:.2}",
-                                    index + 1,
-                                    candidate.offset,
-                                    candidate.kind,
-                                    candidate.ticks,
-                                    candidate.delta_ticks,
-                                    candidate.error_ticks,
-                                ),
-                                0x80ffbfff,
-                            );
-                        }
-                    } else {
-                        Self::draw_text_line(
-                            ctx,
-                            216.0,
-                            "CLOCK SCAN: waiting for a parseable visible MM:SS clock / live match-view",
-                            0xffd080ff,
-                        );
-                    }
 
                     if let (Some(viewport), Some((game_w, game_h))) =
                         (ctx.ui_node_rect("ingame.center_log"), ctx.draw_map_size("Game"))
@@ -318,32 +286,43 @@ impl DirectControlExtension {
             .last_candidate_a_player
             .map(|player| player.to_string())
             .unwrap_or_else(|| "--".to_owned());
+        let origin_tick = pacing
+            .pacer_origin_tick
+            .map(|tick| tick.to_string())
+            .unwrap_or_else(|| "--".to_owned());
 
         Self::draw_text_line(
             ctx,
-            282.0,
+            216.0,
             &format!(
-                "AI OBSERVER: total {} | Candidate A {} | thread {} | players mask 0x{:X}",
+                "AI OBSERVER: total {} | Candidate A {} | thread {} | players 0x{:X} | tick {} -> {} | player {}",
                 pacing.total_think_calls,
                 pacing.candidate_a_think_calls,
                 pacing.last_candidate_a_thread,
                 pacing.seen_player_mask,
+                first_tick,
+                last_tick,
+                last_player,
             ),
             0x80d8ffff,
         );
         Self::draw_text_line(
             ctx,
-            304.0,
+            238.0,
             &format!(
-                "Candidate A ctx.tick(): {} -> {} | last player {} | no sleep, no InputV1 mutation",
-                first_tick, last_tick, last_player,
+                "PACER: origin tick {} | elapsed {} ms | released {} | wait loops {} | slept ~{} ms",
+                origin_tick,
+                pacing.pacer_elapsed_ms,
+                if pacing.pacer_released { "YES" } else { "no" },
+                pacing.pacer_wait_count,
+                pacing.pacer_total_wait_ms,
             ),
-            0x80d8ffff,
+            0x80ffbfff,
         );
         Self::draw_text_line(
             ctx,
-            326.0,
-            "TEST TARGET: CLOCK candidates should converge toward delta ~= visible elapsed * 60 at 1x.",
+            260.0,
+            "TEST TARGET: A stays active ~30s and ctx.tick advances ~60/s; pacing then auto-releases. Input remains vanilla AI.",
             0x80d8ffff,
         );
     }
@@ -355,8 +334,8 @@ impl StableExtension for DirectControlExtension {
         let was_ingame = WAS_INGAME.swap(ingame, Ordering::AcqRel);
         if ingame && !was_ingame {
             camera_probe::clear_candidates();
+            // Re-anchor the bounded pacer when the visible match actually enters InGame.
             pacing_probe::reset();
-            played_tick_probe::reset();
         }
 
         if !Self::should_draw(ctx) {
@@ -428,7 +407,7 @@ fn init(host: &StableHost) -> StableMod {
     match simulation_probe::ensure_installed() {
         Ok(()) => host.log(
             LogLevel::Info,
-            "TFM2 Direct Control loaded (Candidate A probe + Stage 2C match-view clock scan)",
+            "TFM2 Direct Control loaded (Candidate A probe + bounded 60Hz pacing proof)",
         ),
         Err(error) => host.log(
             LogLevel::Error,
