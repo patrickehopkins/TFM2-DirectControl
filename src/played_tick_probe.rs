@@ -1,206 +1,254 @@
-//! Read-only presentation-clock probe for Teamfight Manager 2 v0.5.8.
+//! Read-only presentation-clock scanner for Teamfight Manager 2 v0.5.8.
 //!
-//! Runtime Stage-2 testing rejected the earlier interpretation of `match_view + 0x250`: that
-//! value remained `1` from visible 00:02 through 00:30. Static tracing had also identified the
-//! adjacent `match_view + 0x258` field as the playback elapsed-time accumulator, so this probe
-//! now targets that field instead of guessing another tick offset.
+//! Physical testing rejected the earlier `match_view + 0x250` played-tick hypothesis and the
+//! adjacent `+0x258/+0x260` decoder also failed closed. Rather than burn one test per guessed
+//! offset, this probe scans the entire known-live match-view prefix before the embedded camera
+//! object (`0x000..0x960`) and ranks scalar fields by how closely their change matches the game's
+//! visible MM:SS clock at 1x playback.
 //!
-//! The native type of the accumulator is not yet known. During the first ~1.5 seconds of a
-//! watched match we therefore evaluate a small, explicit set of plausible encodings (integer
-//! ticks/ms/us/ns, f32/f64 seconds or ticks, and Rust-style Duration). We score each encoding by
-//! how closely its *delta* follows 1x wall-clock playback, then lock the best decoder for the
-//! rest of that match. Once locked, no re-selection occurs; pause/speed tests can therefore
-//! distinguish a real presentation clock from an unrelated wall timer.
-//!
-//! This module performs no mutation and no sleeping.
+//! The scanner considers common integer/floating-point time representations and keeps only the
+//! best interpretation per offset. It performs reads only; no field is written and no thread is
+//! delayed. A strong candidate here is evidence for a presentation clock, not permission to use
+//! it for pacing until pause/speed behavior is physically verified.
 
-use std::sync::Mutex;
-
-#[link(name = "kernel32")]
-extern "system" {
-    fn GetTickCount64() -> u64;
-}
+use std::{cmp::Ordering, sync::Mutex};
 
 const CAMERA_EMBED_OFFSET: usize = 0x960;
-const ACCUMULATOR_OFFSET: usize = 0x258;
-const SECOND_WORD_OFFSET: usize = 0x260;
-const LOCK_AFTER_MS: u64 = 1_500;
-const MAX_ACCEPTABLE_SCORE: f64 = 240.0;
+const SCAN_END_OFFSET: usize = CAMERA_EMBED_OFFSET;
+const WORD_BYTES: usize = 4;
+const WORD_COUNT: usize = SCAN_END_OFFSET / WORD_BYTES;
+const TOP_COUNT: usize = 5;
 const MAX_REASONABLE_TICKS: f64 = 10_000_000.0;
-const DECODER_COUNT: usize = 19;
-const NO_DECODER: usize = usize::MAX;
 
-#[derive(Debug, Clone, Copy)]
-pub struct PlayedTickSnapshot {
+#[derive(Debug, Clone)]
+pub struct ClockScanSnapshot {
     pub match_view_address: usize,
-    pub played_tick: u64,
+    pub visible_seconds: u64,
+    pub elapsed_visible_seconds: u64,
+    pub candidates: Vec<ClockCandidate>,
 }
 
 #[derive(Debug, Clone, Copy)]
-struct DecoderState {
+pub struct ClockCandidate {
+    pub offset: usize,
+    pub kind: &'static str,
+    pub ticks: f64,
+    pub delta_ticks: f64,
+    pub error_ticks: f64,
+}
+
+#[derive(Debug)]
+struct ScanState {
     match_view_address: usize,
-    start_ms: u64,
-    baseline: [f64; DECODER_COUNT],
-    locked_decoder: usize,
+    start_visible_seconds: u64,
+    baseline_words: Vec<u32>,
 }
 
-impl DecoderState {
-    const fn empty() -> Self {
-        Self {
-            match_view_address: 0,
-            start_ms: 0,
-            baseline: [f64::NAN; DECODER_COUNT],
-            locked_decoder: NO_DECODER,
-        }
-    }
-}
-
-static STATE: Mutex<DecoderState> = Mutex::new(DecoderState::empty());
+static STATE: Mutex<Option<ScanState>> = Mutex::new(None);
 
 pub fn reset() {
     if let Ok(mut state) = STATE.lock() {
-        *state = DecoderState::empty();
+        *state = None;
     }
 }
 
-pub fn read_from_camera_address(camera_address: usize) -> Option<PlayedTickSnapshot> {
+pub fn scan_from_camera_address(
+    camera_address: usize,
+    visible_clock: &str,
+) -> Option<ClockScanSnapshot> {
+    let visible_seconds = parse_visible_seconds(visible_clock)?;
     let match_view_address = camera_address.checked_sub(CAMERA_EMBED_OFFSET)?;
     if match_view_address == 0 {
         return None;
     }
 
-    let candidates = unsafe { decode_candidates(match_view_address)? };
-    let now_ms = unsafe { GetTickCount64() };
+    let words = unsafe { read_words(match_view_address) };
+    let mut state_guard = STATE.lock().ok()?;
 
-    let mut state = STATE.lock().ok()?;
-    if state.match_view_address != match_view_address {
-        state.match_view_address = match_view_address;
-        state.start_ms = now_ms;
-        state.baseline = candidates;
-        state.locked_decoder = NO_DECODER;
+    let needs_reset = state_guard
+        .as_ref()
+        .map(|state| {
+            state.match_view_address != match_view_address
+                || visible_seconds < state.start_visible_seconds
+                || state.baseline_words.len() != WORD_COUNT
+        })
+        .unwrap_or(true);
+
+    if needs_reset {
+        *state_guard = Some(ScanState {
+            match_view_address,
+            start_visible_seconds: visible_seconds,
+            baseline_words: words.clone(),
+        });
     }
 
-    let elapsed_ms = now_ms.saturating_sub(state.start_ms);
-    let decoder = if state.locked_decoder != NO_DECODER {
-        state.locked_decoder
-    } else {
-        let (best, score) = choose_decoder(&state.baseline, &candidates, elapsed_ms)?;
-        if elapsed_ms >= LOCK_AFTER_MS {
-            // If no interpretation of +0x258/+0x260 follows early 1x presentation even loosely,
-            // fail closed rather than blessing the least-wrong static/garbage field.
-            if score > MAX_ACCEPTABLE_SCORE {
-                return None;
-            }
-            state.locked_decoder = best;
+    let state = state_guard.as_ref()?;
+    let elapsed_visible_seconds = visible_seconds.saturating_sub(state.start_visible_seconds);
+    let expected_delta = elapsed_visible_seconds as f64 * 60.0;
+    let mut candidates = Vec::new();
+
+    for index in 0..WORD_COUNT {
+        let offset = index * WORD_BYTES;
+        if let Some(candidate) = best_candidate_for_offset(
+            offset,
+            index,
+            &state.baseline_words,
+            &words,
+            expected_delta,
+        ) {
+            candidates.push(candidate);
         }
-        best
-    };
-
-    let tick = candidates[decoder];
-    if !tick.is_finite() || !(0.0..=MAX_REASONABLE_TICKS).contains(&tick) {
-        return None;
     }
 
-    Some(PlayedTickSnapshot {
+    candidates.sort_by(|a, b| {
+        a.error_ticks
+            .partial_cmp(&b.error_ticks)
+            .unwrap_or(Ordering::Equal)
+            .then_with(|| a.offset.cmp(&b.offset))
+    });
+    candidates.truncate(TOP_COUNT);
+
+    Some(ClockScanSnapshot {
         match_view_address,
-        played_tick: tick.round() as u64,
+        visible_seconds,
+        elapsed_visible_seconds,
+        candidates,
     })
 }
 
-fn choose_decoder(
-    baseline: &[f64; DECODER_COUNT],
-    current: &[f64; DECODER_COUNT],
-    elapsed_ms: u64,
-) -> Option<(usize, f64)> {
-    let expected_delta = elapsed_ms as f64 * 60.0 / 1_000.0;
-    let mut best_index = None;
-    let mut best_score = f64::INFINITY;
+fn parse_visible_seconds(clock: &str) -> Option<u64> {
+    let parts: Vec<&str> = clock.trim().split(':').collect();
+    match parts.as_slice() {
+        [minutes, seconds] => Some(minutes.parse::<u64>().ok()? * 60 + seconds.parse::<u64>().ok()?),
+        [hours, minutes, seconds] => Some(
+            hours.parse::<u64>().ok()? * 3600
+                + minutes.parse::<u64>().ok()? * 60
+                + seconds.parse::<u64>().ok()?,
+        ),
+        _ => None,
+    }
+}
 
-    for index in 0..DECODER_COUNT {
-        let first = baseline[index];
-        let now = current[index];
-        if !first.is_finite() || !now.is_finite() || now < 0.0 || now > MAX_REASONABLE_TICKS {
+unsafe fn read_words(match_view_address: usize) -> Vec<u32> {
+    let mut words = Vec::with_capacity(WORD_COUNT);
+    for index in 0..WORD_COUNT {
+        let address = (match_view_address + index * WORD_BYTES) as *const u32;
+        words.push(std::ptr::read_unaligned(address));
+    }
+    words
+}
+
+fn best_candidate_for_offset(
+    offset: usize,
+    index: usize,
+    baseline: &[u32],
+    current: &[u32],
+    expected_delta: f64,
+) -> Option<ClockCandidate> {
+    let first32 = baseline[index];
+    let now32 = current[index];
+    let first_f32 = f32::from_bits(first32) as f64;
+    let now_f32 = f32::from_bits(now32) as f64;
+
+    let mut interpretations: Vec<(&'static str, f64, f64)> = vec![
+        ("u32 ticks", first32 as f64, now32 as f64),
+        ("u32 ms", first32 as f64 * 0.060, now32 as f64 * 0.060),
+        (
+            "u32 us",
+            first32 as f64 * 0.000_060,
+            now32 as f64 * 0.000_060,
+        ),
+        ("f32 sec", first_f32 * 60.0, now_f32 * 60.0),
+        ("f32 ticks", first_f32, now_f32),
+    ];
+
+    if index + 1 < WORD_COUNT {
+        let first64 = baseline[index] as u64 | ((baseline[index + 1] as u64) << 32);
+        let now64 = current[index] as u64 | ((current[index + 1] as u64) << 32);
+        let first_f64 = f64::from_bits(first64);
+        let now_f64 = f64::from_bits(now64);
+
+        interpretations.extend_from_slice(&[
+            ("u64 ticks", first64 as f64, now64 as f64),
+            ("u64 ms", first64 as f64 * 0.060, now64 as f64 * 0.060),
+            (
+                "u64 us",
+                first64 as f64 * 0.000_060,
+                now64 as f64 * 0.000_060,
+            ),
+            (
+                "u64 ns",
+                first64 as f64 * 0.000_000_060,
+                now64 as f64 * 0.000_000_060,
+            ),
+            ("f64 sec", first_f64 * 60.0, now_f64 * 60.0),
+            ("f64 ticks", first_f64, now_f64),
+        ]);
+    }
+
+    if index + 2 < WORD_COUNT {
+        let secs = baseline[index] as u64 | ((baseline[index + 1] as u64) << 32);
+        let now_secs = current[index] as u64 | ((current[index + 1] as u64) << 32);
+        let nanos = baseline[index + 2] as u64;
+        let now_nanos = current[index + 2] as u64;
+        if nanos < 1_000_000_000 && now_nanos < 1_000_000_000 {
+            interpretations.push((
+                "Duration",
+                (secs as f64 + nanos as f64 / 1_000_000_000.0) * 60.0,
+                (now_secs as f64 + now_nanos as f64 / 1_000_000_000.0) * 60.0,
+            ));
+        }
+    }
+
+    let mut best: Option<ClockCandidate> = None;
+    for (kind, first_ticks, now_ticks) in interpretations {
+        if !first_ticks.is_finite()
+            || !now_ticks.is_finite()
+            || first_ticks < -1.0
+            || now_ticks < -1.0
+            || first_ticks > MAX_REASONABLE_TICKS
+            || now_ticks > MAX_REASONABLE_TICKS
+        {
             continue;
         }
 
-        let delta = now - first;
-        if delta < -1.0 {
+        let delta_ticks = now_ticks - first_ticks;
+        if delta_ticks < -1.0 {
             continue;
         }
 
-        // Before enough wall time has elapsed, prefer plausible low absolute clocks and avoid
-        // locking. Afterward, rate agreement dominates the score.
-        let rate_error = (delta - expected_delta).abs();
-        let absolute_penalty = if now > 100_000.0 { 1_000.0 } else { 0.0 };
-        let static_penalty = if elapsed_ms >= 500 && delta.abs() < 0.5 {
-            10_000.0
+        let mut error_ticks = (delta_ticks - expected_delta).abs();
+
+        // Once at least two visible seconds have elapsed, static/nearly-static fields should
+        // never outrank a genuine presentation clock simply because of a lucky representation.
+        if expected_delta >= 120.0 && delta_ticks < expected_delta * 0.10 {
+            error_ticks += 10_000.0;
+        }
+
+        // A presentation clock should begin near the visible match origin. Keep this penalty
+        // deliberately small so a modest initialization offset does not hide a correct field.
+        if first_ticks > 600.0 {
+            error_ticks += 100.0;
         } else {
-            0.0
+            error_ticks += first_ticks.abs() * 0.01;
+        }
+
+        let candidate = ClockCandidate {
+            offset,
+            kind,
+            ticks: now_ticks,
+            delta_ticks,
+            error_ticks,
         };
-        let score =
-            rate_error + absolute_penalty + static_penalty + decoder_priority_penalty(index);
 
-        if score < best_score {
-            best_score = score;
-            best_index = Some(index);
+        if best
+            .as_ref()
+            .map(|current_best| candidate.error_ticks < current_best.error_ticks)
+            .unwrap_or(true)
+        {
+            best = Some(candidate);
         }
     }
 
-    best_index.map(|index| (index, best_score))
-}
-
-fn decoder_priority_penalty(index: usize) -> f64 {
-    // Static evidence specifically points at +0x258. Prefer decoders starting there over the
-    // +0x260 fallback word when two interpretations fit equally well.
-    if index <= 11 {
-        0.0
-    } else {
-        5.0
-    }
-}
-
-unsafe fn decode_candidates(match_view_address: usize) -> Option<[f64; DECODER_COUNT]> {
-    let p0 = (match_view_address + ACCUMULATOR_OFFSET) as *const u8;
-    let p8 = (match_view_address + SECOND_WORD_OFFSET) as *const u8;
-
-    let u64_0 = std::ptr::read_unaligned(p0.cast::<u64>());
-    let u64_8 = std::ptr::read_unaligned(p8.cast::<u64>());
-    let u32_0 = std::ptr::read_unaligned(p0.cast::<u32>());
-    let u32_8 = std::ptr::read_unaligned(p8.cast::<u32>());
-    let f32_0 = f32::from_bits(u32_0) as f64;
-    let f32_8 = f32::from_bits(u32_8) as f64;
-    let f64_0 = f64::from_bits(u64_0);
-    let f64_8 = f64::from_bits(u64_8);
-
-    let duration_ticks = {
-        let seconds = u64_0 as f64;
-        let nanos = u32_8 as f64;
-        if nanos < 1_000_000_000.0 {
-            (seconds + nanos / 1_000_000_000.0) * 60.0
-        } else {
-            f64::NAN
-        }
-    };
-
-    Some([
-        duration_ticks,                   // 0: Duration { secs @ +258, nanos @ +260 }
-        u64_0 as f64,                     // 1: u64 ticks @ +258
-        u64_0 as f64 * 0.060,             // 2: u64 milliseconds @ +258
-        u64_0 as f64 * 0.000_060,         // 3: u64 microseconds @ +258
-        u64_0 as f64 * 0.000_000_060,     // 4: u64 nanoseconds @ +258
-        f64_0 * 60.0,                     // 5: f64 seconds @ +258
-        f64_0,                            // 6: f64 ticks @ +258
-        u32_0 as f64,                     // 7: u32 ticks @ +258
-        u32_0 as f64 * 0.060,             // 8: u32 milliseconds @ +258
-        u32_0 as f64 * 0.000_060,         // 9: u32 microseconds @ +258
-        f32_0 * 60.0,                     // 10: f32 seconds @ +258
-        f32_0,                            // 11: f32 ticks @ +258
-        u64_8 as f64,                     // 12: u64 ticks @ +260
-        u64_8 as f64 * 0.060,             // 13: u64 milliseconds @ +260
-        u64_8 as f64 * 0.000_060,         // 14: u64 microseconds @ +260
-        u64_8 as f64 * 0.000_000_060,     // 15: u64 nanoseconds @ +260
-        f64_8 * 60.0,                     // 16: f64 seconds @ +260
-        f32_8 * 60.0,                     // 17: f32 seconds @ +260
-        f32_8,                            // 18: f32 ticks @ +260
-    ])
+    best
 }
