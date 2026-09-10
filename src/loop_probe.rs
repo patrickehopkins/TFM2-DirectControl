@@ -180,10 +180,12 @@ unsafe fn install_inner() -> Result<(), String> {
         *target.add(offset) = 0x90;
     }
 
+    let process = GetCurrentProcess();
     let mut ignored = 0u32;
     let _ = VirtualProtect(target.cast::<c_void>(), PATCH_LEN, old_protect, &mut ignored);
-    let _ = FlushInstructionCache(GetCurrentProcess(), target.cast::<c_void>(), PATCH_LEN);
-    let _ = FlushInstructionCache(GetCurrentProcess(), stub.cast::<c_void>(), code.len());
+    let _ = FlushInstructionCache(process, trampoline.cast::<c_void>(), TRAMPOLINE_LEN);
+    let _ = FlushInstructionCache(process, stub.cast::<c_void>(), code.len());
+    let _ = FlushInstructionCache(process, target.cast::<c_void>(), PATCH_LEN);
 
     Ok(())
 }
