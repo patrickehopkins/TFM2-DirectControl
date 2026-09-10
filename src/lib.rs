@@ -3,7 +3,7 @@ mod control;
 mod pacing_probe;
 mod simulation_probe;
 
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 
 use mod_api_stable::{
     declare_stable_mod, ClientSceneKindV1, LogLevel, StableClient, StableExtension, StableHost,
@@ -27,13 +27,13 @@ const MOD_ID: &str = "tfm2_direct_control";
 const UI_FALLBACK_W: f32 = 1920.0;
 const UI_FALLBACK_H: f32 = 1080.0;
 const CURSOR_WORLD_COLOR: u32 = 0xffd040ff;
-const VK_F6_CODE: i32 = 0x75;
-const USER_PLAYER_FIRST: usize = 5;
-const USER_PLAYER_COUNT: usize = 5;
+const VK_F1_CODE: i32 = 0x70;
+const PLAYER_SLOT_COUNT: usize = 10;
+const SIM_UNITS_PER_WORLD_UNIT: f32 = 1000.0;
 
 static WAS_INGAME: AtomicBool = AtomicBool::new(false);
 static FINISH_CHORD_WAS_DOWN: AtomicBool = AtomicBool::new(false);
-static SELECT_KEYS_WERE_DOWN: AtomicU8 = AtomicU8::new(0);
+static SELECT_KEYS_WERE_DOWN: AtomicU16 = AtomicU16::new(0);
 static RMB_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -45,6 +45,15 @@ struct MouseSnapshot {
     right_down: bool,
     client_w: i32,
     client_h: i32,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CursorWorld {
+    world_x: f32,
+    world_y: f32,
+    sim_x: u64,
+    sim_y: u64,
+    marker_units_per_px: f32,
 }
 
 #[derive(Debug, Default)]
@@ -142,11 +151,6 @@ impl DirectControlExtension {
         );
     }
 
-    fn point_in_rect(px: f32, py: f32, rect: (f32, f32, f32, f32)) -> bool {
-        let (x, y, w, h) = rect;
-        px >= x && py >= y && px < x + w && py < y + h
-    }
-
     fn poll_finish_chord(ingame: bool) {
         if !ingame {
             FINISH_CHORD_WAS_DOWN.store(false, Ordering::Release);
@@ -168,11 +172,11 @@ impl DirectControlExtension {
             return;
         }
 
-        let mut down_mask = 0u8;
-        for index in 0..USER_PLAYER_COUNT {
-            let vk = VK_F6_CODE + index as i32;
+        let mut down_mask = 0u16;
+        for index in 0..PLAYER_SLOT_COUNT {
+            let vk = VK_F1_CODE + index as i32;
             if unsafe { GetAsyncKeyState(vk) } < 0 {
-                down_mask |= 1u8 << index;
+                down_mask |= 1u16 << index;
             }
         }
 
@@ -183,8 +187,10 @@ impl DirectControlExtension {
 
         let rising = down_mask & !previous;
         if rising != 0 {
-            let index = rising.trailing_zeros() as usize;
-            control::select_player(USER_PLAYER_FIRST + index);
+            let slot = rising.trailing_zeros() as usize;
+            // Deliberately team-agnostic: F1-F10 address raw player slots 0-9. Ownership/team
+            // policy belongs to higher-level mods, not the direct-control primitive.
+            control::select_player(slot);
         }
     }
 
@@ -192,24 +198,58 @@ impl DirectControlExtension {
         ctx: &StableClient<'_>,
         mouse: MouseSnapshot,
         camera: camera_probe::CameraSnapshot,
-    ) -> Option<(f32, f32, f32)> {
-        let viewport = ctx.ui_node_rect("ingame.center_log")?;
-        let (game_w, game_h) = ctx.draw_map_size("Game")?;
-        if !mouse.valid
-            || game_w <= 0.0
-            || game_h <= 0.0
-            || !Self::point_in_rect(mouse.ui_x, mouse.ui_y, viewport)
-        {
+    ) -> Option<CursorWorld> {
+        if !mouse.valid {
             return None;
         }
 
-        let (vx, vy, vw, vh) = viewport;
-        let dx = mouse.ui_x - (vx + vw * 0.5);
-        let dy = mouse.ui_y - (vy + vh * 0.5);
+        let (ui_w, ui_h) = ctx
+            .draw_map_size("UI")
+            .unwrap_or((UI_FALLBACK_W, UI_FALLBACK_H));
+        let (game_w, game_h) = ctx.draw_map_size("Game")?;
+        if ui_w <= 0.0 || ui_h <= 0.0 || game_w <= 0.0 || game_h <= 0.0 {
+            return None;
+        }
+
+        // The Game draw-map is the camera's render surface. Project the logical UI cursor onto
+        // that full surface instead of depending on a particular UI node such as center_log.
+        // Higher-level click/UI policy can later decide which screen regions are actionable.
+        let game_x = mouse.ui_x * game_w / ui_w;
+        let game_y = mouse.ui_y * game_h / ui_h;
+        let dx = game_x - game_w * 0.5;
+        let dy = game_y - game_h * 0.5;
+
         let world_x = camera.center_x + dx * (camera.extent_a / game_w);
         let world_y = camera.center_y + dy * (camera.extent_b / game_h);
-        let marker_units_per_px = ((camera.extent_a / game_w) + (camera.extent_b / game_h)) * 0.5;
-        Some((world_x, world_y, marker_units_per_px))
+        if !world_x.is_finite() || !world_y.is_finite() || world_x < 0.0 || world_y < 0.0 {
+            return None;
+        }
+
+        // StableSim/InputV1 positions are fixed-point simulation coordinates at 1000 units per
+        // camera/world unit. Stage 4A incorrectly omitted this conversion.
+        let sim_x_f = world_x * SIM_UNITS_PER_WORLD_UNIT;
+        let sim_y_f = world_y * SIM_UNITS_PER_WORLD_UNIT;
+        if !sim_x_f.is_finite() || !sim_y_f.is_finite() || sim_x_f < 0.0 || sim_y_f < 0.0 {
+            return None;
+        }
+
+        let marker_units_per_px =
+            ((camera.extent_a / game_w) + (camera.extent_b / game_h)) * 0.5;
+
+        Some(CursorWorld {
+            world_x,
+            world_y,
+            sim_x: sim_x_f.round() as u64,
+            sim_y: sim_y_f.round() as u64,
+            marker_units_per_px,
+        })
+    }
+
+    fn best_camera() -> Option<camera_probe::CameraSnapshot> {
+        camera_probe::snapshots()
+            .iter()
+            .max_by_key(|candidate| candidate.calls)
+            .copied()
     }
 
     fn poll_rmb_move(&self, ctx: &StableClient<'_>, mouse: MouseSnapshot, ingame: bool) {
@@ -227,28 +267,24 @@ impl DirectControlExtension {
             return;
         }
 
-        let snapshots = camera_probe::snapshots();
-        let Some(camera) = snapshots.iter().max_by_key(|candidate| candidate.calls).copied() else {
+        let Some(camera) = Self::best_camera() else {
             return;
         };
-        let Some((world_x, world_y, _)) = Self::cursor_world(ctx, mouse, camera) else {
+        let Some(cursor) = Self::cursor_world(ctx, mouse, camera) else {
             return;
         };
-        if !world_x.is_finite() || !world_y.is_finite() || world_x < 0.0 || world_y < 0.0 {
-            return;
-        }
 
-        control::publish_move_target(world_x.round() as u64, world_y.round() as u64);
+        control::publish_move_target(cursor.sim_x, cursor.sim_y);
     }
 
     fn draw_probe(&self, ctx: &mut StableClient<'_>, mouse: MouseSnapshot) {
-        ctx.draw_rect("UI", 18.0, 58.0, 1_800.0, 316.0, 19_998, 6.0, 0x101018dd);
+        ctx.draw_rect("UI", 18.0, 58.0, 1_800.0, 338.0, 19_998, 6.0, 0x101018dd);
 
         match simulation_probe::ensure_installed() {
             Ok(()) => Self::draw_text_line(
                 ctx,
                 62.0,
-                "SIM TASK PROBE: A confirmed watched-match job | Stage 4A paced manual RMB move",
+                "SIM TASK PROBE: A confirmed watched-match job | Stage 4B team-neutral RMB MoveTo",
                 0x80ff9fff,
             ),
             Err(error) => {
@@ -301,10 +337,10 @@ impl DirectControlExtension {
             .ui_text("ingame.header.game_time.value")
             .unwrap_or_else(|| "--:--".to_owned());
 
+        let mut cursor_projection = None;
         match camera_probe::ensure_installed() {
             Ok(()) => {
-                let snapshots = camera_probe::snapshots();
-                if let Some(camera) = snapshots.iter().max_by_key(|candidate| candidate.calls).copied() {
+                if let Some(camera) = Self::best_camera() {
                     Self::draw_text_line(
                         ctx,
                         194.0,
@@ -315,9 +351,8 @@ impl DirectControlExtension {
                         0xffffffff,
                     );
 
-                    if let Some((world_x, world_y, marker_units_per_px)) =
-                        Self::cursor_world(ctx, mouse, camera)
-                    {
+                    cursor_projection = Self::cursor_world(ctx, mouse, camera);
+                    if let Some(cursor) = cursor_projection {
                         ctx.draw_set_camera(
                             "Game",
                             camera.center_x,
@@ -327,17 +362,17 @@ impl DirectControlExtension {
                         );
                         ctx.draw_circle(
                             "Game",
-                            world_x,
-                            world_y,
-                            11.0 * marker_units_per_px,
+                            cursor.world_x,
+                            cursor.world_y,
+                            11.0 * cursor.marker_units_per_px,
                             100_000,
                             CURSOR_WORLD_COLOR,
                         );
                         ctx.draw_circle(
                             "Game",
-                            world_x,
-                            world_y,
-                            7.0 * marker_units_per_px,
+                            cursor.world_x,
+                            cursor.world_y,
+                            7.0 * cursor.marker_units_per_px,
                             100_001,
                             CURSOR_WORLD_COLOR,
                         );
@@ -404,7 +439,7 @@ impl DirectControlExtension {
         let selection = control_state
             .selected_player
             .map(|player| format!("F{} / player {}", player + 1, player))
-            .unwrap_or_else(|| "none (press F6-F10)".to_owned());
+            .unwrap_or_else(|| "none (press F1-F10)".to_owned());
         let target = control_state
             .move_target
             .map(|(x, y)| format!("({x},{y})"))
@@ -417,9 +452,10 @@ impl DirectControlExtension {
             ctx,
             260.0,
             &format!(
-                "CONTROL: selected {} | target {} | RMB cmds {} | manual returns {} | last tick {}",
+                "CONTROL: selected {} | target(sim) {} | selects {} | RMB cmds {} | manual returns {} | last tick {}",
                 selection,
                 target,
+                control_state.select_count,
                 control_state.move_command_count,
                 control_state.manual_input_returns,
                 manual_tick,
@@ -430,15 +466,25 @@ impl DirectControlExtension {
                 0x80ffffff
             },
         );
+
+        let projection_text = cursor_projection
+            .map(|cursor| {
+                format!(
+                    "CURSOR: world ({:.2},{:.2}) -> sim ({},{})",
+                    cursor.world_x, cursor.world_y, cursor.sim_x, cursor.sim_y
+                )
+            })
+            .unwrap_or_else(|| "CURSOR: projection unavailable".to_owned());
+        Self::draw_text_line(ctx, 282.0, &projection_text, 0x80d8ffff);
         Self::draw_text_line(
             ctx,
-            282.0,
-            "F6-F10: select one of your five players | RMB in viewport: force MoveTo cursor position",
+            304.0,
+            "F1-F10: select raw player slot 0-9 (NO team/ownership policy) | RMB: force MoveTo cursor",
             0x80d8ffff,
         );
         Self::draw_text_line(
             ctx,
-            304.0,
+            326.0,
             "CTRL+END: release direct control and let simulation finish now — CANNOT RESUME THIS MATCH",
             if pacing.manual_finish_requested {
                 0xff7070ff
@@ -448,8 +494,8 @@ impl DirectControlExtension {
         );
         Self::draw_text_line(
             ctx,
-            326.0,
-            "TEST TARGET: select F6-F10, RMB far away, verify selected champion visibly obeys while A stays paced.",
+            348.0,
+            "TEST TARGET: marker + CURSOR sim coords appear; select any F1-F10; RMB increments cmds/returns and moves that slot.",
             0x80d8ffff,
         );
     }
@@ -542,7 +588,7 @@ fn init(host: &StableHost) -> StableMod {
     match simulation_probe::ensure_installed() {
         Ok(()) => host.log(
             LogLevel::Info,
-            "TFM2 Direct Control loaded (Stage 4A: paced Candidate A + F6-F10 RMB MoveTo + Ctrl+End release)",
+            "TFM2 Direct Control loaded (Stage 4B: paced Candidate A + team-neutral F1-F10 RMB MoveTo + Ctrl+End release)",
         ),
         Err(error) => host.log(
             LogLevel::Error,
