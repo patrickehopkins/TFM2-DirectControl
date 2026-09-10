@@ -1,5 +1,6 @@
 mod camera_probe;
 mod pacing_probe;
+mod played_tick_probe;
 mod simulation_probe;
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -145,7 +146,7 @@ impl DirectControlExtension {
             Ok(()) => Self::draw_text_line(
                 ctx,
                 62.0,
-                "SIM TASK PROBE: A confirmed watched-match job | Candidate-A AI observer READ ONLY",
+                "SIM TASK PROBE: A confirmed watched-match job | Stage 2 played-tick observer READ ONLY",
                 0x80ff9fff,
             ),
             Err(error) => {
@@ -207,17 +208,25 @@ impl DirectControlExtension {
             Ok(()) => {
                 let snapshots = camera_probe::snapshots();
                 if let Some(camera) = snapshots.iter().max_by_key(|candidate| candidate.calls) {
+                    let played = played_tick_probe::read_from_camera_address(camera.address);
+                    let played_tick = played
+                        .map(|snapshot| snapshot.played_tick.to_string())
+                        .unwrap_or_else(|| "--".to_owned());
+                    let match_view = played
+                        .map(|snapshot| format!("0x{:X}", snapshot.match_view_address))
+                        .unwrap_or_else(|| "--".to_owned());
+
                     Self::draw_text_line(
                         ctx,
                         194.0,
                         &format!(
-                            "visible clock {} | camera calls {} mode {} zoom {:.2} center ({:.2},{:.2})",
+                            "visible clock {} | played tick {} | match-view {} | camera calls {} mode {} zoom {:.2}",
                             clock,
+                            played_tick,
+                            match_view,
                             camera.calls,
                             camera.mode,
                             camera.zoom,
-                            camera.center_x,
-                            camera.center_y,
                         ),
                         0xffffffff,
                     );
@@ -310,7 +319,7 @@ impl DirectControlExtension {
         Self::draw_text_line(
             ctx,
             260.0,
-            "TEST TARGET: Candidate-A callback count/tick should advance only while A is active; playback must remain unchanged.",
+            "TEST TARGET: played tick should track the visible clock at ~60 ticks/s while Candidate A races far ahead.",
             0x80d8ffff,
         );
     }
@@ -394,7 +403,7 @@ fn init(host: &StableHost) -> StableMod {
     match simulation_probe::ensure_installed() {
         Ok(()) => host.log(
             LogLevel::Info,
-            "TFM2 Direct Control loaded (Candidate A task probe + read-only AI observer)",
+            "TFM2 Direct Control loaded (Candidate A task probe + Stage 2 played-tick observer)",
         ),
         Err(error) => host.log(
             LogLevel::Error,
