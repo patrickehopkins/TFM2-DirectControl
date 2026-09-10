@@ -6,97 +6,101 @@ This file records physical validation of the staged pacing work for Teamfight Ma
 
 Status: **PASS — physically validated 2026-09-10**.
 
-Two screenshots from one normal watched match proved that StablePlayerAi callbacks on Candidate A's worker expose the watched simulation tick. Candidate A raced hundreds of simulated seconds ahead of presentation when left unpaced, all ten player ids were observed (`players mask 0x3FF`), and the observer thread id exactly matched Candidate A's worker thread id. Input remained vanilla AI.
+StablePlayerAi callbacks on Candidate A's worker were proven to expose the watched simulation tick. Candidate A raced hundreds of simulated seconds ahead of presentation when unpaced, all ten player ids appeared on the same worker, and callbacks stopped when Candidate A completed.
 
 ## Stage 2A — direct `match_view + 0x250` played-tick hypothesis
 
 Status: **FAIL — physically rejected 2026-09-10**.
 
-Four screenshots at visible `00:02`, `00:05`, `00:20`, and `00:30` showed the value at `match_view + 0x250` remained exactly `1`. Therefore it is not the advancing presentation tick for the live object and must not be used for pacing.
+The value remained exactly `1` at visible 00:02, 00:05, 00:20, and 00:30. It is not the advancing presentation tick.
 
 ## Stage 2B — adjacent playback accumulator decode
 
 Status: **FAIL — physically rejected 2026-09-10**.
 
-The bounded decoder for `match_view + 0x258/+0x260` tested integer ticks, ms/us/ns, `f32/f64` seconds or ticks, and Rust-style `Duration`. At visible `00:05` and `00:10` it failed closed with `played tick --`, so none of those interpretations tracked presentation closely enough.
+Common integer/floating-point/Duration interpretations of `match_view + 0x258/+0x260` failed closed rather than matching presentation.
 
 ## Stage 2C — ranked match-view clock scan
 
 Status: **FAIL — physically rejected 2026-09-10**.
 
-A read-only scan of `match_view + 0x000 .. +0x95C` ranked common scalar time interpretations against the visible clock. At visible `00:05`, `00:10`, and `00:15`, the highest-ranked fields were still static zero words with very large and increasing errors. No useful simple presentation clock was found in the direct match-view prefix.
-
-Further offset archaeology is deferred because Stage 3 proved it is not required for real-time simulation pacing.
+A read-only scan of `match_view + 0x000 .. +0x95C` found no scalar field whose change tracked the visible clock. Further playback-clock archaeology is deferred because it is not required for real-time pacing.
 
 ## Stage 3A — bounded 60 Hz Candidate-A pacing
 
 Status: **PASS — physically validated 2026-09-10**.
 
-This experiment paced only the confirmed Candidate-A worker from its StablePlayerAi callback while returning `base_input` unchanged. The pacer used the first post-InGame Candidate-A tick as its origin, held simulation to 60 ticks per monotonic wall-clock second with ~35 ms lead allowance, and intentionally auto-released after 30 seconds.
-
-Representative physical results:
+Candidate A was paced from its StablePlayerAi callback at 60 ticks per monotonic wall-clock second with ~35 ms allowed lead, while `base_input` remained vanilla AI. Representative results:
 
 ```text
-visible 00:15 | origin 481 | tick 1416 | elapsed 15547 ms | released no
-visible 00:20 | origin 481 | tick 1725 | elapsed 20687 ms | released no
-visible 00:25 | origin 481 | tick 2031 | elapsed 25797 ms | released no
-visible 00:30 | origin 481 | tick 6329 | elapsed 30547 ms | released YES
+visible 00:15 | origin 481 | tick 1416 | elapsed 15547 ms
+visible 00:20 | origin 481 | tick 1725 | elapsed 20687 ms
+visible 00:25 | origin 481 | tick 2031 | elapsed 25797 ms
 ```
 
-Before release, the observed simulation tick stayed within only a few ticks of ideal 60 Hz pacing. At the designed 30-second auto-release, the tick immediately began racing ahead again and eventually completed normally. Visible playback showed no strange behavior.
+The temporary 30-second release then let Candidate A race ahead and complete normally. This proved the core pacing technique.
 
 ## Stage 3B — continuous 60 Hz full-match pacing
 
 Status: **PASS — physically validated 2026-09-10**.
 
-Stage 3B removed the artificial 30-second release and kept Candidate A paced continuously at fixed 60 Hz. The user ran the watched match to at least visible `10:00`; Candidate A remained `active 1 / done 0` throughout and the safety fail-open remained `no`.
+The artificial 30-second release was removed. Candidate A remained `active 1 / done 0` throughout a ten-minute watched match with no abnormal behavior and `safety fail-open no` throughout.
 
-Representative physical results:
+Representative long-run result at visible 10:00:
 
 ```text
-visible 01:20 | origin 10 | tick 4848  | elapsed 80594 ms  | fail-open no
-visible 03:32 | origin 10 | tick 12772 | elapsed 212657 ms | fail-open no
-visible 06:05 | origin 10 | tick 21912 | elapsed 364985 ms | fail-open no
-visible 10:00 | origin 10 | tick 36039 | elapsed 600438 ms | fail-open no
+origin tick 10 | tick 36039 | elapsed 600438 ms | safety fail-open no
 ```
 
-Pacing accuracy remained extremely tight. At visible 10:00, Candidate A had advanced `36039 - 10 = 36029` ticks over 600.438 seconds; exact 60 Hz predicts ~36026 ticks, a lead of roughly three ticks (~50 ms). Earlier checkpoints show the same small bounded lead rather than accumulating drift.
+Observed simulation delta was `36029` ticks. Exact 60 Hz over 600.438 seconds predicts ~`36026` ticks, so the simulator was only about three ticks (~50 ms) ahead after ten minutes. The fixed worker thread id within the match is expected; different matches use different worker ids.
 
-The Candidate-A worker thread id remained `25328` for the whole observed match. This is expected: it is the Windows thread assigned to that one running simulation job. Previous matches used different worker ids, so a stable id within one match is evidence of continuity, not a stall.
+The user tested the game's normal playback-speed controls during paced simulation. The UI retained its chosen 3x/0.5x/etc. state, but actual presentation remained effectively at 1x while Candidate A was live. This is desirable for the first direct-control version. True variable-speed live control is explicitly deferred.
 
-### Playback-speed observation during continuous pacing
+## Stage 3C — Ctrl+End irreversible finish release
 
-The game remembered a prior 3x playback setting, but while Candidate A was live and producer-limited to ~60 Hz, visible playback behaved at roughly 1x regardless of selecting 0.5x, 1x, 1.5x, 2x, or 3x. No instability was observed.
+Status: **PASS — physically validated 2026-09-10**.
 
-The current interpretation is that an unfinished watched simulation keeps presentation near the producer/live edge, so replay-speed controls cannot outrun or substantially lag the live producer. This is desirable for the v1 direct-control path: fixed real-time simulation naturally yields real-time visible play. User-selectable live simulation rates are explicitly deferred and can later be implemented by changing the pacer rate rather than relying on replay-speed controls.
+Ctrl+End was added as a deliberate one-way release. It sets `manual finish YES`, permanently disables pacing/manual control for that match, and lets Candidate A finish at native full speed. Starting a new match resets the latch.
 
-## Stage 3C — irreversible manual release / finish simulation
+Physical test:
+
+- normal continuous pacing through roughly visible 00:40;
+- Ctrl+End pressed once;
+- overlay changed to `manual finish YES` while `safety fail-open no` remained unchanged;
+- Candidate A immediately raced from the low-thousands tick range toward the end of the simulation;
+- `active 0 / done 1` appeared around visible 00:47-00:48, roughly 6-7 seconds after release, consistent with normal unpaced simulation duration;
+- visible replay continued normally.
+
+This confirms the release flag is removing real simulation backpressure rather than merely changing UI state.
+
+## Stage 4A — first real manual MoveTo
 
 Status: **implemented; awaiting physical validation**.
 
-The user requested a way to stop direct control and let Teamfight Manager 2 finish computing the rest of the match immediately. This is intentionally one-way because once Candidate A is allowed to race ahead, returning to a meaningful live manual-control point is not supported.
+The first gameplay-mutation test deliberately stays narrower than the full control scheme:
 
-Control:
+- F6-F10 select one of the user's five visible player slots, mapped to simulation player ids 5-9;
+- RMB inside the verified match viewport publishes the existing camera-derived world coordinate;
+- only the selected player's callback on the confirmed Candidate-A worker returns `InputV1::move_to(x, y)`;
+- after the first RMB target, the same MoveTo is returned each tick until another target/player is selected;
+- selection alone does not suppress vanilla AI yet, so this stage tests command delivery rather than complete manual-idle behavior;
+- all other players and all non-Candidate-A simulations remain vanilla;
+- Ctrl+End and safety fail-open both permanently disable manual input for the remainder of the match.
 
-```text
-Ctrl+End -> permanently release direct control for this match and remove Candidate-A pacing
-```
+The overlay reports selected slot/player id, published target, RMB command count, manual-input return count, and last simulation tick that received the override.
 
-Design details:
+Pass criteria:
 
-- `Ctrl+End` was chosen as a deliberate, mnemonic chord and avoids the F1-F10 player-slot keys, F11 fullscreen, and F12/Steam screenshot conventions.
-- The release latch resets only when a new InGame match begins.
-- After release, Candidate A is allowed to race to natural completion.
-- Future manual `InputV1` code must consult the same release latch and return vanilla AI input for the remainder of the match.
-- The overlay explicitly says `CANNOT RESUME THIS MATCH`.
-- Manual release and safety fail-open are tracked separately so diagnostics always show why pacing stopped.
+1. F6-F10 selection appears correctly in the overlay.
+2. One RMB in the viewport increments `RMB cmds` and records a plausible target coordinate.
+3. `manual returns` begins increasing on Candidate A while pacing remains healthy.
+4. The selected champion visibly changes course toward the commanded position.
+5. Repeated RMB commands visibly retarget the same champion.
+6. Other champions continue vanilla behavior.
+7. Ctrl+End permanently stops further manual command application and lets Candidate A finish normally.
 
-Physical validation target: while Candidate A is still active, press Ctrl+End once. The overlay should change `manual finish no -> YES`, Candidate A's tick should immediately race ahead, and `active 1 / done 0` should shortly become `active 0 / done 1`. The visible replay should continue normally.
-
-## Next step after Stage 3C
-
-After the manual-release latch is validated, the next architectural test is to reconnect a minimal manual `InputV1` for one selected player and measure the delay between a visible user command and the resulting visible action. That will reveal the remaining producer/consumer lead and determine whether any small startup buffer needs to be reduced or compensated for direct control.
+Hostile-unit click interpretation is intentionally **not** part of Stage 4A. The parallel `feat/cursor-entity-picking` branch will later distinguish ground MoveTo from hostile Attack once this basic command path is proven.
 
 ## Parallel branch note
 
-`feat/cursor-entity-picking` was created from the Stage-1 pacing branch tip. Its substantive work remains isolated in `src/entity_picker.rs` and `docs/entity-picking.md`, with a small wiring change in `src/lib.rs`. The pacing branch has since diverged substantially, so `src/lib.rs` should be expected to require a small manual merge resolution later, but no architectural conflict is expected.
+`feat/cursor-entity-picking` was created from the Stage-1 pacing tip. Its substantive implementation remains isolated in `src/entity_picker.rs` and `docs/entity-picking.md`. It also touches `src/lib.rs`, which is now expected to require a manual merge because Stage 4A added selection/RMB wiring there. The concepts are complementary rather than conflicting: Stage 4A proves ground-command delivery; the entity-picking branch classifies what was clicked.
