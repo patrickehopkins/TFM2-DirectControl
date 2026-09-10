@@ -6,41 +6,7 @@ This file records physical validation of the staged pacing work for Teamfight Ma
 
 Status: **PASS — physically validated 2026-09-10**.
 
-Build intent:
-
-- keep the known-good Candidate A/B/C entry probes;
-- keep the known-good camera probe;
-- register a `StablePlayerAi` on all players;
-- identify callbacks that execute on Candidate A's active worker thread;
-- record `ctx.tick()`, player id, callback count, and worker thread id;
-- return `base_input` unchanged;
-- do **not** sleep, pace, select a player, or emit manual `InputV1`.
-
-### Physical result
-
-Two screenshots from one normal watched match confirmed the intended relationship.
-
-While Candidate A was active at visible `00:03`:
-
-```text
-A:data.rs:6143 ... active 1 done 0 | thread 20372
-AI OBSERVER: total 1796036 | Candidate A 207919 | thread 20372 | players mask 0x3FF
-Candidate A ctx.tick(): 516 -> 22869
-```
-
-After Candidate A completed at visible `00:07`:
-
-```text
-A:data.rs:6143 ... active 0 done 1 | thread 20372 | last 6890 ms
-AI OBSERVER: total 4618519 | Candidate A 431369 | thread 20372 | players mask 0x3FF
-Candidate A ctx.tick(): 516 -> 50711
-```
-
-The second screenshot was taken roughly half a second after the active-to-done transition; that timing does not affect the Stage-1 conclusion.
-
-At 60 ticks/s, tick `22869` is about 381.15 simulated seconds while only three visible seconds had elapsed. Tick `50711` is about 845.18 simulated seconds while only seven visible seconds had elapsed. This confirms Candidate A is the watched-match simulation and races hundreds of simulated seconds ahead of presentation.
-
-`players mask 0x3FF` confirms all ten player ids were observed on the Candidate-A worker. The observer's thread id exactly matched Candidate A's worker thread id. Candidate-A callback/tick advancement ceased after Candidate A completed while visible playback continued. No input mutation was enabled.
+Two screenshots from one normal watched match proved that StablePlayerAi callbacks on Candidate A's worker expose the watched simulation tick. Candidate A raced hundreds of simulated seconds ahead of presentation when left unpaced, all ten player ids were observed (`players mask 0x3FF`), and the observer thread id exactly matched Candidate A's worker thread id. Input remained vanilla AI.
 
 ## Stage 2A — direct `match_view + 0x250` played-tick hypothesis
 
@@ -60,7 +26,7 @@ Status: **FAIL — physically rejected 2026-09-10**.
 
 A read-only scan of `match_view + 0x000 .. +0x95C` ranked common scalar time interpretations against the visible clock. At visible `00:05`, `00:10`, and `00:15`, the highest-ranked fields were still static zero words with very large and increasing errors. No useful simple presentation clock was found in the direct match-view prefix.
 
-Further offset archaeology is deferred because Stage 3A proved it is not required to test real-time simulation pacing.
+Further offset archaeology is deferred because Stage 3 proved it is not required for real-time simulation pacing.
 
 ## Stage 3A — bounded 60 Hz Candidate-A pacing
 
@@ -77,37 +43,59 @@ visible 00:25 | origin 481 | tick 2031 | elapsed 25797 ms | released no
 visible 00:30 | origin 481 | tick 6329 | elapsed 30547 ms | released YES
 ```
 
-Before release:
-
-- at 15.547 s, expected paced delta is ~932.8 ticks; observed delta was `1416 - 481 = 935`;
-- at 20.687 s, expected paced delta is ~1241.2 ticks; observed delta was `1725 - 481 = 1244`;
-- at 25.797 s, expected paced delta is ~1547.8 ticks; observed delta was `2031 - 481 = 1550`.
-
-This is a very close match to 60 Hz. Candidate A remained `active 1` through the bounded pacing window. At the designed 30-second auto-release, the tick immediately began racing ahead again, eventually completing normally. Visible playback showed no strange behavior and vanilla AI input remained unchanged.
-
-The user also exercised playback-speed controls and observed no obvious instability. Those controls were not yet synchronized to the pacer; after the 30-second release they only affected replay/presentation as usual. Continuous direct-control mode should initially be validated at 1x before pause/speed integration is attempted.
+Before release, the observed simulation tick stayed within only a few ticks of ideal 60 Hz pacing. At the designed 30-second auto-release, the tick immediately began racing ahead again and eventually completed normally. Visible playback showed no strange behavior.
 
 ## Stage 3B — continuous 60 Hz full-match pacing
 
+Status: **PASS — physically validated 2026-09-10**.
+
+Stage 3B removed the artificial 30-second release and kept Candidate A paced continuously at fixed 60 Hz. The user ran the watched match to at least visible `10:00`; Candidate A remained `active 1 / done 0` throughout and the safety fail-open remained `no`.
+
+Representative physical results:
+
+```text
+visible 01:20 | origin 10 | tick 4848  | elapsed 80594 ms  | fail-open no
+visible 03:32 | origin 10 | tick 12772 | elapsed 212657 ms | fail-open no
+visible 06:05 | origin 10 | tick 21912 | elapsed 364985 ms | fail-open no
+visible 10:00 | origin 10 | tick 36039 | elapsed 600438 ms | fail-open no
+```
+
+Pacing accuracy remained extremely tight. At visible 10:00, Candidate A had advanced `36039 - 10 = 36029` ticks over 600.438 seconds; exact 60 Hz predicts ~36026 ticks, a lead of roughly three ticks (~50 ms). Earlier checkpoints show the same small bounded lead rather than accumulating drift.
+
+The Candidate-A worker thread id remained `25328` for the whole observed match. This is expected: it is the Windows thread assigned to that one running simulation job. Previous matches used different worker ids, so a stable id within one match is evidence of continuity, not a stall.
+
+### Playback-speed observation during continuous pacing
+
+The game remembered a prior 3x playback setting, but while Candidate A was live and producer-limited to ~60 Hz, visible playback behaved at roughly 1x regardless of selecting 0.5x, 1x, 1.5x, 2x, or 3x. No instability was observed.
+
+The current interpretation is that an unfinished watched simulation keeps presentation near the producer/live edge, so replay-speed controls cannot outrun or substantially lag the live producer. This is desirable for the v1 direct-control path: fixed real-time simulation naturally yields real-time visible play. User-selectable live simulation rates are explicitly deferred and can later be implemented by changing the pacer rate rather than relying on replay-speed controls.
+
+## Stage 3C — irreversible manual release / finish simulation
+
 Status: **implemented; awaiting physical validation**.
 
-Stage 3B removes only the artificial 30-second auto-release. Candidate A remains paced at fixed 60 Hz until the simulation naturally ends or a safety condition triggers.
+The user requested a way to stop direct control and let Teamfight Manager 2 finish computing the rest of the match immediately. This is intentionally one-way because once Candidate A is allowed to race ahead, returning to a meaningful live manual-control point is not supported.
 
-Remaining safety behavior:
+Control:
 
-- only the confirmed Candidate-A worker is delayed;
-- `base_input` remains untouched;
-- ~35 ms lead allowance remains;
-- waits occur in 1-2 ms slices;
-- if one callback ever requires 250 ms of waiting, the pacer permanently fails open rather than risk stranding the worker.
+```text
+Ctrl+End -> permanently release direct control for this match and remove Candidate-A pacing
+```
 
-The overlay now labels the release flag as `fail-open`. During a normal 1x full-match test it should remain `no`. Candidate A should remain `active 1` for the duration required to generate the match and become `active 0 / done 1` only when its simulation has naturally reached the end.
+Design details:
 
-This test is intentionally fixed at 1x wall-clock pacing. Pause and playback-speed synchronization are separate follow-up work.
+- `Ctrl+End` was chosen as a deliberate, mnemonic chord and avoids the F1-F10 player-slot keys, F11 fullscreen, and F12/Steam screenshot conventions.
+- The release latch resets only when a new InGame match begins.
+- After release, Candidate A is allowed to race to natural completion.
+- Future manual `InputV1` code must consult the same release latch and return vanilla AI input for the remainder of the match.
+- The overlay explicitly says `CANNOT RESUME THIS MATCH`.
+- Manual release and safety fail-open are tracked separately so diagnostics always show why pacing stopped.
 
-## Next step after Stage 3B
+Physical validation target: while Candidate A is still active, press Ctrl+End once. The overlay should change `manual finish no -> YES`, Candidate A's tick should immediately race ahead, and `active 1 / done 0` should shortly become `active 0 / done 1`. The visible replay should continue normally.
 
-If continuous pacing passes, the next architectural test is no longer another pacing experiment. It is to reconnect a minimal manual `InputV1` for one selected player and measure the delay between a visible user command and the resulting visible action. That will reveal the actual producer/consumer lead between the live Candidate-A simulation and playback and tell us how much buffering must be removed or compensated for direct control.
+## Next step after Stage 3C
+
+After the manual-release latch is validated, the next architectural test is to reconnect a minimal manual `InputV1` for one selected player and measure the delay between a visible user command and the resulting visible action. That will reveal the remaining producer/consumer lead and determine whether any small startup buffer needs to be reduced or compensated for direct control.
 
 ## Parallel branch note
 
