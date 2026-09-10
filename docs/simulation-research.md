@@ -124,17 +124,10 @@ Client data function:
 
 - RVA `0x00B1DB20`
 - VA `0x140B1DB20`
-- pdata extent approximately `0x140B1DB20` - `0x140B1E329`
 - source-location references around `game-view/src/logic/client/data.rs:6560-6567`
 - game-core wrapper call at `0x140B1DC62`
 
-Closure/task wrapper:
-
-- RVA `0x00B4B7B0`
-- calls Candidate B at `0x140B4B851`
-- captured context passed only in `RCX`
-
-Across the two normal watched-match tests, B had zero entries.
+Across two normal watched-match tests, B had zero entries.
 
 ### Candidate C — not observed in normal watched matches
 
@@ -142,19 +135,12 @@ Client data function:
 
 - RVA `0x00B1E730`
 - VA `0x140B1E730`
-- pdata extent approximately `0x140B1E730` - `0x140B1EDD7`
 - source-location references around `game-view/src/logic/client/data.rs:4053-4054`
 - game-core wrapper call at `0x140B1E843`
 
-Closure/task wrapper:
+Across two normal watched-match tests, C had zero entries.
 
-- RVA `0x00B4BA90`
-- calls Candidate C at `0x140B4BB68`
-- captured context passed only in `RCX`
-
-Across the two normal watched-match tests, C had zero entries.
-
-## Verified hook prologues
+## Verified Candidate A/B/C hook prologues
 
 All three client data candidates begin with the same 12 bytes:
 
@@ -162,82 +148,35 @@ All three client data candidates begin with the same 12 bytes:
 55 41 57 41 56 41 55 41 54 56 57 53
 ```
 
-These are eight complete push instructions:
+These are eight complete push instructions and contain no RIP-relative addressing. The Candidate A/B/C entry/exit probe has run successfully and is the current known-safe native simulation probe.
 
-```text
-push rbp
-push r15
-push r14
-push r13
-push r12
-push rsi
-push rdi
-push rbx
-```
+## Failed dominant-loop hook experiment — do not reuse
 
-There is no RIP-relative instruction in this 12-byte window, so it can be copied safely into the same style of trampoline already validated by the camera probe.
-
-The closure wrappers set `RCX` to one captured context pointer immediately before calling these functions and do not consume a return value. The diagnostic hooks therefore use a one-argument `extern "system" fn(*mut u8)` ABI and call the originals unchanged through trampolines.
-
-## Native simulation-task probe
-
-`src/simulation_probe.rs` instruments Candidate A/B/C at mod initialization, before a match can begin. It is read-only with respect to simulation/gameplay state. For each candidate it records:
-
-- entry count;
-- currently active call count;
-- completion count;
-- last Windows thread ID;
-- last captured context pointer;
-- last elapsed duration;
-- maximum observed duration.
-
-The StablePlayerAi direct-control override is intentionally disabled in this probe build so millions of AI diagnostic callbacks cannot perturb the timing being measured.
-
-## Dominant runner back-edge / loop-head probe
-
-Static disassembly of the confirmed large runner found one unusually large backward control-flow edge:
+Static disassembly found a large backward edge inside the common runner:
 
 - back-edge source: VA `0x1418175C8`
-- target / loop head: VA `0x1418147F4`
-- loop-head RVA: `0x018147F4`
-- backward span: approximately `0x2DD4` bytes
+- target: VA `0x1418147F4`
+- target RVA: `0x018147F4`
 
-The edge returns over most of the runner body, making this the strongest current candidate for the simulation's outer per-step/per-tick loop.
+A temporary build attempted to detour 16 bytes at that loop head with a generated counter stub. The target bytes matched the expected v0.5.8 signature, but physical testing produced **three repeatable crashes during game launch**, before the user could enter the game.
 
-The first two instructions at the loop head are exactly 16 bytes and contain no RIP-relative addressing or branches:
+Result: **this runtime patch strategy is rejected.** The temporary `src/loop_probe.rs` implementation was removed from the branch and the hook is no longer installed.
 
-```text
-41 C6 85 89 20 00 00 00    mov byte ptr [r13+0x2089], 0
-41 80 BD 88 20 00 00 00    cmp byte ptr [r13+0x2088], 0
-```
+The crash mechanism has not been proven. The leading concern is that this address is a shared, very hot game-core loop used by simulation work outside Candidate A as well. Installing a multi-byte detour at mod initialization can race with another worker already executing that shared code, or can expose the probe to startup simulation contexts we did not intend to instrument. Do not assume the static loop target itself is semantically wrong; the unsafe part may be the global runtime-patching strategy.
 
-`src/loop_probe.rs` detours only those 16 bytes. Its generated machine-code stub:
+## Revised next target
 
-- preserves RFLAGS and RAX;
-- atomically increments a loop-entry counter;
-- records the live `R13` runner-state pointer;
-- restores state;
-- executes the displaced two instructions in a trampoline;
-- jumps back to `0x141814804`.
+Do not patch the shared runner loop globally again.
 
-It calls no Rust code from the hot loop and modifies no simulation state.
+Candidate A is already isolated and has a known call site into the common wrapper at `0x140B1D052`. Future dynamic instrumentation should be scoped through Candidate A or its call path so unrelated startup simulations cannot hit it. Preferred approaches, in order:
 
-Sanity check for the physical test: a nominal four-minute match at 60 ticks/sec contains about `14,400` simulation ticks. If this loop counter stops in that neighborhood when Candidate A completes, that is strong evidence that `0x018147F4` is the pacing boundary we need. A materially different count would tell us this is a coarser or finer loop and we should continue inward.
+1. continue static disassembly inside Candidate A/common runner to identify a call-site or state field that exposes tick progress without patching the shared hot loop;
+2. instrument a Candidate-A-specific call site rather than the global runner body;
+3. if a shared inner function must eventually be observed, activate any instrumentation only for the confirmed Candidate A worker/context and use a patching mechanism that cannot race an executing instruction stream.
 
-## Next target: prove the loop granularity
+The long-term implementation directions remain:
 
-Candidate A itself is identified. Do not pace Candidate A merely at function entry: sleeping before its original body would only postpone the entire precompute job and would not make individual simulation ticks interactive.
+1. pace the client live simulation so it stays only a small number of ticks ahead of presentation, allowing current client input to affect near-future decisions;
+2. inject manual input directly at the native player-input decision point of Candidate A's simulation.
 
-The immediate next test is the transparent loop-head counter at RVA `0x018147F4`. Once its granularity is known:
-
-1. if it is approximately one entry per simulation tick, correlate the loop index/state with match-view played tick `+0x250` and test bounded lead pacing on Candidate A's worker thread;
-2. if it is not per-tick, trace one level further inside the loop to the actual step function;
-3. once pacing is proven, re-enable `StablePlayerAi` only for callbacks occurring on Candidate A's simulation worker, avoiding the millions of unrelated presimulation callbacks;
-4. finally reconnect the already-validated RMB world target to that authoritative, paced simulation.
-
-Two implementation directions remain plausible:
-
-1. Pace the client live simulation so it stays only a small number of ticks ahead of presentation, allowing current client input to affect near-future simulation decisions.
-2. Inject manual input directly at the native player-input decision point of the identified client live simulation.
-
-The first option remains preferable if the live simulation can be paced on its background worker without blocking render/UI or unrelated simulation jobs.
+The first option is preferable only if pacing can be isolated to Candidate A's background worker without blocking render/UI or unrelated simulation jobs.
