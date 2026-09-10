@@ -6,7 +6,7 @@ The goal is to turn one champion on the user's team into a manually controlled M
 
 ## Status
 
-Bootstrap loading is verified on Teamfight Manager 2 v0.5.8. The current functional milestone is live mouse diagnostics, followed by precise mouse-to-world tracking and right-click movement.
+Bootstrap loading is verified on Teamfight Manager 2 v0.5.8. The watched-match simulation has been identified and continuous ~60 Hz wall-clock pacing has been physically validated for at least ten visible minutes without a safety fail-open. Mouse-to-world diagnostics are also working; actor/entity clickability is being developed on the parallel `feat/cursor-entity-picking` branch. Manual `InputV1` control is the next major integration step.
 
 ## MVP control contract
 
@@ -20,6 +20,7 @@ Bootstrap loading is verified on Teamfight Manager 2 v0.5.8. The current functio
 | LMB while a skill is armed | Confirm target / position / direction at the mouse |
 | RMB or Esc while a skill is armed | Cancel the queued skill |
 | B | Return to base |
+| **Ctrl+End** | **Release manual control and let the simulation finish at full speed. This cannot be undone for the current match.** |
 
 Skill handling should follow each ability's native casting type:
 
@@ -28,21 +29,30 @@ Skill handling should follow each ability's native casting type:
 - `Direction` -> cast from the controlled champion toward the clicked mouse position.
 - `None` -> cast immediately when the key is pressed.
 
+### Releasing manual control
+
+`Ctrl+End` is intentionally a deliberate chord rather than a single easy-to-hit gameplay key. It permanently releases direct control for the current match and removes the real-time pacing limit, allowing Teamfight Manager 2's simulation to race to completion normally.
+
+Once released, **manual control cannot be resumed in that match**. The watched playback can continue, but the authoritative simulation may already be far ahead or finished. Starting a new match resets the release state and permits direct control again.
+
+The in-match diagnostic/control UI must keep this consequence visible wherever the release command is offered.
+
 ### Explicitly deferred
 
 - Manual shopping. Vanilla automatic item purchasing remains enabled.
 - Pings and sophisticated teammate orders.
 - Multiplayer and replay guarantees.
 - Polished targeting graphics or settings UI.
+- User-facing live simulation-speed selection. Direct-control mode currently targets 1x real-time pacing; optional 0.5x/1.5x/2x/etc. live rates can be added later.
 
 ## Technical direction
 
-Teamfight Manager 2's recommended stable native mod API already exposes per-tick player-input replacement and the game's native move, attack, skill, ultimate, and return-home input types. The remaining foundational problem is translating the Windows mouse cursor into the correct match-world position under the game's current camera.
+Teamfight Manager 2's recommended stable native mod API exposes per-tick player-input replacement and the game's native move, attack, skill, ultimate, and return-home input types. Runtime probing also confirmed that the watched-match simulation normally races far ahead of presentation, and that holding its confirmed worker near 60 ticks per wall-clock second keeps it live alongside the visible match.
 
 The planned input path is:
 
 ```text
-Windows mouse state
+Windows mouse / keyboard state
         |
         v
 window/client coordinates
@@ -57,9 +67,12 @@ manual command state
         |
         v
 TFM2 StablePlayerAi -> InputV1
+        |
+        v
+watched-match simulation paced near 60 Hz
 ```
 
-External live mouse input crosses Teamfight Manager 2's deterministic simulation boundary. Until that architecture is proven replay-safe, this project is intentionally **single-player first**.
+External live input crosses Teamfight Manager 2's deterministic simulation boundary. Until that architecture is proven replay-safe, this project is intentionally **single-player first**.
 
 ## Development setup
 
@@ -136,13 +149,14 @@ The GitHub repository/folder may remain named `TFM2-DirectControl`; the installe
 ## First milestones
 
 1. Build and load the bootstrap DLL with no diagnostics. **Verified on v0.5.8.**
-2. Read physical mouse position/buttons while a match is active.
-3. Prove a correct mouse-screen -> match-world coordinate transform with a debug marker.
-4. RMB ground -> native `Move` input for one predetermined player slot.
-5. RMB hostile -> native `Attack` input against the clicked entity.
-6. Q/W/R + LMB normal-cast targeting.
-7. B -> return to base.
-8. Functional range/direction/position targeting indicators.
+2. Read physical mouse position/buttons while a match is active. **Verified.**
+3. Prove a correct mouse-screen -> match-world coordinate transform with a debug marker. **Verified.**
+4. Identify and pace the watched-match simulation near real time. **Verified at continuous ~60 Hz for 10+ visible minutes.**
+5. RMB ground -> native `Move` input for one predetermined player slot.
+6. RMB hostile -> native `Attack` input against the clicked entity.
+7. Q/W/R + LMB normal-cast targeting.
+8. B -> return to base.
+9. Functional range/direction/position targeting indicators.
 
 ## Reference
 
