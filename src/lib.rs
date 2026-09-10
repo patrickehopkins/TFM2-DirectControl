@@ -268,7 +268,7 @@ impl DirectControlExtension {
             Err(error) => Self::draw_text_line(
                 ctx,
                 194.0,
-                &format!("visible clock {} | camera hook failed: {error}"),
+                &format!("visible clock {clock} | camera hook failed: {error}"),
                 0xff7070ff,
             ),
         }
