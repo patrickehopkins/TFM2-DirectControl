@@ -13,7 +13,9 @@ use windows_sys::Win32::{
     Graphics::Gdi::ScreenToClient,
     System::Threading::GetCurrentProcessId,
     UI::{
-        Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON, VK_RBUTTON},
+        Input::KeyboardAndMouse::{
+            GetAsyncKeyState, VK_CONTROL, VK_END, VK_LBUTTON, VK_RBUTTON,
+        },
         WindowsAndMessaging::{
             GetClientRect, GetCursorPos, GetForegroundWindow, GetWindowThreadProcessId,
         },
@@ -26,6 +28,7 @@ const UI_FALLBACK_H: f32 = 1080.0;
 const CURSOR_WORLD_COLOR: u32 = 0xffd040ff;
 
 static WAS_INGAME: AtomicBool = AtomicBool::new(false);
+static FINISH_CHORD_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Copy, Default)]
 struct MouseSnapshot {
@@ -138,14 +141,29 @@ impl DirectControlExtension {
         px >= x && py >= y && px < x + w && py < y + h
     }
 
+    fn poll_finish_chord(ingame: bool) {
+        if !ingame {
+            FINISH_CHORD_WAS_DOWN.store(false, Ordering::Release);
+            return;
+        }
+
+        let chord_down = unsafe {
+            GetAsyncKeyState(VK_CONTROL as i32) < 0 && GetAsyncKeyState(VK_END as i32) < 0
+        };
+        let was_down = FINISH_CHORD_WAS_DOWN.swap(chord_down, Ordering::AcqRel);
+        if chord_down && !was_down {
+            pacing_probe::request_finish_simulation();
+        }
+    }
+
     fn draw_probe(&self, ctx: &mut StableClient<'_>, mouse: MouseSnapshot) {
-        ctx.draw_rect("UI", 18.0, 58.0, 1_800.0, 250.0, 19_998, 6.0, 0x101018dd);
+        ctx.draw_rect("UI", 18.0, 58.0, 1_800.0, 272.0, 19_998, 6.0, 0x101018dd);
 
         match simulation_probe::ensure_installed() {
             Ok(()) => Self::draw_text_line(
                 ctx,
                 62.0,
-                "SIM TASK PROBE: A confirmed watched-match job | Stage 3B continuous 60Hz pacer ACTIVE",
+                "SIM TASK PROBE: A confirmed watched-match job | Stage 3C continuous 60Hz + manual finish",
                 0x80ff9fff,
             ),
             Err(error) => {
@@ -310,10 +328,11 @@ impl DirectControlExtension {
             ctx,
             238.0,
             &format!(
-                "PACER: origin tick {} | elapsed {} ms | fail-open {} | wait loops {} | slept ~{} ms",
+                "PACER: origin tick {} | elapsed {} ms | manual finish {} | safety fail-open {} | waits {} | slept ~{} ms",
                 origin_tick,
                 pacing.pacer_elapsed_ms,
-                if pacing.pacer_released { "YES" } else { "no" },
+                if pacing.manual_finish_requested { "YES" } else { "no" },
+                if pacing.safety_fail_open { "YES" } else { "no" },
                 pacing.pacer_wait_count,
                 pacing.pacer_total_wait_ms,
             ),
@@ -322,7 +341,17 @@ impl DirectControlExtension {
         Self::draw_text_line(
             ctx,
             260.0,
-            "TEST TARGET: A stays active for the full match and ctx.tick advances ~60/s at 1x. Input remains vanilla AI.",
+            "CTRL+END: release direct control and let simulation finish now — CANNOT RESUME THIS MATCH",
+            if pacing.manual_finish_requested {
+                0xff7070ff
+            } else {
+                0xffd080ff
+            },
+        );
+        Self::draw_text_line(
+            ctx,
+            282.0,
+            "TEST TARGET: pacing remains ~60Hz until Ctrl+End; then Candidate A races to completion. Input remains vanilla AI.",
             0x80d8ffff,
         );
     }
@@ -334,9 +363,11 @@ impl StableExtension for DirectControlExtension {
         let was_ingame = WAS_INGAME.swap(ingame, Ordering::AcqRel);
         if ingame && !was_ingame {
             camera_probe::clear_candidates();
-            // Re-anchor the pacer when the visible match actually enters InGame.
             pacing_probe::reset();
+            FINISH_CHORD_WAS_DOWN.store(false, Ordering::Release);
         }
+
+        Self::poll_finish_chord(ingame);
 
         if !Self::should_draw(ctx) {
             return;
@@ -407,7 +438,7 @@ fn init(host: &StableHost) -> StableMod {
     match simulation_probe::ensure_installed() {
         Ok(()) => host.log(
             LogLevel::Info,
-            "TFM2 Direct Control loaded (Candidate A probe + continuous 60Hz pacing test)",
+            "TFM2 Direct Control loaded (Candidate A + continuous 60Hz pacing + Ctrl+End finish release)",
         ),
         Err(error) => host.log(
             LogLevel::Error,
