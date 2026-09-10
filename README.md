@@ -2,17 +2,39 @@
 
 Experimental direct champion control for **Teamfight Manager 2**.
 
-The goal is to turn one champion on the user's team into a manually controlled MOBA-style character while leaving the rest of Teamfight Manager 2's simulation, teammates, and automatic item purchasing intact.
+The goal is to expose a small, reusable set of low-level direct-control primitives for the game's ten live player slots: real-time simulation pacing, raw slot selection, mouse/world targeting, and native player inputs. This core deliberately does **not** decide which team a human is allowed to control. Ownership, permissions, game-mode rules, and richer policy belong in higher-level mods that may build on top of this project.
 
 ## Status
 
-Bootstrap loading is verified on Teamfight Manager 2 v0.5.8. The watched-match simulation has been identified and continuous ~60 Hz wall-clock pacing has been physically validated for at least ten visible minutes without a safety fail-open. Mouse-to-world diagnostics are also working; actor/entity clickability is being developed on the parallel `feat/cursor-entity-picking` branch. Manual `InputV1` control is the next major integration step.
+Bootstrap loading is verified on Teamfight Manager 2 v0.5.8. The watched-match simulation has been identified and continuous ~60 Hz wall-clock pacing has been physically validated for at least ten visible minutes without a safety fail-open. Native `InputV1::move_to` injection into the paced watched simulation is also physically verified: selected actors respond in real time and other AI actors react to the changed behavior.
+
+Current cleanup work is presentation gating: pacing should be bypassed during the normal pre-match loading/prebuffer phase, freeze while the visible match is paused, and re-anchor cleanly on resume. Mouse/world scale is proven; a remaining constant screen-space cursor-origin offset is also being calibrated. Actor/entity clickability is being developed on the parallel `feat/cursor-entity-picking` branch.
+
+## Core selection contract
+
+For the low-level control layer, function keys address raw player slots directly:
+
+| Input | Raw slot |
+| --- | ---: |
+| F1 | 0 |
+| F2 | 1 |
+| F3 | 2 |
+| F4 | 3 |
+| F5 | 4 |
+| F6 | 5 |
+| F7 | 6 |
+| F8 | 7 |
+| F9 | 8 |
+| F10 | 9 |
+
+There is intentionally no blue-side/red-side or player-team restriction here. A future mod may impose one without changing the underlying control primitive.
 
 ## MVP control contract
 
 | Input | Behavior |
 | --- | --- |
-| RMB on ground | Move to the clicked world position |
+| F1-F10 | Select raw player slot 0-9 |
+| RMB on ground | Move the selected slot's champion to the clicked world position |
 | RMB on hostile unit | Attack that specific target; normal game movement/range behavior handles approach |
 | Q | Arm Skill 1 |
 | W | Arm Skill 2 |
@@ -43,13 +65,14 @@ The in-match diagnostic/control UI must keep this consequence visible wherever t
 - Pings and sophisticated teammate orders.
 - Multiplayer and replay guarantees.
 - Polished targeting graphics or settings UI.
+- Ownership/team permission policy in the core control primitive.
 - User-facing live simulation-speed selection. Direct-control mode currently targets 1x real-time pacing; optional 0.5x/1.5x/2x/etc. live rates can be added later.
 
 ## Technical direction
 
-Teamfight Manager 2's recommended stable native mod API exposes per-tick player-input replacement and the game's native move, attack, skill, ultimate, and return-home input types. Runtime probing also confirmed that the watched-match simulation normally races far ahead of presentation, and that holding its confirmed worker near 60 ticks per wall-clock second keeps it live alongside the visible match.
+Teamfight Manager 2's recommended stable native mod API exposes per-tick player-input replacement and the game's native move, attack, skill, ultimate, and return-home input types. Runtime probing confirmed that the watched-match simulation normally races far ahead of presentation, and that holding its confirmed worker near 60 ticks per wall-clock second keeps it live alongside the visible match.
 
-The planned input path is:
+The input path is:
 
 ```text
 Windows mouse / keyboard state
@@ -150,13 +173,14 @@ The GitHub repository/folder may remain named `TFM2-DirectControl`; the installe
 
 1. Build and load the bootstrap DLL with no diagnostics. **Verified on v0.5.8.**
 2. Read physical mouse position/buttons while a match is active. **Verified.**
-3. Prove a correct mouse-screen -> match-world coordinate transform with a debug marker. **Verified.**
+3. Prove a correct mouse-screen -> match-world scale with a debug marker. **Scale verified; constant screen-origin calibration under cleanup.**
 4. Identify and pace the watched-match simulation near real time. **Verified at continuous ~60 Hz for 10+ visible minutes.**
-5. RMB ground -> native `Move` input for one predetermined player slot.
-6. RMB hostile -> native `Attack` input against the clicked entity.
-7. Q/W/R + LMB normal-cast targeting.
-8. B -> return to base.
-9. Functional range/direction/position targeting indicators.
+5. RMB ground -> native `Move` input for an arbitrary raw player slot. **Verified in real time.**
+6. Freeze simulation while the visible match is paused and bypass pacing during loading/prebuffer. **Implemented; awaiting physical validation.**
+7. RMB hostile -> native `Attack` input against the clicked entity.
+8. Q/W/R + LMB normal-cast targeting.
+9. B -> return to base.
+10. Functional range/direction/position targeting indicators.
 
 ## Reference
 
