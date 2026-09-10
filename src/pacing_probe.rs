@@ -2,20 +2,20 @@
 //!
 //! Stage 1 proved that StablePlayerAi callbacks on Candidate A's worker expose the watched
 //! simulation tick. Stage 2A/2B/2C failed to identify a direct presentation clock in the live
-//! match-view object. Stage 3A proved that Candidate A can be held near 60 simulation ticks per
-//! wall-clock second without breaking playback. Stage 3B removed the temporary 30-second release.
+//! match-view object. Stage 3A/3B/3C proved that Candidate A can be held near 60 simulation ticks
+//! per wall-clock second and can be irreversibly released with Ctrl+End.
 //!
-//! This module now also owns the irreversible per-match manual-control release latch. Ctrl+End
-//! (detected by the client extension) requests release; once requested, Candidate A is no longer
-//! paced and is allowed to race to completion. Future manual InputV1 code should consult the same
-//! latch so direct control cannot be resumed for that match after release.
+//! Stage 4A keeps pacing and manual input on this same StablePlayerAi callback chain. After a
+//! player is selected and an RMB target is published by the client extension, only that player's
+//! Candidate-A callback returns a manual `InputV1::move_to`; all other callbacks keep vanilla AI.
 //!
 //! Safety boundaries:
-//! - only callbacks running on the confirmed Candidate A worker thread are delayed;
-//! - `base_input` is returned unchanged, so player behavior remains AI-controlled in this stage;
-//! - a ~35 ms lead is allowed to avoid excessive one-millisecond sleep jitter;
-//! - a pathological single-callback wait >=250 ms triggers a separate safety fail-open;
-//! - no replay/presentation object is read or written here.
+//! - only callbacks running on the confirmed Candidate A worker thread are delayed or overridden;
+//! - until a selected player has an RMB target, `base_input` remains untouched;
+//! - Ctrl+End permanently disables both pacing and manual input for the current match;
+//! - a pathological single-callback wait >=250 ms triggers a separate safety fail-open and also
+//!   disables manual input, because the simulation would no longer be safely near real time;
+//! - a ~35 ms lead is allowed to avoid excessive one-millisecond sleep jitter.
 
 use std::{
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -26,7 +26,7 @@ use std::{
 use mod_api_stable::{InputV1, StableAiContext, StableAiInit, StablePlayerAi};
 use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 
-use crate::simulation_probe;
+use crate::{control, simulation_probe};
 
 const NO_TICK: u64 = u64::MAX;
 const NO_PLAYER: usize = usize::MAX;
@@ -91,16 +91,14 @@ pub fn reset() {
     PACER_TOTAL_WAIT_MS.store(0, Ordering::Release);
 }
 
-/// Permanently releases direct-control pacing for the current match.
-///
-/// Future manual-input code should use `manual_control_released()` to honor the same irreversible
-/// transition and keep returning vanilla AI input after this is set.
+/// Permanently releases direct control and pacing for the current match.
 pub fn request_finish_simulation() {
     MANUAL_FINISH_REQUESTED.store(true, Ordering::Release);
 }
 
 pub fn manual_control_released() -> bool {
     MANUAL_FINISH_REQUESTED.load(Ordering::Acquire)
+        || SAFETY_FAIL_OPEN.load(Ordering::Acquire)
 }
 
 pub fn snapshot() -> PacingProbeSnapshot {
@@ -140,9 +138,7 @@ fn running_on_candidate_a_thread(thread_id: u32) -> bool {
 }
 
 fn pace_candidate_a(tick: u64) {
-    if MANUAL_FINISH_REQUESTED.load(Ordering::Acquire)
-        || SAFETY_FAIL_OPEN.load(Ordering::Acquire)
-    {
+    if manual_control_released() {
         return;
     }
 
@@ -171,9 +167,7 @@ fn pace_candidate_a(tick: u64) {
     let callback_wait_start_ms = now_ms;
 
     loop {
-        if MANUAL_FINISH_REQUESTED.load(Ordering::Acquire)
-            || SAFETY_FAIL_OPEN.load(Ordering::Acquire)
-        {
+        if manual_control_released() {
             return;
         }
 
@@ -185,8 +179,6 @@ fn pace_candidate_a(tick: u64) {
         }
 
         if wall_now_ms.saturating_sub(callback_wait_start_ms) >= MAX_SINGLE_CALLBACK_WAIT_MS {
-            // A normal 60 Hz tick should need only a few milliseconds of waiting. If one callback
-            // ever wants hundreds of milliseconds, fail open rather than risking a stuck worker.
             SAFETY_FAIL_OPEN.store(true, Ordering::Release);
             return;
         }
@@ -244,9 +236,14 @@ impl StablePlayerAi for CandidateAObserverAi {
             }
 
             pace_candidate_a(tick);
+
+            if !manual_control_released() {
+                if let Some(input) = control::manual_input_for(player_id, tick) {
+                    return Some(input);
+                }
+            }
         }
 
-        // Pacing stage only: preserve exactly the AI input passed to this hook.
         base_input
     }
 }
