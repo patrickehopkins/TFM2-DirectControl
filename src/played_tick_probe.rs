@@ -16,7 +16,10 @@
 
 use std::sync::Mutex;
 
-use windows_sys::Win32::System::Threading::GetTickCount64;
+#[link(name = "kernel32")]
+extern "system" {
+    fn GetTickCount64() -> u64;
+}
 
 const CAMERA_EMBED_OFFSET: usize = 0x960;
 const ACCUMULATOR_OFFSET: usize = 0x258;
@@ -180,24 +183,24 @@ unsafe fn decode_candidates(match_view_address: usize) -> Option<[f64; DECODER_C
     };
 
     Some([
-        duration_ticks,                 // 0: Duration { secs @ +258, nanos @ +260 }
-        u64_0 as f64,                   // 1: u64 ticks @ +258
-        u64_0 as f64 * 0.060,           // 2: u64 milliseconds @ +258
-        u64_0 as f64 * 0.000_060,       // 3: u64 microseconds @ +258
-        u64_0 as f64 * 0.000_000_060,   // 4: u64 nanoseconds @ +258
-        f64_0 * 60.0,                   // 5: f64 seconds @ +258
-        f64_0,                          // 6: f64 ticks @ +258
-        u32_0 as f64,                   // 7: u32 ticks @ +258
-        u32_0 as f64 * 0.060,           // 8: u32 milliseconds @ +258
-        u32_0 as f64 * 0.000_060,       // 9: u32 microseconds @ +258
-        f32_0 * 60.0,                   // 10: f32 seconds @ +258
-        f32_0,                          // 11: f32 ticks @ +258
-        u64_8 as f64,                   // 12: u64 ticks @ +260
-        u64_8 as f64 * 0.060,           // 13: u64 milliseconds @ +260
-        u64_8 as f64 * 0.000_060,       // 14: u64 microseconds @ +260
-        u64_8 as f64 * 0.000_000_060,   // 15: u64 nanoseconds @ +260
-        f64_8 * 60.0,                   // 16: f64 seconds @ +260
-        f32_8 * 60.0,                   // 17: f32 seconds @ +260
-        f32_8,                          // 18: f32 ticks @ +260
+        duration_ticks,                   // 0: Duration { secs @ +258, nanos @ +260 }
+        u64_0 as f64,                     // 1: u64 ticks @ +258
+        u64_0 as f64 * 0.060,             // 2: u64 milliseconds @ +258
+        u64_0 as f64 * 0.000_060,         // 3: u64 microseconds @ +258
+        u64_0 as f64 * 0.000_000_060,     // 4: u64 nanoseconds @ +258
+        f64_0 * 60.0,                     // 5: f64 seconds @ +258
+        f64_0,                            // 6: f64 ticks @ +258
+        u32_0 as f64,                     // 7: u32 ticks @ +258
+        u32_0 as f64 * 0.060,             // 8: u32 milliseconds @ +258
+        u32_0 as f64 * 0.000_060,         // 9: u32 microseconds @ +258
+        f32_0 * 60.0,                     // 10: f32 seconds @ +258
+        f32_0,                            // 11: f32 ticks @ +258
+        u64_8 as f64,                     // 12: u64 ticks @ +260
+        u64_8 as f64 * 0.060,             // 13: u64 milliseconds @ +260
+        u64_8 as f64 * 0.000_060,         // 14: u64 microseconds @ +260
+        u64_8 as f64 * 0.000_000_060,     // 15: u64 nanoseconds @ +260
+        f64_8 * 60.0,                     // 16: f64 seconds @ +260
+        f32_8 * 60.0,                     // 17: f32 seconds @ +260
+        f32_8,                            // 18: f32 ticks @ +260
     ])
 }
