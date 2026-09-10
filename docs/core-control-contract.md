@@ -24,11 +24,11 @@ This is deliberate. The project should remain useful as a dependency/foundation 
 The base layer should provide mechanisms such as:
 
 - keep the watched simulation live near wall-clock time;
+- pause/resume that simulation with presentation without hidden catch-up;
 - identify/address a live actor without assuming team ownership or UI-order == internal-id order;
 - publish movement/action/skill inputs for that actor;
 - expose cursor-to-simulation coordinates;
 - expose generic entity selection data;
-- explicitly start the live simulation when startup gating is enabled;
 - irreversibly release live control and let the simulation finish.
 
 It should avoid policy such as:
@@ -39,8 +39,16 @@ It should avoid policy such as:
 - choosing strategic behavior for uncontrolled actors;
 - adding feature-rich UX that constrains future consumers.
 
-## Start/release behavior
+## Startup behavior
 
-Stage 5A uses `Ctrl+Home` as an explicit start gate while testing whether the client can finish loading the battlefield with Candidate A held at its first simulation callback.
+A true zero-pre-simulation start gate is **not part of the current core contract**. Runtime testing proved that the Start Match transition synchronously depends on some Candidate-A simulation progress. Holding at the earliest callback freezes loading; allowing one complete tick is still insufficient.
+
+The current bounded fail-safe recovers into the proven 60 Hz pacer, so startup remains functional but imperfect. Further startup separation is shelved for later polish and should not block command expansion. See `docs/known-issues.md`.
+
+`Ctrl+Home` may remain as an experimental/diagnostic start-release hook while this work is revisited, but higher-level consumers should not depend on zero-pre-simulation startup semantics in the current version.
+
+## Release behavior
 
 `Ctrl+End` is the base one-way release primitive for the current match. Once invoked, pacing and manual control are released, the simulation may race ahead to completion, and live manual control cannot safely resume until the next match.
+
+The UI/documentation must keep this consequence explicit wherever the release command is exposed.
