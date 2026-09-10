@@ -2,18 +2,20 @@
 
 The direct-control layer is intentionally a low-policy primitive rather than a player-team feature.
 
-## Slot addressing
+## Actor addressing
 
-The base control surface exposes all ten match player slots symmetrically:
+Teamfight Manager 2 exposes ten visible match cards labeled F1-F10, but runtime testing proved that this visible order is **not** the same as Candidate A's internal `player_id` ordering. The core therefore must not define `F3 == player_id 2` or similar arithmetic mappings.
+
+For the current UI convenience layer:
 
 ```text
-F1  -> player slot 0
-F2  -> player slot 1
-...
-F10 -> player slot 9
+F1-F10 visible card
+        -> displayed athlete identity
+        -> stable athlete id
+        -> Candidate-A StableAiContext::athlete_id()
 ```
 
-The core does **not** decide which team belongs to the human manager and does not reject a slot because of team ownership. Team/ownership restrictions, if desired, belong to a higher-level mod or feature built on top of this control layer.
+The core does **not** decide which team belongs to the human manager and does not reject an athlete because of team ownership. Team/ownership restrictions, if desired, belong to a higher-level mod or feature built on top of this control layer.
 
 This is deliberate. The project should remain useful as a dependency/foundation for future mods that may want to control either side, spectate/control arbitrary actors, build debugging tools, implement alternate game modes, or impose their own permissions.
 
@@ -22,10 +24,11 @@ This is deliberate. The project should remain useful as a dependency/foundation 
 The base layer should provide mechanisms such as:
 
 - keep the watched simulation live near wall-clock time;
-- address a raw player slot;
-- publish movement/action/skill inputs for that slot;
+- identify/address a live actor without assuming team ownership or UI-order == internal-id order;
+- publish movement/action/skill inputs for that actor;
 - expose cursor-to-simulation coordinates;
 - expose generic entity selection data;
+- explicitly start the live simulation when startup gating is enabled;
 - irreversibly release live control and let the simulation finish.
 
 It should avoid policy such as:
@@ -36,6 +39,8 @@ It should avoid policy such as:
 - choosing strategic behavior for uncontrolled actors;
 - adding feature-rich UX that constrains future consumers.
 
-## Release behavior
+## Start/release behavior
+
+Stage 5A uses `Ctrl+Home` as an explicit start gate while testing whether the client can finish loading the battlefield with Candidate A held at its first simulation callback.
 
 `Ctrl+End` is the base one-way release primitive for the current match. Once invoked, pacing and manual control are released, the simulation may race ahead to completion, and live manual control cannot safely resume until the next match.
