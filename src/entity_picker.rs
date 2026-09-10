@@ -85,9 +85,6 @@ fn score_candidate(
 }
 
 fn score_is_better(candidate: CandidateScore, current: CandidateScore) -> bool {
-    // Nearest center wins. If centers are exactly equidistant, prefer the smaller hit region
-    // so a large tower/minion footprint cannot unnecessarily steal a precise unit click.
-    // Entity id is only a deterministic final tie-breaker.
     candidate.distance_sq < current.distance_sq
         || (candidate.distance_sq == current.distance_sq
             && (candidate.effective_radius < current.effective_radius
