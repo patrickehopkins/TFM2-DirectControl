@@ -1,6 +1,7 @@
 mod camera_probe;
 mod control;
 mod pacing_probe;
+mod pause_probe;
 mod simulation_probe;
 
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
@@ -54,6 +55,7 @@ struct CursorWorld {
     sim_x: u64,
     sim_y: u64,
     marker_units_per_px: f32,
+    used_center_log_origin: bool,
 }
 
 #[derive(Debug, Default)]
@@ -118,6 +120,7 @@ impl DirectControlExtension {
             let (ui_w, ui_h) = ctx
                 .draw_map_size("UI")
                 .unwrap_or((UI_FALLBACK_W, UI_FALLBACK_H));
+
             MouseSnapshot {
                 valid: true,
                 ui_x: cursor.x as f32 * ui_w / client_w as f32,
@@ -173,23 +176,22 @@ impl DirectControlExtension {
         }
 
         let mut down_mask = 0u16;
-        for index in 0..PLAYER_SLOT_COUNT {
-            let vk = VK_F1_CODE + index as i32;
+        for slot in 0..PLAYER_SLOT_COUNT {
+            let vk = VK_F1_CODE + slot as i32;
             if unsafe { GetAsyncKeyState(vk) } < 0 {
-                down_mask |= 1u16 << index;
+                down_mask |= 1u16 << slot;
             }
         }
 
         let previous = SELECT_KEYS_WERE_DOWN.swap(down_mask, Ordering::AcqRel);
-        if pacing_probe::manual_control_released() {
+        if !pacing_probe::manual_input_enabled() {
             return;
         }
 
         let rising = down_mask & !previous;
         if rising != 0 {
             let slot = rising.trailing_zeros() as usize;
-            // Deliberately team-agnostic: F1-F10 address raw player slots 0-9. Ownership/team
-            // policy belongs to higher-level mods, not the direct-control primitive.
+            // Primitive contract: raw slot selection only. No team ownership policy belongs here.
             control::select_player(slot);
         }
     }
@@ -211,22 +213,26 @@ impl DirectControlExtension {
             return None;
         }
 
-        // The Game draw-map is the camera's render surface. Project the logical UI cursor onto
-        // that full surface instead of depending on a particular UI node such as center_log.
-        // Higher-level click/UI policy can later decide which screen regions are actionable.
-        let game_x = mouse.ui_x * game_w / ui_w;
-        let game_y = mouse.ui_y * game_h / ui_h;
-        let dx = game_x - game_w * 0.5;
-        let dy = game_y - game_h * 0.5;
+        // Stage 4B proved the projection scale was correct but showed a nearly constant screen-space
+        // displacement. The old center_log work had already identified the battlefield's visual
+        // center correctly. Use that node only as an origin calibration when available; unlike
+        // Stage 4A, do NOT require the cursor to be inside its rectangle. If the node is absent,
+        // fall back to the logical UI center rather than suppressing input entirely.
+        let (origin_ui_x, origin_ui_y, used_center_log_origin) =
+            if let Some((x, y, w, h)) = ctx.ui_node_rect("ingame.center_log") {
+                (x + w * 0.5, y + h * 0.5, true)
+            } else {
+                (ui_w * 0.5, ui_h * 0.5, false)
+            };
 
-        let world_x = camera.center_x + dx * (camera.extent_a / game_w);
-        let world_y = camera.center_y + dy * (camera.extent_b / game_h);
+        let dx_game = (mouse.ui_x - origin_ui_x) * game_w / ui_w;
+        let dy_game = (mouse.ui_y - origin_ui_y) * game_h / ui_h;
+        let world_x = camera.center_x + dx_game * (camera.extent_a / game_w);
+        let world_y = camera.center_y + dy_game * (camera.extent_b / game_h);
         if !world_x.is_finite() || !world_y.is_finite() || world_x < 0.0 || world_y < 0.0 {
             return None;
         }
 
-        // StableSim/InputV1 positions are fixed-point simulation coordinates at 1000 units per
-        // camera/world unit. Stage 4A incorrectly omitted this conversion.
         let sim_x_f = world_x * SIM_UNITS_PER_WORLD_UNIT;
         let sim_y_f = world_y * SIM_UNITS_PER_WORLD_UNIT;
         if !sim_x_f.is_finite() || !sim_y_f.is_finite() || sim_x_f < 0.0 || sim_y_f < 0.0 {
@@ -242,6 +248,7 @@ impl DirectControlExtension {
             sim_x: sim_x_f.round() as u64,
             sim_y: sim_y_f.round() as u64,
             marker_units_per_px,
+            used_center_log_origin,
         })
     }
 
@@ -261,7 +268,7 @@ impl DirectControlExtension {
         let was_down = RMB_WAS_DOWN.swap(mouse.right_down, Ordering::AcqRel);
         if !mouse.right_down
             || was_down
-            || pacing_probe::manual_control_released()
+            || !pacing_probe::manual_input_enabled()
             || control::selected_player().is_none()
         {
             return;
@@ -277,14 +284,19 @@ impl DirectControlExtension {
         control::publish_move_target(cursor.sim_x, cursor.sim_y);
     }
 
-    fn draw_probe(&self, ctx: &mut StableClient<'_>, mouse: MouseSnapshot) {
-        ctx.draw_rect("UI", 18.0, 58.0, 1_800.0, 338.0, 19_998, 6.0, 0x101018dd);
+    fn draw_probe(
+        &self,
+        ctx: &mut StableClient<'_>,
+        mouse: MouseSnapshot,
+        pause_ui: &pause_probe::PauseUiSnapshot,
+    ) {
+        ctx.draw_rect("UI", 18.0, 58.0, 1_800.0, 382.0, 19_998, 6.0, 0x101018dd);
 
         match simulation_probe::ensure_installed() {
             Ok(()) => Self::draw_text_line(
                 ctx,
                 62.0,
-                "SIM TASK PROBE: A confirmed watched-match job | Stage 4B team-neutral RMB MoveTo",
+                "SIM TASK PROBE: A confirmed watched-match job | Stage 4C startup/pause gated live control",
                 0x80ff9fff,
             ),
             Err(error) => {
@@ -424,22 +436,39 @@ impl DirectControlExtension {
             ctx,
             238.0,
             &format!(
-                "PACER: origin tick {} | elapsed {} ms | manual finish {} | safety fail-open {} | waits {} | slept ~{} ms",
+                "PACER: phase {} | origin {} | elapsed {} ms | finish {} | fail-open {} | waits {} | pause waits {}",
+                pacing_probe::presentation_phase_label(),
                 origin_tick,
                 pacing.pacer_elapsed_ms,
                 if pacing.manual_finish_requested { "YES" } else { "no" },
                 if pacing.safety_fail_open { "YES" } else { "no" },
                 pacing.pacer_wait_count,
-                pacing.pacer_total_wait_ms,
+                pacing.pause_wait_count,
             ),
             0x80ffbfff,
+        );
+
+        let pause_marker = pause_ui
+            .marker
+            .as_deref()
+            .unwrap_or("no Pause/Resume label found");
+        Self::draw_text_line(
+            ctx,
+            260.0,
+            &format!(
+                "PAUSE UI: detected {} | scanned {} nodes | {}",
+                if pause_ui.paused { "YES" } else { "no" },
+                pause_ui.scanned_nodes,
+                pause_marker,
+            ),
+            if pause_ui.paused { 0xffd080ff } else { 0x80ffffff },
         );
 
         let control_state = control::diagnostics();
         let selection = control_state
             .selected_player
-            .map(|player| format!("F{} / player {}", player + 1, player))
-            .unwrap_or_else(|| "none (press F1-F10)".to_owned());
+            .map(|player| format!("F{} / slot {}", player + 1, player))
+            .unwrap_or_else(|| "none (F1-F10)".to_owned());
         let target = control_state
             .move_target
             .map(|(x, y)| format!("({x},{y})"))
@@ -450,9 +479,9 @@ impl DirectControlExtension {
             .unwrap_or_else(|| "--".to_owned());
         Self::draw_text_line(
             ctx,
-            260.0,
+            282.0,
             &format!(
-                "CONTROL: selected {} | target(sim) {} | selects {} | RMB cmds {} | manual returns {} | last tick {}",
+                "CONTROL: selected {} | target(sim) {} | selects {} | RMB cmds {} | returns {} | tick {}",
                 selection,
                 target,
                 control_state.select_count,
@@ -470,22 +499,26 @@ impl DirectControlExtension {
         let projection_text = cursor_projection
             .map(|cursor| {
                 format!(
-                    "CURSOR: world ({:.2},{:.2}) -> sim ({},{})",
-                    cursor.world_x, cursor.world_y, cursor.sim_x, cursor.sim_y
+                    "CURSOR: world ({:.2},{:.2}) -> sim ({},{}) | origin {}",
+                    cursor.world_x,
+                    cursor.world_y,
+                    cursor.sim_x,
+                    cursor.sim_y,
+                    if cursor.used_center_log_origin { "center_log" } else { "UI center fallback" },
                 )
             })
             .unwrap_or_else(|| "CURSOR: projection unavailable".to_owned());
-        Self::draw_text_line(ctx, 282.0, &projection_text, 0x80d8ffff);
+        Self::draw_text_line(ctx, 304.0, &projection_text, 0x80d8ffff);
         Self::draw_text_line(
             ctx,
-            304.0,
-            "F1-F10: select raw player slot 0-9 (NO team/ownership policy) | RMB: force MoveTo cursor",
+            326.0,
+            "F1-F10 = raw slots 0-9 | RMB = persistent MoveTo | no team/ownership policy",
             0x80d8ffff,
         );
         Self::draw_text_line(
             ctx,
-            326.0,
-            "CTRL+END: release direct control and let simulation finish now — CANNOT RESUME THIS MATCH",
+            348.0,
+            "CTRL+END: release control + pacing and finish simulation — CANNOT RESUME THIS MATCH",
             if pacing.manual_finish_requested {
                 0xff7070ff
             } else {
@@ -494,8 +527,8 @@ impl DirectControlExtension {
         );
         Self::draw_text_line(
             ctx,
-            348.0,
-            "TEST TARGET: marker + CURSOR sim coords appear; select any F1-F10; RMB increments cmds/returns and moves that slot.",
+            370.0,
+            "TEST: startup fast; Pause freezes Candidate A; Resume reanchors; cursor marker aligns; RMB still moves selected slot.",
             0x80d8ffff,
         );
     }
@@ -505,14 +538,19 @@ impl StableExtension for DirectControlExtension {
     fn post_render(&self, ctx: &mut StableClient<'_>) {
         let ingame = matches!(ctx.client_scene_kind(), Some(ClientSceneKindV1::InGame));
         let was_ingame = WAS_INGAME.swap(ingame, Ordering::AcqRel);
+
         if ingame && !was_ingame {
             camera_probe::clear_candidates();
             pacing_probe::reset();
+            pause_probe::reset();
             control::reset();
             FINISH_CHORD_WAS_DOWN.store(false, Ordering::Release);
             SELECT_KEYS_WERE_DOWN.store(0, Ordering::Release);
             RMB_WAS_DOWN.store(false, Ordering::Release);
         }
+
+        let pause_ui = pause_probe::update(ctx, ingame);
+        pacing_probe::set_presentation_state(ingame, pause_ui.paused);
 
         Self::poll_finish_chord(ingame);
         Self::poll_player_selection(ingame);
@@ -579,7 +617,7 @@ impl StableExtension for DirectControlExtension {
         }
 
         if ingame {
-            self.draw_probe(ctx, mouse);
+            self.draw_probe(ctx, mouse, &pause_ui);
         }
     }
 }
@@ -588,7 +626,7 @@ fn init(host: &StableHost) -> StableMod {
     match simulation_probe::ensure_installed() {
         Ok(()) => host.log(
             LogLevel::Info,
-            "TFM2 Direct Control loaded (Stage 4B: paced Candidate A + team-neutral F1-F10 RMB MoveTo + Ctrl+End release)",
+            "TFM2 Direct Control loaded (Stage 4C: presentation-gated pacing + raw-slot RMB MoveTo)",
         ),
         Err(error) => host.log(
             LogLevel::Error,
