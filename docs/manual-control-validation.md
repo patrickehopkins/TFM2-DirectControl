@@ -19,17 +19,42 @@ Stage 4A also encoded an unnecessary F6-F10/"player team" assumption. That polic
 
 ## Stage 4B — team-neutral projection + corrected simulation scale
 
-Status: **implemented; awaiting physical validation**.
+Status: **PASS — physically validated 2026-09-10**.
 
-Changes:
+Changes and physical results:
 
-- F1-F10 now map symmetrically to raw player slots 0-9;
-- no human-team/ownership inference is performed;
-- cursor projection no longer depends on `ingame.center_log`;
-- the logical UI cursor is mapped to the full `Game` draw surface and then through the confirmed live camera;
-- projected camera/world coordinates are multiplied by 1000 before becoming `InputV1` simulation coordinates;
-- the overlay prints both representations as `CURSOR: world (...) -> sim (...)`;
-- RMB publication and manual-return counters remain visible;
-- Ctrl+End continues to irreversibly release pacing and manual control for the current match.
+- F1-F10 were generalized to all ten visible match cards with no team/ownership restriction;
+- cursor projection no longer depended on `ingame.center_log` as a hard viewport gate;
+- camera/world coordinates were multiplied by 1000 before becoming simulation coordinates;
+- RMB publication and manual `InputV1::move_to` returns were observed on Candidate A;
+- commanded champions visibly changed course and repeatedly retargeted in real time;
+- other AI actors reacted naturally to the changed champion behavior;
+- a persistent MoveTo could survive death/respawn and cause the champion to return to the stored destination.
 
-The Stage-4B physical test should first verify that the world marker follows the mouse and that `CURSOR` reports plausible simulation coordinates. After selecting any slot with F1-F10, RMB should increment the command counter; the selected player's Candidate-A callback should then increment the manual-return counter and visibly obey the MoveTo destination.
+This physically proved the live command bridge.
+
+## Stage 5 — stable actor identity
+
+Status: **PASS — physically validated 2026-09-10**.
+
+Further testing found that visible F-key card order is **not** Candidate A's raw `player_id` order. A direct arithmetic mapping could select the wrong champion; for example, an F3 UI selection initially caused a different actor to receive commands.
+
+The selector was changed to resolve the displayed card to stable athlete identity, then match `StableAiContext::athlete_id()` on Candidate A. Physical retesting selected `misutaaa` with F3, resolved the intended athlete, and moved the correct champion before and after pause/resume.
+
+The control primitive remains intentionally team-neutral. F1-F10 mean "the athlete shown on this visible card," not "my team" and not a raw internal player id.
+
+## Pause/resume command behavior
+
+Status: **PASS — physically validated 2026-09-10**.
+
+The direct `pause_ui` gate freezes Candidate A while paused. Closing the pause menu re-anchors the 60 Hz pacer and resumes Candidate A without hidden catch-up simulation. Persistent movement state survives the pause, so the selected champion continues the existing MoveTo after resume and accepts new RMB commands normally.
+
+## Known cursor calibration issue
+
+The yellow projected world marker remains consistently displaced from the physical mouse reticle. The offset is approximately stable across zoom levels, indicating that world scale is correct but the screen/viewport origin is not yet calibrated correctly.
+
+This does **not** invalidate coarse ground MoveTo, which is physically proven, but precision actor/entity selection should not rely on the current transform until the origin is corrected. See `docs/known-issues.md`.
+
+## Command-expansion readiness
+
+The movement/control foundation is ready for additional commands. No further generic MoveTo/pacing test is required before implementing attack, cast, return-to-base, or related command primitives. Each new command should receive its own narrow physical validation rather than reopening the already-proven simulation/pacing architecture.
