@@ -85,6 +85,8 @@ Only one direct caller was found for that large body:
 
 The wrapper at `0x14180EAA0` is called from many systems, including several client-side functions in `game-view/src/logic/client/data.rs`.
 
+The first 32 bytes of both wrapper and runner were verified at runtime. Both start with the same eight-register push sequence, followed by their respective stack allocations. This independently matches the static disassembly used below.
+
 ## Client-side simulation candidates
 
 Three client data functions were identified because they call the common game-core wrapper and are themselves invoked through closure/task-like wrappers.
@@ -191,16 +193,47 @@ The closure wrappers set `RCX` to one captured context pointer immediately befor
 
 The StablePlayerAi direct-control override is intentionally disabled in this probe build so millions of AI diagnostic callbacks cannot perturb the timing being measured.
 
-## Next target: inside Candidate A
+## Dominant runner back-edge / loop-head probe
 
-Candidate A itself is now identified. Do not pace Candidate A merely at function entry: sleeping before its original body would only postpone the entire precompute job and would not make individual simulation ticks interactive.
+Static disassembly of the confirmed large runner found one unusually large backward control-flow edge:
 
-The next reverse-engineering target is the simulation advance path inside A:
+- back-edge source: VA `0x1418175C8`
+- target / loop head: VA `0x1418147F4`
+- loop-head RVA: `0x018147F4`
+- backward span: approximately `0x2DD4` bytes
 
-1. verify the exact prologue/call structure of the common wrapper at RVA `0x0180EAA0` and the large runner at RVA `0x01813FB0`;
-2. count those calls only while Candidate A is active to determine whether they represent per-match, per-set, or finer-grained work;
-3. trace from the confirmed runner into the narrow per-step/per-tick function;
-4. only then experiment with pacing that inner step relative to match-view played tick `+0x250`.
+The edge returns over most of the runner body, making this the strongest current candidate for the simulation's outer per-step/per-tick loop.
+
+The first two instructions at the loop head are exactly 16 bytes and contain no RIP-relative addressing or branches:
+
+```text
+41 C6 85 89 20 00 00 00    mov byte ptr [r13+0x2089], 0
+41 80 BD 88 20 00 00 00    cmp byte ptr [r13+0x2088], 0
+```
+
+`src/loop_probe.rs` detours only those 16 bytes. Its generated machine-code stub:
+
+- preserves RFLAGS and RAX;
+- atomically increments a loop-entry counter;
+- records the live `R13` runner-state pointer;
+- restores state;
+- executes the displaced two instructions in a trampoline;
+- jumps back to `0x141814804`.
+
+It calls no Rust code from the hot loop and modifies no simulation state.
+
+Sanity check for the physical test: a nominal four-minute match at 60 ticks/sec contains about `14,400` simulation ticks. If this loop counter stops in that neighborhood when Candidate A completes, that is strong evidence that `0x018147F4` is the pacing boundary we need. A materially different count would tell us this is a coarser or finer loop and we should continue inward.
+
+## Next target: prove the loop granularity
+
+Candidate A itself is identified. Do not pace Candidate A merely at function entry: sleeping before its original body would only postpone the entire precompute job and would not make individual simulation ticks interactive.
+
+The immediate next test is the transparent loop-head counter at RVA `0x018147F4`. Once its granularity is known:
+
+1. if it is approximately one entry per simulation tick, correlate the loop index/state with match-view played tick `+0x250` and test bounded lead pacing on Candidate A's worker thread;
+2. if it is not per-tick, trace one level further inside the loop to the actual step function;
+3. once pacing is proven, re-enable `StablePlayerAi` only for callbacks occurring on Candidate A's simulation worker, avoiding the millions of unrelated presimulation callbacks;
+4. finally reconnect the already-validated RMB world target to that authoritative, paced simulation.
 
 Two implementation directions remain plausible:
 
