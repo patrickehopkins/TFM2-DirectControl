@@ -75,32 +75,61 @@ This confirms the release flag is removing real simulation backpressure rather t
 
 ## Stage 4A — first real manual MoveTo
 
-Status: **implemented; awaiting physical validation**.
+Status: **PASS — physically validated 2026-09-10**.
 
-The first gameplay-mutation test deliberately stays narrower than the full control scheme:
+The first gameplay-mutation test proved that manual `InputV1::move_to` commands can be injected into the paced watched simulation in real time. Selected champions visibly changed course toward RMB targets, repeatedly retargeted, retained persistent destinations through death/respawn, and other AI actors responded normally to the commanded champion's changed behavior.
 
-- F6-F10 select one of the user's five visible player slots, mapped to simulation player ids 5-9;
-- RMB inside the verified match viewport publishes the existing camera-derived world coordinate;
-- only the selected player's callback on the confirmed Candidate-A worker returns `InputV1::move_to(x, y)`;
-- after the first RMB target, the same MoveTo is returned each tick until another target/player is selected;
-- selection alone does not suppress vanilla AI yet, so this stage tests command delivery rather than complete manual-idle behavior;
-- all other players and all non-Candidate-A simulations remain vanilla;
-- Ctrl+End and safety fail-open both permanently disable manual input for the remainder of the match.
+The initial implementation used raw player-slot/player-id assumptions. Runtime testing later proved that visible F-key card order does not match Candidate A's internal `player_id` order, so selection was generalized to all ten visible cards and resolved by athlete identity instead of team or side.
 
-The overlay reports selected slot/player id, published target, RMB command count, manual-input return count, and last simulation tick that received the override.
+Hostile-unit click interpretation is intentionally **not** part of Stage 4A. The parallel `feat/cursor-entity-picking` branch will later distinguish ground MoveTo from hostile Attack once the basic command path is stable.
 
-Pass criteria:
+## Stage 5A — prematch hard start gate
 
-1. F6-F10 selection appears correctly in the overlay.
-2. One RMB in the viewport increments `RMB cmds` and records a plausible target coordinate.
-3. `manual returns` begins increasing on Candidate A while pacing remains healthy.
-4. The selected champion visibly changes course toward the commanded position.
-5. Repeated RMB commands visibly retarget the same champion.
-6. Other champions continue vanilla behavior.
-7. Ctrl+End permanently stops further manual command application and lets Candidate A finish normally.
+Status: **FAIL — loading/simulation separation hypothesis rejected 2026-09-10**.
 
-Hostile-unit click interpretation is intentionally **not** part of Stage 4A. The parallel `feat/cursor-entity-picking` branch will later distinguish ground MoveTo from hostile Attack once this basic command path is proven.
+Candidate A was first held inside its earliest observed AI callback so the watched simulation could not advance until Ctrl+Home. Pressing Start Match froze the game on the tactics screen and Windows eventually reported the executable as not responding. Ctrl+Home could not release the hold because the original listener depended on `post_render`, and the blocked Start Match path was no longer pumping render/UI callbacks.
+
+This physically proved that the client cannot complete the Start Match transition while Candidate A is stopped inside that callback. At least some simulation progress is a synchronous dependency of match loading.
+
+## Stage 5B — one-complete-tick gate with fail-safe release
+
+Status: **PARTIAL PASS / separation still rejected — physically validated 2026-09-10**.
+
+The gate was moved until after one complete simulation tick and given two safety mechanisms: Ctrl+Home polling from the Candidate-A worker itself, plus an automatic bounded release into the proven 60 Hz pacer. The game no longer hung and Start Match completed normally.
+
+Runtime diagnostics consistently showed the bounded startup hold expiring at about 1.6 seconds before the battlefield became interactive, after which Candidate A ran under the normal 60 Hz pacer. Example early-match diagnostics included:
+
+```text
+visible 00:04 | start YES | origin 2 | elapsed 4750 ms | start held ~1620 ms
+visible 00:13 | origin 2 | elapsed 4985 ms | start held ~1620 ms
+```
+
+Therefore one complete tick is still insufficient for the battlefield to become independent of simulation progress. The fail-safe behavior works, but a true zero-pre-simulation manual start cannot be implemented by simply blocking StablePlayerAi callbacks this early.
+
+A future startup experiment may allow a small bounded runway (for example 2/5/10 ticks) and find the minimum amount of simulation progress the loader requires before an intentional hold becomes safe. More invasive thread separation is deferred unless that minimum proves large.
+
+## Stage 5C — pause/resume gate
+
+Status: **PASS — physically validated 2026-09-10**.
+
+The direct `pause_ui` visibility detector now freezes Candidate A while the game's pause menu is open and resumes correctly when the menu closes. Manual commands survive the pause, the selected champion continues toward the previously commanded destination after resume, and a long pause does not become catch-up budget or cause a visible high-speed burst afterward.
+
+Representative diagnostics showed `phase PAUSED` with an increasing `pause held` counter while the visible clock remained fixed, followed by a fresh pacing origin after resume.
+
+## Stage 5D — athlete-aware F-key selection
+
+Status: **PASS — physically validated 2026-09-10**.
+
+Visible F1-F10 cards are now resolved to stable athlete identities rather than assuming any team, side, or internal player-id ordering. Physical testing selected `misutaaa` with F3; diagnostics resolved the visible card to athlete 2, manual-input returns advanced for athlete 2, and the visibly selected/controlled champion was the intended character before and after pause/resume.
+
+This preserves the project's team-neutral design: direct control does not need to know which side belongs to the player.
+
+## Known cursor-projection issue
+
+The yellow world-space command marker remains offset from the actual mouse reticle. The error stays approximately constant through zoom changes, which points to an origin/viewport calibration error rather than a zoom-scale error. Current diagnostics report `origin center_log`; the projection still uses the `ingame.center_log` UI node as its reference origin, which is not guaranteed to be the actual center/origin of the `Game` draw-map viewport.
+
+This is not currently blocking movement-control validation, but it must be corrected before precision unit/ground picking is considered reliable.
 
 ## Parallel branch note
 
-`feat/cursor-entity-picking` was created from the Stage-1 pacing tip. Its substantive implementation remains isolated in `src/entity_picker.rs` and `docs/entity-picking.md`. It also touches `src/lib.rs`, which is now expected to require a manual merge because Stage 4A added selection/RMB wiring there. The concepts are complementary rather than conflicting: Stage 4A proves ground-command delivery; the entity-picking branch classifies what was clicked.
+`feat/cursor-entity-picking` was created from the Stage-1 pacing tip. Its substantive implementation remains isolated in `src/entity_picker.rs` and `docs/entity-picking.md`. It also touches `src/lib.rs`, which is expected to require a manual merge because the live-control branch added selection/RMB wiring there. The concepts are complementary rather than conflicting: live control proves command delivery; the entity-picking branch classifies what was clicked.
