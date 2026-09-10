@@ -170,7 +170,7 @@ impl DirectControlExtension {
         let install = camera_probe::ensure_installed();
         let snapshots = camera_probe::snapshots();
 
-        ctx.draw_rect("UI", 18.0, 58.0, 1_560.0, 134.0, 19_998, 6.0, 0x101018dd);
+        ctx.draw_rect("UI", 18.0, 58.0, 1_560.0, 156.0, 19_998, 6.0, 0x101018dd);
 
         match install {
             Ok(()) => Self::draw_text_line(
@@ -195,10 +195,41 @@ impl DirectControlExtension {
         };
         Self::draw_text_line(ctx, 84.0, &selection_text, 0x80d8ffff);
 
+        let ai_diag = control::diagnostics();
+        let seen_ids = if ai_diag.seen_player_ids.is_empty() {
+            "none".to_owned()
+        } else {
+            ai_diag
+                .seen_player_ids
+                .iter()
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let last_player = ai_diag
+            .last_think_player
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "none".to_owned());
+        Self::draw_text_line(
+            ctx,
+            106.0,
+            &format!(
+                "AI diag: think {} | selected hits {} | move returns {} | idle returns {} | last player {} | origin {} | seen IDs [{}]",
+                ai_diag.think_calls,
+                ai_diag.selected_think_calls,
+                ai_diag.manual_move_returns,
+                ai_diag.manual_idle_returns,
+                last_player,
+                ai_diag.origin_label,
+                seen_ids,
+            ),
+            0xffd080ff,
+        );
+
         let Some(camera) = snapshots.iter().max_by_key(|candidate| candidate.calls) else {
             Self::draw_text_line(
                 ctx,
-                106.0,
+                128.0,
                 "Waiting for the game's camera handler to run...",
                 0xffffffff,
             );
@@ -206,11 +237,11 @@ impl DirectControlExtension {
         };
 
         let Some(viewport) = ctx.ui_node_rect("ingame.center_log") else {
-            Self::draw_text_line(ctx, 106.0, "Viewport: ingame.center_log unavailable", 0xffd080ff);
+            Self::draw_text_line(ctx, 128.0, "Viewport: ingame.center_log unavailable", 0xffd080ff);
             return;
         };
         let Some((game_w, game_h)) = ctx.draw_map_size("Game") else {
-            Self::draw_text_line(ctx, 106.0, "Game render-map size unavailable", 0xffd080ff);
+            Self::draw_text_line(ctx, 128.0, "Game render-map size unavailable", 0xffd080ff);
             return;
         };
 
@@ -221,7 +252,7 @@ impl DirectControlExtension {
 
         Self::draw_text_line(
             ctx,
-            106.0,
+            128.0,
             &format!(
                 "Camera zoom {:.2} center ({:.2},{:.2}) extent ({:.2},{:.2}) | viewport ({vx:.1},{vy:.1},{vw:.1},{vh:.1}) | cursor inside {}",
                 camera.zoom,
@@ -269,7 +300,7 @@ impl DirectControlExtension {
         if !inside || game_w <= 0.0 || game_h <= 0.0 {
             Self::draw_text_line(
                 ctx,
-                128.0,
+                150.0,
                 "Cursor is outside the battlefield; RMB will not issue a movement command.",
                 0xffd080ff,
             );
@@ -324,7 +355,7 @@ impl DirectControlExtension {
 
         Self::draw_text_line(
             ctx,
-            128.0,
+            150.0,
             &format!(
                 "cursor world ({world_x:.2},{world_y:.2}) | sim ({sim_x:.0},{sim_y:.0}) | map bounds {} | {command_status}",
                 if in_map_bounds { "YES" } else { "no" }
@@ -341,8 +372,8 @@ impl DirectControlExtension {
             .unwrap_or_else(|| "no move target yet".to_owned());
         Self::draw_text_line(
             ctx,
-            150.0,
-            &format!("TEST: selected champion should stop under manual control and path to each RMB destination | {last_target}"),
+            172.0,
+            &format!("TEST: selected champion should path to each RMB destination | {last_target}"),
             COMMAND_WORLD_COLOR,
         );
     }
@@ -422,7 +453,7 @@ impl StableExtension for DirectControlExtension {
 fn init(host: &StableHost) -> StableMod {
     host.log(
         LogLevel::Info,
-        "TFM2 Direct Control loaded (first manual movement build; single-player diagnostic)",
+        "TFM2 Direct Control loaded (manual movement origin-gate diagnostic; single-player)",
     );
 
     let mut module = StableMod::new(MOD_ID);
