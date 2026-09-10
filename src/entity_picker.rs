@@ -18,10 +18,10 @@ pub enum EntityKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PickRelation {
-    Any,
-    Friendly,
+pub enum TeamRelation {
     Hostile,
+    Friendly,
+    Any,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -44,11 +44,11 @@ struct CandidateScore {
     distance_sq: u128,
 }
 
-fn relation_matches(entity_team: usize, controlled_team: usize, relation: PickRelation) -> bool {
+fn relation_matches(entity_team: usize, controlled_team: usize, relation: TeamRelation) -> bool {
     match relation {
-        PickRelation::Any => true,
-        PickRelation::Friendly => entity_team == controlled_team,
-        PickRelation::Hostile => entity_team != controlled_team,
+        TeamRelation::Hostile => entity_team != controlled_team,
+        TeamRelation::Friendly => entity_team == controlled_team,
+        TeamRelation::Any => true,
     }
 }
 
@@ -61,15 +61,12 @@ fn score_candidate(
     y: u64,
     collision_radius: usize,
     controlled_team: usize,
-    relation: PickRelation,
+    relation: TeamRelation,
     click_x: u64,
     click_y: u64,
     minimum_pick_radius: u64,
 ) -> Option<CandidateScore> {
-    if !alive
-        || !targetable
-        || !relation_matches(entity_team, controlled_team, relation)
-    {
+    if !alive || !targetable || !relation_matches(entity_team, controlled_team, relation) {
         return None;
     }
 
@@ -89,8 +86,8 @@ fn score_candidate(
 
 fn score_is_better(candidate: CandidateScore, current: CandidateScore) -> bool {
     // Nearest center wins. If centers are exactly equidistant, prefer the smaller hit region
-    // so a large structure cannot unnecessarily steal a precise unit click. Entity id is only
-    // a deterministic final tie-breaker.
+    // so a large tower/minion footprint cannot unnecessarily steal a precise unit click.
+    // Entity id is only a deterministic final tie-breaker.
     candidate.distance_sq < current.distance_sq
         || (candidate.distance_sq == current.distance_sq
             && (candidate.effective_radius < current.effective_radius
@@ -101,7 +98,7 @@ fn score_is_better(candidate: CandidateScore, current: CandidateScore) -> bool {
 pub fn pick_entity(
     sim: &StableSim<'_>,
     controlled_team: usize,
-    relation: PickRelation,
+    relation: TeamRelation,
     click_x: u64,
     click_y: u64,
     minimum_pick_radius: u64,
@@ -173,7 +170,7 @@ pub fn pick_hostile_entity(
     pick_entity(
         sim,
         controlled_team,
-        PickRelation::Hostile,
+        TeamRelation::Hostile,
         click_x,
         click_y,
         minimum_pick_radius,
@@ -182,10 +179,25 @@ pub fn pick_hostile_entity(
 
 #[cfg(test)]
 mod tests {
-    use super::{score_candidate, score_is_better, CandidateScore, PickRelation};
+    use super::{score_candidate, score_is_better, CandidateScore, TeamRelation};
 
     #[test]
-    fn rejects_dead_and_untargetable_entities() {
+    fn relation_filter_rejects_wrong_team_dead_and_untargetable_entities() {
+        assert!(score_candidate(
+            1,
+            0,
+            true,
+            true,
+            100,
+            100,
+            10,
+            0,
+            TeamRelation::Hostile,
+            100,
+            100,
+            10
+        )
+        .is_none());
         assert!(score_candidate(
             2,
             1,
@@ -195,10 +207,10 @@ mod tests {
             100,
             10,
             0,
-            PickRelation::Hostile,
+            TeamRelation::Any,
             100,
             100,
-            10,
+            10
         )
         .is_none());
         assert!(score_candidate(
@@ -210,16 +222,16 @@ mod tests {
             100,
             10,
             0,
-            PickRelation::Hostile,
+            TeamRelation::Any,
             100,
             100,
-            10,
+            10
         )
         .is_none());
     }
 
     #[test]
-    fn relation_filter_distinguishes_friendlies_and_hostiles() {
+    fn friendly_and_any_relations_are_available_for_future_targeted_skills() {
         assert!(score_candidate(
             1,
             0,
@@ -229,29 +241,14 @@ mod tests {
             100,
             10,
             0,
-            PickRelation::Hostile,
+            TeamRelation::Friendly,
             100,
             100,
-            10,
-        )
-        .is_none());
-        assert!(score_candidate(
-            1,
-            0,
-            true,
-            true,
-            100,
-            100,
-            10,
-            0,
-            PickRelation::Friendly,
-            100,
-            100,
-            10,
+            10
         )
         .is_some());
         assert!(score_candidate(
-            1,
+            2,
             1,
             true,
             true,
@@ -259,10 +256,10 @@ mod tests {
             100,
             10,
             0,
-            PickRelation::Any,
+            TeamRelation::Any,
             100,
             100,
-            10,
+            10
         )
         .is_some());
     }
@@ -278,7 +275,7 @@ mod tests {
             100,
             2,
             0,
-            PickRelation::Hostile,
+            TeamRelation::Hostile,
             108,
             100,
             10,
@@ -295,10 +292,10 @@ mod tests {
             100,
             2,
             0,
-            PickRelation::Hostile,
+            TeamRelation::Hostile,
             111,
             100,
-            10,
+            10
         )
         .is_none());
     }
