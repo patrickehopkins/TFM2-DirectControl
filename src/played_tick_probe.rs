@@ -22,6 +22,7 @@ const CAMERA_EMBED_OFFSET: usize = 0x960;
 const ACCUMULATOR_OFFSET: usize = 0x258;
 const SECOND_WORD_OFFSET: usize = 0x260;
 const LOCK_AFTER_MS: u64 = 1_500;
+const MAX_ACCEPTABLE_SCORE: f64 = 240.0;
 const MAX_REASONABLE_TICKS: f64 = 10_000_000.0;
 const DECODER_COUNT: usize = 19;
 const NO_DECODER: usize = usize::MAX;
@@ -80,8 +81,13 @@ pub fn read_from_camera_address(camera_address: usize) -> Option<PlayedTickSnaps
     let decoder = if state.locked_decoder != NO_DECODER {
         state.locked_decoder
     } else {
-        let best = choose_decoder(&state.baseline, &candidates, elapsed_ms)?;
+        let (best, score) = choose_decoder(&state.baseline, &candidates, elapsed_ms)?;
         if elapsed_ms >= LOCK_AFTER_MS {
+            // If no interpretation of +0x258/+0x260 follows early 1x presentation even loosely,
+            // fail closed rather than blessing the least-wrong static/garbage field.
+            if score > MAX_ACCEPTABLE_SCORE {
+                return None;
+            }
             state.locked_decoder = best;
         }
         best
@@ -102,7 +108,7 @@ fn choose_decoder(
     baseline: &[f64; DECODER_COUNT],
     current: &[f64; DECODER_COUNT],
     elapsed_ms: u64,
-) -> Option<usize> {
+) -> Option<(usize, f64)> {
     let expected_delta = elapsed_ms as f64 * 60.0 / 1_000.0;
     let mut best_index = None;
     let mut best_score = f64::INFINITY;
@@ -128,7 +134,8 @@ fn choose_decoder(
         } else {
             0.0
         };
-        let score = rate_error + absolute_penalty + static_penalty + decoder_priority_penalty(index);
+        let score =
+            rate_error + absolute_penalty + static_penalty + decoder_priority_penalty(index);
 
         if score < best_score {
             best_score = score;
@@ -136,13 +143,17 @@ fn choose_decoder(
         }
     }
 
-    best_index
+    best_index.map(|index| (index, best_score))
 }
 
 fn decoder_priority_penalty(index: usize) -> f64 {
     // Static evidence specifically points at +0x258. Prefer decoders starting there over the
     // +0x260 fallback word when two interpretations fit equally well.
-    if index <= 11 { 0.0 } else { 5.0 }
+    if index <= 11 {
+        0.0
+    } else {
+        5.0
+    }
 }
 
 unsafe fn decode_candidates(match_view_address: usize) -> Option<[f64; DECODER_COUNT]> {
@@ -169,24 +180,24 @@ unsafe fn decode_candidates(match_view_address: usize) -> Option<[f64; DECODER_C
     };
 
     Some([
-        duration_ticks,             // 0: Duration { secs @ +258, nanos @ +260 }
-        u64_0 as f64,               // 1: u64 ticks @ +258
-        u64_0 as f64 * 0.060,       // 2: u64 milliseconds @ +258
-        u64_0 as f64 * 0.000_060,   // 3: u64 microseconds @ +258
-        u64_0 as f64 * 0.000_000_060, // 4: u64 nanoseconds @ +258
-        f64_0 * 60.0,               // 5: f64 seconds @ +258
-        f64_0,                      // 6: f64 ticks @ +258
-        u32_0 as f64,               // 7: u32 ticks @ +258
-        u32_0 as f64 * 0.060,       // 8: u32 milliseconds @ +258
-        u32_0 as f64 * 0.000_060,   // 9: u32 microseconds @ +258
-        f32_0 * 60.0,               // 10: f32 seconds @ +258
-        f32_0,                      // 11: f32 ticks @ +258
-        u64_8 as f64,               // 12: u64 ticks @ +260
-        u64_8 as f64 * 0.060,       // 13: u64 milliseconds @ +260
-        u64_8 as f64 * 0.000_060,   // 14: u64 microseconds @ +260
-        u64_8 as f64 * 0.000_000_060, // 15: u64 nanoseconds @ +260
-        f64_8 * 60.0,               // 16: f64 seconds @ +260
-        f32_8 * 60.0,               // 17: f32 seconds @ +260
-        f32_8,                      // 18: f32 ticks @ +260
+        duration_ticks,                 // 0: Duration { secs @ +258, nanos @ +260 }
+        u64_0 as f64,                   // 1: u64 ticks @ +258
+        u64_0 as f64 * 0.060,           // 2: u64 milliseconds @ +258
+        u64_0 as f64 * 0.000_060,       // 3: u64 microseconds @ +258
+        u64_0 as f64 * 0.000_000_060,   // 4: u64 nanoseconds @ +258
+        f64_0 * 60.0,                   // 5: f64 seconds @ +258
+        f64_0,                          // 6: f64 ticks @ +258
+        u32_0 as f64,                   // 7: u32 ticks @ +258
+        u32_0 as f64 * 0.060,           // 8: u32 milliseconds @ +258
+        u32_0 as f64 * 0.000_060,       // 9: u32 microseconds @ +258
+        f32_0 * 60.0,                   // 10: f32 seconds @ +258
+        f32_0,                          // 11: f32 ticks @ +258
+        u64_8 as f64,                   // 12: u64 ticks @ +260
+        u64_8 as f64 * 0.060,           // 13: u64 milliseconds @ +260
+        u64_8 as f64 * 0.000_060,       // 14: u64 microseconds @ +260
+        u64_8 as f64 * 0.000_000_060,   // 15: u64 nanoseconds @ +260
+        f64_8 * 60.0,                   // 16: f64 seconds @ +260
+        f32_8 * 60.0,                   // 17: f32 seconds @ +260
+        f32_8,                          // 18: f32 ticks @ +260
     ])
 }
