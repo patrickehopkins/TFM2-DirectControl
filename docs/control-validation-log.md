@@ -1,5 +1,7 @@
 # Direct-Control Validation Log
 
+> Historical note: this file preserves the early control-path investigation. Several hypotheses below were later superseded by Candidate-A pacing work. In particular, the `match_view + 0x250/+0x258` playback-field interpretations were physically rejected, while the actual watched simulation was identified as Candidate A and successfully paced near 60 Hz. See `docs/pacing-validation-log.md` and `docs/manual-control-validation.md` for the current validated architecture.
+
 This log records physical tests of the manual-control bridge. Camera reverse-engineering and projection validation are documented separately in `docs/camera-research.md` and `docs/camera-validation-log.md`.
 
 ## 2026-09-09 - F-key selection and RMB publication
@@ -88,18 +90,12 @@ The executable contains `GamePlayDone` diagnostics stating that:
 
 This demonstrates that TFM2 distinguishes its server precomputed run from a separate result associated with the watched match. Therefore the failed stable-AI experiment does **not** imply that interactive direct control is impossible; it means we have not yet reached the local simulation path that feeds the watched result.
 
-### Match-view object is also the playback object
+### Match-view playback-field hypothesis (later rejected)
 
-The native object already captured by the camera hook is broader than a camera structure. The same object contains:
+Static inspection suggested candidate playback fields near `+0x250/+0x258`. Later runtime validation showed that `+0x250` remained constant and common interpretations of `+0x258/+0x260` did not track presentation. A wider match-view scan also failed to find a simple scalar presentation clock. These fields must not be used for pacing.
 
-- camera zoom at `+0xE0`;
-- camera center at `+0xE4/+0xE8`;
-- camera extents at `+0xEC/+0xF0`;
-- displayed/played match tick at `+0x250`;
-- an elapsed-time accumulator at `+0x258` used by the match-view update to derive `+0x250`.
+### Superseding result
 
-The match-view update advances the played tick and then processes visual/event data for that playback position. This is consistent with a local simulation producing a result/event stream ahead of the visible presentation, followed by a separate real-time playback layer.
+Subsequent runtime work identified Candidate A as the watched-match simulation job and proved that pacing its confirmed worker at ~60 ticks per wall-clock second keeps the simulation live alongside presentation. Real-time manual `InputV1::move_to` injection, pause/resume, athlete-aware F1-F10 selection, and Ctrl+End release are now physically verified.
 
-### Current engineering target
-
-The direct-control problem is no longer mouse projection or `InputV1` construction. Both are validated. The next target is the **local-simulation -> playback boundary**: identify the simulation instance that produces the watched event stream and either pace it with presentation time or hook its actual input-decision point before it runs ahead.
+The current engineering target is therefore **command expansion**, not rediscovering the local-simulation/playback boundary.
