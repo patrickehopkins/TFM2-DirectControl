@@ -56,28 +56,50 @@ All criteria passed:
 8. Visible playback continued normally after Candidate A completed.
 9. No manual `InputV1` mutation was enabled.
 
-## Stage 2 — exact played-tick observation
+## Stage 2A — direct `match_view + 0x250` played-tick hypothesis
 
-Status: **next test**.
+Status: **FAIL — physically rejected 2026-09-10**.
 
-Revalidate the statically traced match-view played tick at `match_view + 0x250`. The camera-containing object is already traced as `match_view + 0x960`, so the known-live camera capture can provide the owning match-view address without a new global hook.
+The first Stage-2 build derived `match_view = camera_address - 0x960` from the known-live camera subobject and read an integer at `match_view + 0x250`, based on the earlier static interpretation that this was the currently played tick.
 
-This stage remains read-only. Its purpose is to compare authoritative Candidate-A `ctx.tick()` directly with the exact presentation tick instead of the coarse visible `MM:SS` string.
-
-Expected relationship:
+Four screenshots from one normal watched match showed:
 
 ```text
-played_tick ~= visible_seconds * 60
-simulation_tick >> played_tick while Candidate A runs unpaced
+visible 00:02 | value at +0x250 = 1 | Candidate A ctx.tick() = 19905
+visible 00:05 | value at +0x250 = 1 | Candidate A ctx.tick() = 40807
+visible 00:20 | value at +0x250 = 1 | Candidate A already complete
+visible 00:30 | value at +0x250 = 1 | Candidate A already complete
 ```
 
-The exact field must advance monotonically with visible playback, respond to the game's playback-speed controls in the same direction as presentation, and remain plausible at 60 ticks/s. Do not use it for pacing until physically validated.
+The derived match-view address remained stable and the camera hook continued receiving calls, but `+0x250` remained exactly `1` throughout. Therefore `+0x250` is **not** the live advancing presentation tick for this object. Do not use it for pacing.
+
+This failure does not invalidate Candidate A or the camera-to-owner relationship; it only rejects the field interpretation.
+
+## Stage 2B — adjacent playback accumulator decode
+
+Status: **implemented; awaiting physical validation**.
+
+The earlier static trace separately identified `match_view + 0x258` as a playback elapsed-time accumulator. Rather than guessing another integer tick field, the next probe targets this adjacent field and evaluates a bounded set of plausible native representations during the first ~1.5 seconds of 1x playback:
+
+- integer ticks;
+- integer milliseconds;
+- integer microseconds;
+- integer nanoseconds;
+- `f32` seconds or ticks;
+- `f64` seconds or ticks;
+- Rust-style `Duration { secs, nanos }`.
+
+Candidate representations are scored by how closely their **delta** follows 60 ticks per wall-clock second. After ~1.5 seconds the best decoder is locked for the rest of the match; it is not allowed to re-select later. This makes later pause/speed tests meaningful: an unrelated wall timer will keep advancing, whereas the real playback accumulator should follow presentation.
+
+This stage remains read-only. No sleeping, pacing, player selection, or manual `InputV1` is enabled.
+
+Initial validation should be performed at normal 1x playback. If the displayed derived tick reaches roughly `visible_seconds * 60`, follow with a pause or playback-speed change to verify that the locked source follows presentation rather than wall time.
 
 ## Stage 3 — bounded pacing
 
 Status: **not implemented yet**.
 
-Only after Stages 1 and 2 pass, add cooperative waiting on one designated Candidate-A callback per simulation tick. Initial rule:
+Only after a presentation clock source passes Stage 2, add cooperative waiting on one designated Candidate-A callback per simulation tick. Initial rule:
 
 ```text
 if simulation_tick > played_tick + allowed_lead:
@@ -90,4 +112,4 @@ No manual `InputV1` should be reconnected until bounded pacing is physically sta
 
 ## Parallel branch note
 
-`feat/cursor-entity-picking` was created from the Stage-1 pacing branch tip and therefore already contains the Stage-1 observer. Its substantive work is isolated in `src/entity_picker.rs` and `docs/entity-picking.md`; it also has a small wiring change in `src/lib.rs`. Future pacing work should remain modular. A later merge may require a small manual resolution in `src/lib.rs`, but no architectural conflict is currently expected.
+`feat/cursor-entity-picking` was created from the Stage-1 pacing branch tip and therefore already contains the Stage-1 observer. Its substantive work is isolated in `src/entity_picker.rs` and `docs/entity-picking.md`; it also has a small wiring change in `src/lib.rs`. The pacing branch has since diverged. Future pacing work should remain modular. A later merge may require a small manual resolution in `src/lib.rs`, but no architectural conflict is currently expected.
