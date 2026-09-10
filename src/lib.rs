@@ -1,4 +1,5 @@
 mod camera_probe;
+mod entity_picker;
 mod pacing_probe;
 mod simulation_probe;
 
@@ -267,7 +268,7 @@ impl DirectControlExtension {
             Err(error) => Self::draw_text_line(
                 ctx,
                 194.0,
-                &format!("visible clock {} | camera hook failed: {error}", clock),
+                &format!("visible clock {} | camera hook failed: {error}"),
                 0xff7070ff,
             ),
         }
