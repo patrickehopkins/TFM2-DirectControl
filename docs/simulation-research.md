@@ -87,9 +87,9 @@ The wrapper at `0x14180EAA0` is called from many systems, including several clie
 
 ## Client-side simulation candidates
 
-Three client data functions are especially strong candidates for background simulation jobs because they call the common game-core wrapper and are themselves invoked through closure/task-like wrappers that copy captured state, run the simulation function, and publish a result into shared task storage.
+Three client data functions were identified because they call the common game-core wrapper and are themselves invoked through closure/task-like wrappers.
 
-### Candidate A
+### Candidate A — confirmed watched-match simulation job
 
 Client data function:
 
@@ -99,15 +99,24 @@ Client data function:
 - source-location references around `game-view/src/logic/client/data.rs:6143-6149`
 - game-core wrapper call at `0x140B1D052`
 
-This function contains an internal loop that returns to the simulation call path, so it may process multiple sets/simulations within one job.
-
 Closure/task wrapper:
 
 - RVA `0x00B4B490`
 - calls Candidate A at `0x140B4B559`
 - captured context passed only in `RCX`
 
-### Candidate B
+Physical probe results across two normal watched matches:
+
+- Match 1: A entered once, was already active at visible `00:00`, and completed once after `7110 ms` wall-clock time. At visible `00:23`, the job was already done while playback continued normally.
+- Match 2: A entered a second time for the second match, was still active at visible `00:05`, and completed by visible `00:08`; measured runtime was `6922 ms`.
+- The job ran on a background thread (thread ids differed between matches, as expected for a task-pool worker).
+- The captured context pointer also differed between matches, consistent with one per-match job object.
+
+Conclusion: Candidate A is the client-side job that computes the watched match ahead of presentation. A full several-minute match is simulated in roughly seven seconds of wall-clock time, then the result continues to play back at presentation speed.
+
+This confirms the earlier StablePlayerAi counter freeze: the authoritative client-side simulation can finish only a few visible seconds after match start.
+
+### Candidate B — not observed in normal watched matches
 
 Client data function:
 
@@ -123,7 +132,9 @@ Closure/task wrapper:
 - calls Candidate B at `0x140B4B851`
 - captured context passed only in `RCX`
 
-### Candidate C
+Across the two normal watched-match tests, B had zero entries.
+
+### Candidate C — not observed in normal watched matches
 
 Client data function:
 
@@ -138,6 +149,8 @@ Closure/task wrapper:
 - RVA `0x00B4BA90`
 - calls Candidate C at `0x140B4BB68`
 - captured context passed only in `RCX`
+
+Across the two normal watched-match tests, C had zero entries.
 
 ## Verified hook prologues
 
@@ -178,15 +191,20 @@ The closure wrappers set `RCX` to one captured context pointer immediately befor
 
 The StablePlayerAi direct-control override is intentionally disabled in this probe build so millions of AI diagnostic callbacks cannot perturb the timing being measured.
 
-The purpose of the first physical test is to identify which candidate is associated with a normal watched match. A strong live-simulation candidate would typically enter around match preparation/start, run on a background thread, and either remain active while its simulation runs or complete before/while visible playback begins.
+## Next target: inside Candidate A
 
-## Next step after candidate identification
+Candidate A itself is now identified. Do not pace Candidate A merely at function entry: sleeping before its original body would only postpone the entire precompute job and would not make individual simulation ticks interactive.
 
-Do not pace or mutate the simulation until the relevant job is identified. Once the normal watched-match job is known, trace that candidate's simulation loop and determine the narrowest safe pacing point relative to the match-view played tick.
+The next reverse-engineering target is the simulation advance path inside A:
+
+1. verify the exact prologue/call structure of the common wrapper at RVA `0x0180EAA0` and the large runner at RVA `0x01813FB0`;
+2. count those calls only while Candidate A is active to determine whether they represent per-match, per-set, or finer-grained work;
+3. trace from the confirmed runner into the narrow per-step/per-tick function;
+4. only then experiment with pacing that inner step relative to match-view played tick `+0x250`.
 
 Two implementation directions remain plausible:
 
 1. Pace the client live simulation so it stays only a small number of ticks ahead of presentation, allowing current client input to affect near-future simulation decisions.
 2. Inject manual input directly at the native player-input decision point of the identified client live simulation.
 
-The first option is preferable if the live simulation can be paced without blocking the render/UI thread or other unrelated background simulations.
+The first option remains preferable if the live simulation can be paced on its background worker without blocking render/UI or unrelated simulation jobs.
