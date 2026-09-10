@@ -106,13 +106,13 @@ visible 00:13 | origin 2 | elapsed 4985 ms | start held ~1620 ms
 
 Therefore one complete tick is still insufficient for the battlefield to become independent of simulation progress. The fail-safe behavior works, but a true zero-pre-simulation manual start cannot be implemented by simply blocking StablePlayerAi callbacks this early.
 
-A future startup experiment may allow a small bounded runway (for example 2/5/10 ticks) and find the minimum amount of simulation progress the loader requires before an intentional hold becomes safe. More invasive thread separation is deferred unless that minimum proves large.
+**Decision:** startup gating is shelved for later polish. It is not a blocker for higher-priority command work. See `docs/known-issues.md`.
 
 ## Stage 5C — pause/resume gate
 
 Status: **PASS — physically validated 2026-09-10**.
 
-The direct `pause_ui` visibility detector now freezes Candidate A while the game's pause menu is open and resumes correctly when the menu closes. Manual commands survive the pause, the selected champion continues toward the previously commanded destination after resume, and a long pause does not become catch-up budget or cause a visible high-speed burst afterward.
+The direct `pause_ui` visibility detector freezes Candidate A while the game's pause menu is open and resumes correctly when the menu closes. Manual commands survive the pause, the selected champion continues toward the previously commanded destination after resume, and a long pause does not become catch-up budget or cause a visible high-speed burst afterward.
 
 Representative diagnostics showed `phase PAUSED` with an increasing `pause held` counter while the visible clock remained fixed, followed by a fresh pacing origin after resume.
 
@@ -124,6 +124,23 @@ Visible F1-F10 cards are now resolved to stable athlete identities rather than a
 
 This preserves the project's team-neutral design: direct control does not need to know which side belongs to the player.
 
+## Current merge baseline
+
+Status: **READY FOR COMMAND EXPANSION**.
+
+The physically validated baseline now includes:
+
+- Candidate A identified as the watched-match simulation;
+- continuous ~60 Hz pacing for long matches;
+- pause and resume without hidden catch-up simulation;
+- team-neutral F1-F10 actor selection through athlete identity;
+- real-time persistent RMB `MoveTo` injection;
+- commands retained correctly across pause/resume;
+- one-way Ctrl+End release that lets the simulation finish at native speed;
+- fail-open behavior that avoids permanent hangs during experimental startup gating.
+
+No additional pacing/control validation is required before adding new commands. Startup sequencing, cursor-origin calibration, replay-speed integration, and final persistent-command semantics are documented as known/deferred work rather than blockers.
+
 ## Known cursor-projection issue
 
 The yellow world-space command marker remains offset from the actual mouse reticle. The error stays approximately constant through zoom changes, which points to an origin/viewport calibration error rather than a zoom-scale error. Current diagnostics report `origin center_log`; the projection still uses the `ingame.center_log` UI node as its reference origin, which is not guaranteed to be the actual center/origin of the `Game` draw-map viewport.
@@ -132,4 +149,4 @@ This is not currently blocking movement-control validation, but it must be corre
 
 ## Parallel branch note
 
-`feat/cursor-entity-picking` was created from the Stage-1 pacing tip. Its substantive implementation remains isolated in `src/entity_picker.rs` and `docs/entity-picking.md`. It also touches `src/lib.rs`, which is expected to require a manual merge because the live-control branch added selection/RMB wiring there. The concepts are complementary rather than conflicting: live control proves command delivery; the entity-picking branch classifies what was clicked.
+`feat/cursor-entity-picking` was created from the Stage-1 pacing tip. Its entity-picker concepts remain useful, but the live-control branch has since changed selection and control architecture substantially. Do not merge that branch wholesale. Rebase or transplant the picker logic when actor/entity targeting becomes current work, with manual integration expected in at least `src/lib.rs` and `src/control.rs`.
