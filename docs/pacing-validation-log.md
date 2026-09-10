@@ -77,23 +77,43 @@ This failure does not invalidate Candidate A or the camera-to-owner relationship
 
 ## Stage 2B — adjacent playback accumulator decode
 
+Status: **FAIL — physically rejected 2026-09-10**.
+
+The next probe targeted the earlier statically suspected `match_view + 0x258/+0x260` playback accumulator and evaluated common native time representations (`u32/u64` ticks, ms/us/ns, `f32/f64` seconds or ticks, and Rust-style `Duration`). It was designed to fail closed if no interpretation tracked early 1x playback closely enough.
+
+Physical screenshots at visible `00:05` and `00:10` both showed:
+
+```text
+played tick -- | match-view --
+```
+
+while Candidate A and the rest of the match continued normally. Therefore none of the bounded interpretations of `+0x258/+0x260` matched presentation strongly enough to pass the decoder threshold. Do not use these offsets for pacing.
+
+## Stage 2C — ranked match-view clock scan
+
 Status: **implemented; awaiting physical validation**.
 
-The earlier static trace separately identified `match_view + 0x258` as a playback elapsed-time accumulator. Rather than guessing another integer tick field, the next probe targets this adjacent field and evaluates a bounded set of plausible native representations during the first ~1.5 seconds of 1x playback:
+Instead of guessing individual offsets, the current probe scans the entire known-live match-view prefix before the embedded camera object (`match_view + 0x000 .. +0x95C`, with the camera beginning at `+0x960`). It reads aligned 32-bit words and evaluates common scalar time interpretations at each offset, including adjacent 64-bit representations.
 
-- integer ticks;
-- integer milliseconds;
-- integer microseconds;
-- integer nanoseconds;
-- `f32` seconds or ticks;
-- `f64` seconds or ticks;
-- Rust-style `Duration { secs, nanos }`.
+For each offset, only its best interpretation is retained. The overlay then shows the strongest three candidates ranked by how closely their delta matches:
 
-Candidate representations are scored by how closely their **delta** follows 60 ticks per wall-clock second. After ~1.5 seconds the best decoder is locked for the rest of the match; it is not allowed to re-select later. This makes later pause/speed tests meaningful: an unrelated wall timer will keep advancing, whereas the real playback accumulator should follow presentation.
+```text
+visible elapsed seconds * 60 ticks/second
+```
+
+at normal 1x playback. Static/nearly-static fields are heavily penalized once enough visible time has elapsed, and fields with implausible absolute values are rejected.
+
+Expected overlay form:
+
+```text
+CLOCK #1: +0xXYZ <encoding> | ticks ... | delta ... | error ...
+CLOCK #2: ...
+CLOCK #3: ...
+```
+
+A useful candidate should converge toward a low error as the visible clock advances. One screenshot around 00:05 and another around 00:10-00:15 should be enough to determine whether a stable offset/encoding is emerging. A candidate must still pass a later pause/speed test before it can be trusted for pacing.
 
 This stage remains read-only. No sleeping, pacing, player selection, or manual `InputV1` is enabled.
-
-Initial validation should be performed at normal 1x playback. If the displayed derived tick reaches roughly `visible_seconds * 60`, follow with a pause or playback-speed change to verify that the locked source follows presentation rather than wall time.
 
 ## Stage 3 — bounded pacing
 
