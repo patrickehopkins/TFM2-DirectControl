@@ -17,7 +17,7 @@ static MOVE_VERSION: AtomicU64 = AtomicU64::new(0);
 
 // Runtime diagnostics for the client -> StablePlayerAi boundary. These are intentionally
 // small atomics plus a short unique-ID list so the UI can tell us whether the AI callback is
-// running for the player IDs we expect and which live-client simulation origin it sees.
+// running for the player IDs we expect and which simulation origin it sees.
 static THINK_CALLS: AtomicU64 = AtomicU64::new(0);
 static SELECTED_THINK_CALLS: AtomicU64 = AtomicU64::new(0);
 static MANUAL_MOVE_RETURNS: AtomicU64 = AtomicU64::new(0);
@@ -121,7 +121,13 @@ pub fn diagnostics() -> ControlDiagnostics {
     let origin_label = match LAST_ORIGIN_CLASS.load(Ordering::Acquire) {
         1 => "ClientMatchView",
         2 => "ClientSpectate",
-        3 => "other/rejected",
+        3 => "ServerPresim",
+        4 => "ClientReplay/rejected",
+        5 => "Tool/rejected",
+        6 => "Unknown/rejected",
+        7 => "sim unavailable",
+        8 => "origin unavailable",
+        9 => "unrecognized/rejected",
         _ => "not observed",
     };
     let seen_player_ids = SEEN_PLAYER_IDS
@@ -184,33 +190,47 @@ impl StablePlayerAi for DirectControlAi {
         }
         SELECTED_THINK_CALLS.fetch_add(1, Ordering::Relaxed);
 
-        // StablePlayerAi can run in several simulation origins. The live coach/spectator
-        // presentation is represented by either ClientMatchView or ClientSpectate depending
-        // on how the match was entered. Both are visible client simulations and are valid for
-        // direct control; server pre-sims, replays, tools, and unknown origins remain blocked.
         let Some(sim) = ctx.sim() else {
-            LAST_ORIGIN_CLASS.store(3, Ordering::Relaxed);
+            LAST_ORIGIN_CLASS.store(7, Ordering::Relaxed);
             return base_input;
         };
         let Some(origin) = sim.sim_origin() else {
-            LAST_ORIGIN_CLASS.store(3, Ordering::Relaxed);
+            LAST_ORIGIN_CLASS.store(8, Ordering::Relaxed);
             return base_input;
         };
 
         let is_match_view = origin.kind == SimOriginKindV1::ClientMatchView.code();
         let is_spectate = origin.kind == SimOriginKindV1::ClientSpectate.code();
+        let is_server_presim = origin.kind == SimOriginKindV1::ServerPresim.code();
+        let is_replay = origin.kind == SimOriginKindV1::ClientReplay.code();
+        let is_tool = origin.kind == SimOriginKindV1::Tool.code();
+        let is_unknown = origin.kind == SimOriginKindV1::Unknown.code();
+
         LAST_ORIGIN_CLASS.store(
             if is_match_view {
                 1
             } else if is_spectate {
                 2
-            } else {
+            } else if is_server_presim {
                 3
+            } else if is_replay {
+                4
+            } else if is_tool {
+                5
+            } else if is_unknown {
+                6
+            } else {
+                9
             },
             Ordering::Relaxed,
         );
 
-        if !is_match_view && !is_spectate {
+        // StablePlayerAi participates in the game's simulation/presimulation machinery. The
+        // live match's authoritative AI decisions can therefore arrive through ServerPresim,
+        // not only through the presentation-side ClientMatchView/ClientSpectate origins. This
+        // mod deliberately bridges client input into that path for single-player direct-control
+        // testing; replay/tool/unknown simulations remain blocked.
+        if !is_match_view && !is_spectate && !is_server_presim {
             return base_input;
         }
 
