@@ -1,17 +1,20 @@
-//! Bounded wall-clock pacing proof for the confirmed Candidate A watched-match simulation.
+//! Continuous wall-clock pacing proof for the confirmed Candidate A watched-match simulation.
 //!
-//! Stage 1 proved that StablePlayerAi callbacks on Candidate A's worker expose the watched
-//! simulation tick. Stage 2A/2B/2C failed to identify a direct presentation clock in the live
-//! match-view object. This experiment therefore tests the user's simpler hypothesis directly:
-//! can Candidate A itself be held near 60 simulation ticks per wall-clock second?
+//! Stage 3A physically proved that StablePlayerAi can cooperatively hold Candidate A at ~60
+//! simulation ticks per wall-clock second while visible playback continues normally. The earlier
+//! build intentionally released after 30 seconds as a safety boundary; this follow-up removes only
+//! that artificial timeout so we can verify that Candidate A stays live for the full match.
 //!
-//! Safety boundaries for this proof:
+//! Safety boundaries remain:
 //! - only callbacks running on the confirmed Candidate A worker thread are delayed;
 //! - `base_input` is returned unchanged, so player behavior remains AI-controlled;
-//! - pacing is enabled for only the first 30 wall-clock seconds after Candidate A's first
-//!   observed callback, then automatically fails open and lets the simulator finish normally;
 //! - a ~35 ms lead is allowed to avoid excessive one-millisecond sleep jitter;
+//! - if any single callback would have to wait 250 ms, the pacer permanently fails open rather
+//!   than risking a stuck worker;
 //! - no replay/presentation object is read or written here.
+//!
+//! This is deliberately a fixed 1x / 60 Hz pacing test. Playback-speed and pause synchronization
+//! are separate concerns to solve after full-match pacing is physically validated.
 
 use std::{
     sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
@@ -26,7 +29,6 @@ use crate::simulation_probe;
 
 const NO_TICK: u64 = u64::MAX;
 const NO_PLAYER: usize = usize::MAX;
-const PACING_WINDOW_MS: u64 = 30_000;
 const ALLOWED_LEAD_MS: u64 = 35;
 const MAX_SLEEP_SLICE_MS: u64 = 2;
 const MAX_SINGLE_CALLBACK_WAIT_MS: u64 = 250;
@@ -152,11 +154,6 @@ fn pace_candidate_a(tick: u64) {
     loop {
         let wall_now_ms = unsafe { GetTickCount64() };
         let wall_elapsed_ms = wall_now_ms.saturating_sub(origin_ms);
-
-        if wall_elapsed_ms >= PACING_WINDOW_MS {
-            PACER_RELEASED.store(true, Ordering::Release);
-            return;
-        }
 
         if target_elapsed_ms <= wall_elapsed_ms.saturating_add(ALLOWED_LEAD_MS) {
             return;
