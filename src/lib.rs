@@ -200,23 +200,14 @@ impl DirectControlExtension {
             Self::draw_text_line(
                 ctx,
                 128.0,
-                "Move the cursor over the battlefield to test UI -> Game -> world projection.",
+                "Move the cursor over the battlefield to test UI -> camera world projection.",
                 0xffd080ff,
             );
             return;
         }
 
-        // TFM2 renders the match into a square Game map, then composes the visible battlefield
-        // as a centered crop. This deliberately tests that last composition step directly:
-        // the yellow Game-space ring should stay centered on the white UI-space crosshair.
         let dx = mouse.ui_x - viewport_cx;
         let dy = mouse.ui_y - viewport_cy;
-        let game_x = game_w * 0.5 + dx;
-        let game_y = game_h * 0.5 + dy;
-
-        ctx.draw_circle("Game", game_x, game_y, 11.0, 100_000, GAME_MARKER_COLOR);
-        ctx.draw_circle("Game", game_x, game_y, 7.0, 100_001, GAME_MARKER_COLOR);
-
         let units_per_px_x = camera.extent_a / game_w;
         let units_per_px_y = camera.extent_b / game_h;
         let world_x = camera.center_x + dx * units_per_px_x;
@@ -224,18 +215,49 @@ impl DirectControlExtension {
         let sim_x = world_x * SIM_UNITS_PER_CAMERA_UNIT;
         let sim_y = world_y * SIM_UNITS_PER_CAMERA_UNIT;
 
+        // The stable API defines "Game" as match-world space. The previous diagnostic
+        // accidentally treated its 2048x2048 backing map as raw screen pixels, which only
+        // aligned at 0.50x because the live camera extent also happened to be 2048 there.
+        // Match the stable draw camera to TFM2's captured live camera, then draw at the
+        // calculated world coordinate. If the projection is correct, these rings remain
+        // centered on the UI-space cursor at every zoom level.
+        ctx.draw_set_camera(
+            "Game",
+            camera.center_x,
+            camera.center_y,
+            camera.extent_a,
+            camera.extent_b,
+        );
+        let marker_units_per_px = (units_per_px_x + units_per_px_y) * 0.5;
+        ctx.draw_circle(
+            "Game",
+            world_x,
+            world_y,
+            11.0 * marker_units_per_px,
+            100_000,
+            GAME_MARKER_COLOR,
+        );
+        ctx.draw_circle(
+            "Game",
+            world_x,
+            world_y,
+            7.0 * marker_units_per_px,
+            100_001,
+            GAME_MARKER_COLOR,
+        );
+
         Self::draw_text_line(
             ctx,
             128.0,
             &format!(
-                "Game point ({game_x:.1},{game_y:.1}) | units/px ({units_per_px_x:.5},{units_per_px_y:.5}) | world ({world_x:.2},{world_y:.2}) | sim ({sim_x:.0},{sim_y:.0})"
+                "delta UI ({dx:.1},{dy:.1}) | units/px ({units_per_px_x:.5},{units_per_px_y:.5}) | world ({world_x:.2},{world_y:.2}) | sim ({sim_x:.0},{sim_y:.0})"
             ),
             0xffffffff,
         );
         Self::draw_text_line(
             ctx,
             150.0,
-            "TEST: yellow Game-space rings should remain centered on the white cursor crosshair while panning/zooming/toggling layout.",
+            "TEST v2: yellow world-space rings should remain centered on the white cursor crosshair at every zoom/layout.",
             GAME_MARKER_COLOR,
         );
     }
@@ -302,7 +324,7 @@ impl StableExtension for DirectControlExtension {
 fn init(host: &StableHost) -> StableMod {
     host.log(
         LogLevel::Info,
-        "TFM2 Direct Control loaded (camera composition/projection validation build)",
+        "TFM2 Direct Control loaded (camera projection validation v2)",
     );
 
     let mut module = StableMod::new(MOD_ID);
