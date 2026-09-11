@@ -29,6 +29,8 @@ const MOD_ID: &str = "tfm2_direct_control";
 const UI_FALLBACK_W: f32 = 1920.0;
 const UI_FALLBACK_H: f32 = 1080.0;
 const CURSOR_WORLD_COLOR: u32 = 0xffd040ff;
+const SKILL_YELLOW: u32 = 0xffd04070;
+const SKILL_SKY_BLUE: u32 = 0x66ccff20;
 const VK_F1_CODE: i32 = 0x70;
 const PLAYER_SLOT_COUNT: usize = 10;
 const SIM_UNITS_PER_WORLD_UNIT: f32 = 1000.0;
@@ -37,6 +39,7 @@ static WAS_INGAME: AtomicBool = AtomicBool::new(false);
 static START_CHORD_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static FINISH_CHORD_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static SELECT_KEYS_WERE_DOWN: AtomicU16 = AtomicU16::new(0);
+static LMB_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static RMB_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -286,14 +289,75 @@ impl DirectControlExtension {
             .copied()
     }
 
-    fn poll_rmb_move(&self, ctx: &StableClient<'_>, mouse: MouseSnapshot, ingame: bool) {
+    /// Poll Q/W/R + LMB/RMB/Escape. Returns true when a rising RMB was consumed as target cancel.
+    fn poll_skill_targeting(&self, ctx: &StableClient<'_>, mouse: MouseSnapshot, ingame: bool) -> bool {
+        if !ingame {
+            LMB_WAS_DOWN.store(false, Ordering::Release);
+            return false;
+        }
+
+        let lmb_was_down = LMB_WAS_DOWN.swap(mouse.left_down, Ordering::AcqRel);
+        let lmb_pressed = mouse.left_down && !lmb_was_down;
+        let rmb_pressed = mouse.right_down && !RMB_WAS_DOWN.load(Ordering::Acquire);
+
+        if !pacing_probe::manual_input_enabled() || control::selected_athlete().is_none() {
+            return false;
+        }
+
+        if ctx.key_pressed("Escape") {
+            control::cancel_skill_targeting();
+            return false;
+        }
+
+        if ctx.key_pressed("Q") {
+            control::arm_skill(control::SkillSlot::Q);
+        } else if ctx.key_pressed("W") {
+            control::arm_skill(control::SkillSlot::W);
+        } else if ctx.key_pressed("R") {
+            control::arm_skill(control::SkillSlot::R);
+        }
+
+        if !control::skill_targeting_active() {
+            control::clear_skill_cursor();
+            return false;
+        }
+
+        if rmb_pressed {
+            control::cancel_skill_targeting();
+            return true;
+        }
+
+        let Some(camera) = Self::best_camera() else {
+            control::clear_skill_cursor();
+            return false;
+        };
+        let Some(cursor) = Self::cursor_world(ctx, mouse, camera) else {
+            control::clear_skill_cursor();
+            return false;
+        };
+
+        control::publish_skill_cursor(cursor.sim_x, cursor.sim_y);
+        if lmb_pressed {
+            control::confirm_skill(cursor.sim_x, cursor.sim_y);
+        }
+        false
+    }
+
+    fn poll_rmb_move(
+        &self,
+        ctx: &StableClient<'_>,
+        mouse: MouseSnapshot,
+        ingame: bool,
+        suppress_rmb: bool,
+    ) {
         if !ingame {
             RMB_WAS_DOWN.store(false, Ordering::Release);
             return;
         }
 
         let was_down = RMB_WAS_DOWN.swap(mouse.right_down, Ordering::AcqRel);
-        if !mouse.right_down
+        if suppress_rmb
+            || !mouse.right_down
             || was_down
             || !pacing_probe::manual_input_enabled()
             || control::selected_athlete().is_none()
@@ -309,6 +373,110 @@ impl DirectControlExtension {
         };
 
         control::publish_move_target(cursor.sim_x, cursor.sim_y);
+    }
+
+    fn draw_skill_preview(ctx: &mut StableClient<'_>, camera: camera_probe::CameraSnapshot) {
+        let skill = control::skill_targeting_snapshot();
+        let Some(_slot) = skill.armed else {
+            return;
+        };
+        let Some(self_sim) = skill.self_position else {
+            return;
+        };
+        let Some(cursor_sim) = skill.cursor else {
+            return;
+        };
+
+        let Some((game_w, game_h)) = ctx.draw_map_size("Game") else {
+            return;
+        };
+        if game_w <= 0.0 || game_h <= 0.0 {
+            return;
+        }
+        let units_per_px = ((camera.extent_a / game_w) + (camera.extent_b / game_h)) * 0.5;
+        let self_world = (
+            self_sim.0 as f32 / SIM_UNITS_PER_WORLD_UNIT,
+            self_sim.1 as f32 / SIM_UNITS_PER_WORLD_UNIT,
+        );
+        let cursor_world = (
+            cursor_sim.0 as f32 / SIM_UNITS_PER_WORLD_UNIT,
+            cursor_sim.1 as f32 / SIM_UNITS_PER_WORLD_UNIT,
+        );
+
+        ctx.draw_set_camera(
+            "Game",
+            camera.center_x,
+            camera.center_y,
+            camera.extent_a,
+            camera.extent_b,
+        );
+
+        match skill.mode {
+            control::SkillPreviewMode::Position => {
+                let target_sim = if let Some(range) = skill.range_sim {
+                    ctx.draw_circle(
+                        "Game",
+                        self_world.0,
+                        self_world.1,
+                        range as f32 / SIM_UNITS_PER_WORLD_UNIT,
+                        99_970,
+                        SKILL_SKY_BLUE,
+                    );
+                    control::clamp_skill_target_to_range(self_sim, cursor_sim, range)
+                } else {
+                    cursor_sim
+                };
+                let target_world = (
+                    target_sim.0 as f32 / SIM_UNITS_PER_WORLD_UNIT,
+                    target_sim.1 as f32 / SIM_UNITS_PER_WORLD_UNIT,
+                );
+                // Runtime effect-shape radius is not exposed for vanilla skills, so this is a target
+                // position marker, not a fabricated AOE-radius claim.
+                ctx.draw_circle(
+                    "Game",
+                    target_world.0,
+                    target_world.1,
+                    11.0 * units_per_px,
+                    99_990,
+                    SKILL_YELLOW,
+                );
+            }
+            control::SkillPreviewMode::Direction => {
+                // Directional max range / projectile width exist in action/effect data but are not
+                // generically exposed for vanilla actions through the runtime context. Draw the true
+                // cursor direction without inventing either value.
+                ctx.draw_line(
+                    "Game",
+                    self_world.0,
+                    self_world.1,
+                    cursor_world.0,
+                    cursor_world.1,
+                    5.0 * units_per_px,
+                    99_990,
+                    SKILL_YELLOW,
+                );
+            }
+            control::SkillPreviewMode::None => {
+                ctx.draw_circle(
+                    "Game",
+                    self_world.0,
+                    self_world.1,
+                    13.0 * units_per_px,
+                    99_990,
+                    SKILL_YELLOW,
+                );
+            }
+            control::SkillPreviewMode::Target | control::SkillPreviewMode::Unknown => {
+                ctx.draw_circle(
+                    "Game",
+                    cursor_world.0,
+                    cursor_world.1,
+                    11.0 * units_per_px,
+                    99_990,
+                    SKILL_YELLOW,
+                );
+            }
+        }
     }
 
     fn draw_mouse_overlay(ctx: &mut StableClient<'_>, mouse: MouseSnapshot) {
@@ -419,7 +587,7 @@ impl DirectControlExtension {
             Ok(()) => Self::draw_text_line(
                 ctx,
                 62.0,
-                "SIM TASK PROBE: A confirmed watched-match job | contextual RMB + authoritative manual control",
+                "SIM TASK PROBE: A confirmed watched-match job | contextual RMB + Q/W/R targeting",
                 0x80ff9fff,
             ),
             Err(error) => {
@@ -512,6 +680,7 @@ impl DirectControlExtension {
                             CURSOR_WORLD_COLOR,
                         );
                     }
+                    Self::draw_skill_preview(ctx, camera);
                 }
             }
             Err(error) => Self::draw_text_line(
@@ -682,7 +851,7 @@ impl DirectControlExtension {
         Self::draw_text_line(
             ctx,
             370.0,
-            "CTRL+HOME = START | F1-F10 = select athlete | RMB ground = move | RMB hostile = exact attack",
+            "CTRL+HOME = START | F1-F10 select | RMB move/attack | Q/W/R arm | LMB confirm | RMB/Esc cancel skill",
             if pacing.start_requested { 0x80d8ffff } else { 0xffd080ff },
         );
         Self::draw_text_line(
@@ -691,11 +860,31 @@ impl DirectControlExtension {
             "CTRL+END = release control + pacing and finish simulation — CANNOT RESUME THIS MATCH",
             if pacing.manual_finish_requested { 0xff7070ff } else { 0xffd080ff },
         );
+
+        let skill = control::skill_targeting_snapshot();
+        let armed = skill
+            .armed
+            .map(|slot| slot.label())
+            .unwrap_or("--");
+        let range = skill
+            .range_sim
+            .map(|range| range.to_string())
+            .unwrap_or_else(|| "--".to_owned());
         Self::draw_text_line(
             ctx,
             414.0,
-            "TEST: selected athlete stays manual even after target loss; yellow marker should remain under reticle while pan/zoom/layout change.",
-            0x80d8ffff,
+            &format!(
+                "SKILL: armed {} | mode {} | range {} | arms {} confirms {} casts {} rejected {} cancels {}",
+                armed,
+                skill.mode.label(),
+                range,
+                skill.arm_count,
+                skill.confirm_count,
+                skill.cast_count,
+                skill.reject_count,
+                skill.cancel_count,
+            ),
+            if skill.armed.is_some() { 0xffd080ff } else { 0x80d8ffff },
         );
     }
 }
@@ -724,6 +913,7 @@ impl StableExtension for DirectControlExtension {
             START_CHORD_WAS_DOWN.store(false, Ordering::Release);
             FINISH_CHORD_WAS_DOWN.store(false, Ordering::Release);
             SELECT_KEYS_WERE_DOWN.store(0, Ordering::Release);
+            LMB_WAS_DOWN.store(false, Ordering::Release);
             RMB_WAS_DOWN.store(false, Ordering::Release);
         }
 
@@ -738,7 +928,8 @@ impl StableExtension for DirectControlExtension {
         }
 
         let mouse = self.read_mouse(ctx);
-        self.poll_rmb_move(ctx, mouse, ingame);
+        let skill_consumed_rmb = self.poll_skill_targeting(ctx, mouse, ingame);
+        self.poll_rmb_move(ctx, mouse, ingame, skill_consumed_rmb);
         Self::draw_mouse_overlay(ctx, mouse);
 
         if ingame {
@@ -753,7 +944,7 @@ fn init(host: &StableHost) -> StableMod {
     match simulation_probe::ensure_installed() {
         Ok(()) => host.log(
             LogLevel::Info,
-            "TFM2 Direct Control loaded (contextual RMB + authoritative manual control)",
+            "TFM2 Direct Control loaded (contextual RMB + Q/W/R targeting)",
         ),
         Err(error) => host.log(
             LogLevel::Error,
