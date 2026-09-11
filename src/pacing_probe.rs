@@ -488,10 +488,10 @@ impl StablePlayerAi for CandidateAObserverAi {
 
         pace_candidate_a(tick);
 
-        if manual_input_enabled() {
-            if let Some(input) = control::manual_input_for(ctx, tick) {
-                return Some(input);
-            }
+        if manual_input_enabled() && control::selected_athlete() == Some(athlete_id) {
+            // Selected means manual authority. `None` from the control layer means "no manual
+            // action this tick", not "let vanilla AI decide instead".
+            return control::manual_input_for(ctx, tick);
         }
 
         base_input
