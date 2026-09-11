@@ -235,19 +235,27 @@ impl DirectControlExtension {
             return None;
         }
 
-        // Keep the current transform unchanged for Stage 5A. Its remaining fixed marker offset is
-        // a separate calibration issue; do not mix that with the simulation-clock experiment.
+        // This is the projection physically validated during the camera work. The cursor offset is
+        // measured in logical UI coordinates but scaled by the backing Game render-map dimensions.
+        // Do not normalize it through the 1920x1080 UI map first; that was the marker-offset regression.
         let (origin_ui_x, origin_ui_y, used_center_log_origin) =
             if let Some((x, y, w, h)) = ctx.ui_node_rect("ingame.center_log") {
+                if mouse.ui_x < x
+                    || mouse.ui_y < y
+                    || mouse.ui_x >= x + w
+                    || mouse.ui_y >= y + h
+                {
+                    return None;
+                }
                 (x + w * 0.5, y + h * 0.5, true)
             } else {
                 (ui_w * 0.5, ui_h * 0.5, false)
             };
 
-        let dx_game = (mouse.ui_x - origin_ui_x) * game_w / ui_w;
-        let dy_game = (mouse.ui_y - origin_ui_y) * game_h / ui_h;
-        let world_x = camera.center_x + dx_game * (camera.extent_a / game_w);
-        let world_y = camera.center_y + dy_game * (camera.extent_b / game_h);
+        let dx = mouse.ui_x - origin_ui_x;
+        let dy = mouse.ui_y - origin_ui_y;
+        let world_x = camera.center_x + dx * (camera.extent_a / game_w);
+        let world_y = camera.center_y + dy * (camera.extent_b / game_h);
         if !world_x.is_finite() || !world_y.is_finite() || world_x < 0.0 || world_y < 0.0 {
             return None;
         }
@@ -411,7 +419,7 @@ impl DirectControlExtension {
             Ok(()) => Self::draw_text_line(
                 ctx,
                 62.0,
-                "SIM TASK PROBE: A confirmed watched-match job | Stage 5A manual start gate + live control",
+                "SIM TASK PROBE: A confirmed watched-match job | contextual RMB + authoritative manual control",
                 0x80ff9fff,
             ),
             Err(error) => {
@@ -628,6 +636,10 @@ impl DirectControlExtension {
             .move_target
             .map(|(x, y)| format!("({x},{y})"))
             .unwrap_or_else(|| "--".to_owned());
+        let attack = control_state
+            .attack_target
+            .map(|target_id| target_id.to_string())
+            .unwrap_or_else(|| "--".to_owned());
         let manual_tick = control_state
             .last_manual_tick
             .map(|tick| tick.to_string())
@@ -636,12 +648,15 @@ impl DirectControlExtension {
             ctx,
             326.0,
             &format!(
-                "CONTROL: selected {} | target(sim) {} | selects {} | RMB cmds {} | returns {} | tick {}",
+                "CONTROL: selected {} | RMB(sim) {} | attack {} | cmds {} | resolved M{} A{} | returns {} (atk {}) | tick {}",
                 selection,
                 target,
-                control_state.select_count,
+                attack,
                 control_state.move_command_count,
+                control_state.move_resolve_count,
+                control_state.attack_resolve_count,
                 control_state.manual_input_returns,
+                control_state.attack_input_returns,
                 manual_tick,
             ),
             if pacing_probe::manual_control_released() {
@@ -667,7 +682,7 @@ impl DirectControlExtension {
         Self::draw_text_line(
             ctx,
             370.0,
-            "CTRL+HOME = START live simulation | F1-F10 = visible athlete cards | RMB = persistent MoveTo",
+            "CTRL+HOME = START | F1-F10 = select athlete | RMB ground = move | RMB hostile = exact attack",
             if pacing.start_requested { 0x80d8ffff } else { 0xffd080ff },
         );
         Self::draw_text_line(
@@ -679,7 +694,7 @@ impl DirectControlExtension {
         Self::draw_text_line(
             ctx,
             414.0,
-            "TEST: battlefield should appear while Candidate A tick is frozen; Ctrl+Home starts it; pause_ui freezes/resumes; F-key controls named card.",
+            "TEST: selected athlete stays manual even after target loss; yellow marker should remain under reticle while pan/zoom/layout change.",
             0x80d8ffff,
         );
     }
@@ -738,7 +753,7 @@ fn init(host: &StableHost) -> StableMod {
     match simulation_probe::ensure_installed() {
         Ok(()) => host.log(
             LogLevel::Info,
-            "TFM2 Direct Control loaded (Stage 5A: manual start gate + athlete-aware RMB control)",
+            "TFM2 Direct Control loaded (contextual RMB + authoritative manual control)",
         ),
         Err(error) => host.log(
             LogLevel::Error,
