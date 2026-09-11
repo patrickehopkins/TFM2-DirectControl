@@ -35,6 +35,12 @@ const VK_F1_CODE: i32 = 0x70;
 const PLAYER_SLOT_COUNT: usize = 10;
 const SIM_UNITS_PER_WORLD_UNIT: f32 = 1000.0;
 
+// Q and R are already consumed by Teamfight Manager 2 (timeline rewind / camera). Keep logical
+// Q/W/R slots, but use collision-free physical keys while the skill layer is under development.
+const TEST_SKILL_Q_KEY: &str = "Z";
+const TEST_SKILL_W_KEY: &str = "X";
+const TEST_SKILL_R_KEY: &str = "C";
+
 static WAS_INGAME: AtomicBool = AtomicBool::new(false);
 static START_CHORD_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static FINISH_CHORD_WAS_DOWN: AtomicBool = AtomicBool::new(false);
@@ -289,8 +295,14 @@ impl DirectControlExtension {
             .copied()
     }
 
-    /// Poll Q/W/R + LMB/RMB/Escape. Returns true when a rising RMB was consumed as target cancel.
-    fn poll_skill_targeting(&self, ctx: &StableClient<'_>, mouse: MouseSnapshot, ingame: bool) -> bool {
+    /// Poll temporary Z/X/C skill keys + LMB/RMB/Escape.
+    /// Returns true when a rising RMB was consumed as target cancel.
+    fn poll_skill_targeting(
+        &self,
+        ctx: &StableClient<'_>,
+        mouse: MouseSnapshot,
+        ingame: bool,
+    ) -> bool {
         if !ingame {
             LMB_WAS_DOWN.store(false, Ordering::Release);
             return false;
@@ -309,11 +321,11 @@ impl DirectControlExtension {
             return false;
         }
 
-        if ctx.key_pressed("Q") {
+        if ctx.key_pressed(TEST_SKILL_Q_KEY) {
             control::arm_skill(control::SkillSlot::Q);
-        } else if ctx.key_pressed("W") {
+        } else if ctx.key_pressed(TEST_SKILL_W_KEY) {
             control::arm_skill(control::SkillSlot::W);
-        } else if ctx.key_pressed("R") {
+        } else if ctx.key_pressed(TEST_SKILL_R_KEY) {
             control::arm_skill(control::SkillSlot::R);
         }
 
@@ -393,14 +405,11 @@ impl DirectControlExtension {
         if game_w <= 0.0 || game_h <= 0.0 {
             return;
         }
+
         let units_per_px = ((camera.extent_a / game_w) + (camera.extent_b / game_h)) * 0.5;
         let self_world = (
             self_sim.0 as f32 / SIM_UNITS_PER_WORLD_UNIT,
             self_sim.1 as f32 / SIM_UNITS_PER_WORLD_UNIT,
-        );
-        let cursor_world = (
-            cursor_sim.0 as f32 / SIM_UNITS_PER_WORLD_UNIT,
-            cursor_sim.1 as f32 / SIM_UNITS_PER_WORLD_UNIT,
         );
 
         ctx.draw_set_camera(
@@ -411,72 +420,62 @@ impl DirectControlExtension {
             camera.extent_b,
         );
 
-        match skill.mode {
-            control::SkillPreviewMode::Position => {
-                let target_sim = if let Some(range) = skill.range_sim {
-                    ctx.draw_circle(
-                        "Game",
-                        self_world.0,
-                        self_world.1,
-                        range as f32 / SIM_UNITS_PER_WORLD_UNIT,
-                        99_970,
-                        SKILL_SKY_BLUE,
-                    );
-                    control::clamp_skill_target_to_range(self_sim, cursor_sim, range)
-                } else {
-                    cursor_sim
-                };
-                let target_world = (
-                    target_sim.0 as f32 / SIM_UNITS_PER_WORLD_UNIT,
-                    target_sim.1 as f32 / SIM_UNITS_PER_WORLD_UNIT,
-                );
-                // Runtime effect-shape radius is not exposed for vanilla skills, so this is a target
-                // position marker, not a fabricated AOE-radius claim.
-                ctx.draw_circle(
-                    "Game",
-                    target_world.0,
-                    target_world.1,
-                    11.0 * units_per_px,
-                    99_990,
-                    SKILL_YELLOW,
-                );
-            }
-            control::SkillPreviewMode::Direction => {
-                // Directional max range / projectile width exist in action/effect data but are not
-                // generically exposed for vanilla actions through the runtime context. Draw the true
-                // cursor direction without inventing either value.
-                ctx.draw_line(
-                    "Game",
-                    self_world.0,
-                    self_world.1,
-                    cursor_world.0,
-                    cursor_world.1,
-                    5.0 * units_per_px,
-                    99_990,
-                    SKILL_YELLOW,
-                );
-            }
-            control::SkillPreviewMode::None => {
-                ctx.draw_circle(
-                    "Game",
-                    self_world.0,
-                    self_world.1,
-                    13.0 * units_per_px,
-                    99_990,
-                    SKILL_YELLOW,
-                );
-            }
-            control::SkillPreviewMode::Target | control::SkillPreviewMode::Unknown => {
-                ctx.draw_circle(
-                    "Game",
-                    cursor_world.0,
-                    cursor_world.1,
-                    11.0 * units_per_px,
-                    99_990,
-                    SKILL_YELLOW,
-                );
-            }
+        // Self/no-target skills do not need a direction/range target. A small caster marker is enough.
+        if skill.mode == control::SkillPreviewMode::None {
+            ctx.draw_circle(
+                "Game",
+                self_world.0,
+                self_world.1,
+                13.0 * units_per_px,
+                99_990,
+                SKILL_YELLOW,
+            );
+            return;
         }
+
+        // Universal non-self targeting grammar:
+        //   - sky-blue disk = trusted finite maximum cast radius (when available),
+        //   - yellow ray = current aim direction/point,
+        //   - ray endpoint never exceeds the trusted radius.
+        // Runtime vanilla StableAction metadata is not currently exposed, so a missing range is
+        // displayed as unknown rather than inventing a map-sized range.
+        let aim_sim = if let Some(range) = skill.range_sim {
+            ctx.draw_circle(
+                "Game",
+                self_world.0,
+                self_world.1,
+                range as f32 / SIM_UNITS_PER_WORLD_UNIT,
+                99_970,
+                SKILL_SKY_BLUE,
+            );
+            control::clamp_skill_target_to_range(self_sim, cursor_sim, range)
+        } else {
+            cursor_sim
+        };
+
+        let aim_world = (
+            aim_sim.0 as f32 / SIM_UNITS_PER_WORLD_UNIT,
+            aim_sim.1 as f32 / SIM_UNITS_PER_WORLD_UNIT,
+        );
+
+        ctx.draw_line(
+            "Game",
+            self_world.0,
+            self_world.1,
+            aim_world.0,
+            aim_world.1,
+            5.0 * units_per_px,
+            99_990,
+            SKILL_YELLOW,
+        );
+        ctx.draw_circle(
+            "Game",
+            aim_world.0,
+            aim_world.1,
+            9.0 * units_per_px,
+            99_991,
+            SKILL_YELLOW,
+        );
     }
 
     fn draw_mouse_overlay(ctx: &mut StableClient<'_>, mouse: MouseSnapshot) {
@@ -587,7 +586,7 @@ impl DirectControlExtension {
             Ok(()) => Self::draw_text_line(
                 ctx,
                 62.0,
-                "SIM TASK PROBE: A confirmed watched-match job | contextual RMB + Q/W/R targeting",
+                "SIM TASK PROBE: A confirmed watched-match job | contextual RMB + manual skill targeting",
                 0x80ff9fff,
             ),
             Err(error) => {
@@ -649,7 +648,12 @@ impl DirectControlExtension {
                         194.0,
                         &format!(
                             "visible clock {} | camera calls {} mode {} zoom {:.2} center ({:.2},{:.2})",
-                            clock, camera.calls, camera.mode, camera.zoom, camera.center_x, camera.center_y,
+                            clock,
+                            camera.calls,
+                            camera.mode,
+                            camera.zoom,
+                            camera.center_x,
+                            camera.center_y,
                         ),
                         0xffffffff,
                     );
@@ -770,7 +774,11 @@ impl DirectControlExtension {
                 pause_ui.scanned_nodes,
                 pause_marker,
             ),
-            if pause_ui.paused { 0xffd080ff } else { 0x80ffffff },
+            if pause_ui.paused {
+                0xffd080ff
+            } else {
+                0x80ffffff
+            },
         );
 
         let mapping = slot_mapping::snapshot();
@@ -781,9 +789,11 @@ impl DirectControlExtension {
                 error,
                 mapping.card_text,
             )
-        } else if let (Some(slot), Some(name), Some(athlete_id)) =
-            (mapping.fkey_slot, mapping.athlete_name.as_deref(), mapping.athlete_id)
-        {
+        } else if let (Some(slot), Some(name), Some(athlete_id)) = (
+            mapping.fkey_slot,
+            mapping.athlete_name.as_deref(),
+            mapping.athlete_id,
+        ) {
             format!(
                 "F-KEY MAP: F{} -> {} -> athlete {} | card {:?}",
                 slot + 1,
@@ -843,7 +853,11 @@ impl DirectControlExtension {
                     cursor.world_y,
                     cursor.sim_x,
                     cursor.sim_y,
-                    if cursor.used_center_log_origin { "center_log" } else { "UI center fallback" },
+                    if cursor.used_center_log_origin {
+                        "center_log"
+                    } else {
+                        "UI center fallback"
+                    },
                 )
             })
             .unwrap_or_else(|| "CURSOR: projection unavailable".to_owned());
@@ -851,30 +865,35 @@ impl DirectControlExtension {
         Self::draw_text_line(
             ctx,
             370.0,
-            "CTRL+HOME = START | F1-F10 select | RMB move/attack | Q/W/R arm | LMB confirm | RMB/Esc cancel skill",
-            if pacing.start_requested { 0x80d8ffff } else { 0xffd080ff },
+            "CTRL+HOME = START | F1-F10 select | RMB move/attack | Z/X/C = logical Q/W/R | LMB confirm | RMB/Esc cancel",
+            if pacing.start_requested {
+                0x80d8ffff
+            } else {
+                0xffd080ff
+            },
         );
         Self::draw_text_line(
             ctx,
             392.0,
             "CTRL+END = release control + pacing and finish simulation — CANNOT RESUME THIS MATCH",
-            if pacing.manual_finish_requested { 0xff7070ff } else { 0xffd080ff },
+            if pacing.manual_finish_requested {
+                0xff7070ff
+            } else {
+                0xffd080ff
+            },
         );
 
         let skill = control::skill_targeting_snapshot();
-        let armed = skill
-            .armed
-            .map(|slot| slot.label())
-            .unwrap_or("--");
+        let armed = skill.armed.map(|slot| slot.label()).unwrap_or("--");
         let range = skill
             .range_sim
             .map(|range| range.to_string())
-            .unwrap_or_else(|| "--".to_owned());
+            .unwrap_or_else(|| "?".to_owned());
         Self::draw_text_line(
             ctx,
             414.0,
             &format!(
-                "SKILL: armed {} | mode {} | range {} | arms {} confirms {} casts {} rejected {} cancels {}",
+                "SKILL: armed {} | mode {} | finite range {} | arms {} confirms {} casts {} rejected {} cancels {}",
                 armed,
                 skill.mode.label(),
                 range,
@@ -884,7 +903,11 @@ impl DirectControlExtension {
                 skill.reject_count,
                 skill.cancel_count,
             ),
-            if skill.armed.is_some() { 0xffd080ff } else { 0x80d8ffff },
+            if skill.armed.is_some() {
+                0xffd080ff
+            } else {
+                0x80d8ffff
+            },
         );
     }
 }
@@ -944,7 +967,7 @@ fn init(host: &StableHost) -> StableMod {
     match simulation_probe::ensure_installed() {
         Ok(()) => host.log(
             LogLevel::Info,
-            "TFM2 Direct Control loaded (contextual RMB + Q/W/R targeting)",
+            "TFM2 Direct Control loaded (contextual RMB + manual skill targeting)",
         ),
         Err(error) => host.log(
             LogLevel::Error,
