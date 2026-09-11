@@ -35,11 +35,11 @@ const VK_F1_CODE: i32 = 0x70;
 const PLAYER_SLOT_COUNT: usize = 10;
 const SIM_UNITS_PER_WORLD_UNIT: f32 = 1000.0;
 
-// Q and R are already consumed by Teamfight Manager 2 (timeline rewind / camera). Keep logical
-// Q/W/R slots, but use collision-free physical keys while the skill layer is under development.
-const TEST_SKILL_Q_KEY: &str = "Z";
-const TEST_SKILL_W_KEY: &str = "X";
-const TEST_SKILL_R_KEY: &str = "C";
+// Skill slots use their intended MOBA-style physical keys. During development the user has moved
+// TFM2's conflicting in-match shortcuts away from Q/R so these can be tested directly.
+const TEST_SKILL_Q_KEY: &str = "Q";
+const TEST_SKILL_W_KEY: &str = "W";
+const TEST_SKILL_R_KEY: &str = "R";
 
 static WAS_INGAME: AtomicBool = AtomicBool::new(false);
 static START_CHORD_WAS_DOWN: AtomicBool = AtomicBool::new(false);
@@ -295,7 +295,7 @@ impl DirectControlExtension {
             .copied()
     }
 
-    /// Poll temporary Z/X/C skill keys + LMB/RMB/Escape.
+    /// Poll Q/W/R skill keys + LMB/RMB/Escape.
     /// Returns true when a rising RMB was consumed as target cancel.
     fn poll_skill_targeting(
         &self,
@@ -865,7 +865,7 @@ impl DirectControlExtension {
         Self::draw_text_line(
             ctx,
             370.0,
-            "CTRL+HOME = START | F1-F10 select | RMB move/attack | Z/X/C = logical Q/W/R | LMB confirm | RMB/Esc cancel",
+            "CTRL+HOME = START | F1-F10 select | RMB move/attack | Q/W/R arm | LMB confirm | RMB/Esc cancel",
             if pacing.start_requested {
                 0x80d8ffff
             } else {
