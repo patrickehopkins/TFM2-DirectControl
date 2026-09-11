@@ -16,6 +16,7 @@
 //! asking the game's higher-level attack behavior to decide how to approach it.
 
 mod entity_picker;
+mod skill_targeting;
 
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 
@@ -23,6 +24,8 @@ use entity_picker::pick_hostile_entity;
 use mod_api_stable::{
     InputKindV1, InputTargetKindV1, InputTargetV1, InputV1, StableAiContext,
 };
+
+pub use skill_targeting::{SkillPreviewMode, SkillSlot, SkillTargetingSnapshot};
 
 const NO_ATHLETE: usize = usize::MAX;
 const NO_TARGET: usize = usize::MAX;
@@ -146,6 +149,7 @@ pub fn reset() {
     SELECTED_ATHLETE.store(NO_ATHLETE, Ordering::Release);
     clear_move_target();
     clear_last_self_position();
+    skill_targeting::reset();
     SELECT_COUNT.store(0, Ordering::Release);
     MOVE_COMMAND_COUNT.store(0, Ordering::Release);
     RMB_RESOLVE_COUNT.store(0, Ordering::Release);
@@ -170,12 +174,49 @@ pub fn selected_athlete() -> Option<usize> {
 }
 
 pub fn select_athlete(athlete_id: usize) {
-    // A newly selected athlete must never inherit the previous athlete's move, attack, or hold point.
+    // A newly selected athlete must never inherit the previous athlete's move, attack, or skill aim.
     SELECTED_ATHLETE.store(NO_ATHLETE, Ordering::Release);
     clear_move_target();
     clear_last_self_position();
+    skill_targeting::on_selection_changed();
     SELECTED_ATHLETE.store(athlete_id, Ordering::Release);
     SELECT_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn arm_skill(slot: SkillSlot) {
+    skill_targeting::arm(slot);
+}
+
+pub fn cancel_skill_targeting() {
+    skill_targeting::cancel();
+}
+
+pub fn skill_targeting_active() -> bool {
+    skill_targeting::is_active()
+}
+
+pub fn publish_skill_cursor(x: u64, y: u64) {
+    skill_targeting::publish_cursor(x, y);
+}
+
+pub fn clear_skill_cursor() {
+    skill_targeting::clear_cursor();
+}
+
+pub fn confirm_skill(x: u64, y: u64) {
+    skill_targeting::confirm(x, y);
+}
+
+pub fn skill_targeting_snapshot() -> SkillTargetingSnapshot {
+    skill_targeting::snapshot()
+}
+
+pub fn clamp_skill_target_to_range(
+    from: (u64, u64),
+    to: (u64, u64),
+    range: u64,
+) -> (u64, u64) {
+    skill_targeting::clamp_to_range(from, to, range)
 }
 
 /// Compatibility entry point used by the render-thread RMB code.
@@ -396,6 +437,15 @@ pub fn manual_input_for(ctx: &mut StableAiContext<'_>, tick: u64) -> Option<Inpu
     }
 
     resolve_latest_rmb(ctx);
+
+    // An armed skill does not erase the persistent RMB order. Only a successful LMB confirmation
+    // preempts it for this simulation tick; the move/attack intent can resume on the next tick.
+    if let Some(input) = skill_targeting::manual_skill_input(ctx, self_position) {
+        MANUAL_INPUT_RETURNS.fetch_add(1, Ordering::Relaxed);
+        LAST_MANUAL_TICK.store(tick, Ordering::Relaxed);
+        return Some(input);
+    }
+
     let input = match active_manual_input(ctx, self_position) {
         Some(input) => input,
         None => neutral_hold_input(self_position)?,
