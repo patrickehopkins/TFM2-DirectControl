@@ -1,6 +1,6 @@
 # Q/W/R + LMB skill targeting
 
-Status: first generic skill-targeting implementation, awaiting local compile and physical validation.
+Status: first generic skill-targeting implementation, awaiting further physical validation.
 
 ## Controls
 
@@ -12,6 +12,8 @@ Status: first generic skill-targeting implementation, awaiting local compile and
 - `Escape` cancels targeting.
 - Arming a skill does not erase the persistent contextual-RMB move/attack order. A successful skill cast preempts that order for one simulation tick, then the prior explicit order may resume.
 - Selecting a different athlete clears any armed skill.
+
+During development, conflicting native TFM2 shortcuts may be reassigned in the game's Shortcuts menu. The finished mod should expose its own Direct Control bindings in that menu if/when a suitable integration path is implemented. The stable mod API does not currently expose a simple shortcut-row registration hook, so native settings-menu integration is deferred rather than reverse-engineered as part of skill targeting.
 
 ## Generic target-shape resolution
 
@@ -28,43 +30,33 @@ Rather than maintaining per-champion targeting tables, the simulation callback p
 
 A failed LMB is consumed once and leaves the skill armed. It does **not** become a delayed automatic cast if a cooldown becomes ready later; the user must click again.
 
-## Position-skill range inference
+## Live range requirement
 
-`StableAction` / `StableEffectSpec` exposes generic `range` and `growth_range` metadata, but the stable runtime AI/client contexts do not currently expose the selected vanilla champion's action object. The implementation therefore does not hard-code base-game champion ranges.
+`StableAction` / `StableEffectSpec` exposes generic `range` and `growth_range` metadata, but the stable runtime AI/client contexts do not currently expose the selected vanilla champion's action object directly.
 
-For a ready `Position` skill, the callback infers the current effective cast radius by binary-searching legal `Pos` inputs through `is_valid_input`, searching from the champion toward map center. This automatically reflects the game's current legality checks and level-scaled range without a champion-specific table.
+**Do not hard-code per-champion or base-patch skill ranges.** Teamfight Manager 2 changes champion balance across simulated seasons and patches, including range. Any targeting indicator must therefore reflect the current effective match-state value or current input legality. A static known range is architecturally incorrect even if it matches a fresh game.
 
-When the cursor lies outside the inferred range:
+For a ready `Position` skill, the callback currently attempts to infer the effective cast radius by probing legal `Pos` inputs through `is_valid_input`, searching from the champion toward map center. If the validator remains legal all the way to the map boundary, that is treated as **range unavailable**, not as an infinite/map-sized range.
 
-1. the preview target marker is clamped to the edge of the legal range in the cursor direction;
+When a trustworthy finite range is available:
+
+1. the preview aim point is clamped to the legal range edge in the cursor direction;
 2. LMB first tries the literal cursor position;
-3. if rejected, it retries the clamped edge position;
+3. if rejected, it can retry the clamped edge position;
 4. only a validator-approved input is emitted.
 
 ## In-game targeting preview
 
 All indicators are drawn on the existing `Game` render map, not generated imagery.
 
-### Position
+The intended generic visual grammar is:
 
-- translucent sky-blue filled circle centered on the selected champion = inferred maximum cast range;
-- translucent yellow marker = actual target position after max-range clamping.
+- every non-self skill: translucent yellow ray from caster toward the current aim point;
+- when a trustworthy finite current range is available: translucent sky-blue circle centered on the caster, with the yellow ray clipped to that circle;
+- self/no-target skill: caster-centered marker only;
+- richer AOE/projectile geometry is added only when trustworthy runtime geometry is available.
 
-The runtime stable interface does not expose a generic AOE-radius getter for vanilla effect bodies, so the yellow marker is intentionally only a placement marker in this build. Do not interpret its radius as damage/effect radius.
-
-### Direction
-
-- translucent yellow straight line from champion center toward the cursor.
-
-The data model contains action/effect range and effect-specific projectile geometry, but the runtime context does not expose those fields generically for vanilla actions. Directional line length therefore follows the cursor in this build, and width is a small screen-scaled presentation width rather than a claimed projectile hitbox.
-
-### Target / unknown
-
-- translucent yellow marker at the cursor.
-
-### None/self
-
-- translucent yellow marker centered on the selected champion.
+The runtime stable interface does not currently expose a generic AOE-radius or projectile-width getter for vanilla skills, so those values must not be fabricated or hard-coded from one patch.
 
 ## First validation targets
 
@@ -73,9 +65,9 @@ The data model contains action/effect range and effect-specific projectile geome
 3. RMB or Escape cancels an armed skill without moving the champion.
 4. LMB on an in-range targeted skill casts on the clicked legal entity.
 5. A Direction skill casts in the cursor direction and shows the yellow direction line.
-6. A Position skill shows the blue range circle and yellow target marker.
-7. Moving the cursor outside a Position skill's range clamps the yellow target marker to the blue edge; LMB casts at that clamped point if the game validates it.
-8. A self/no-target skill can be confirmed with LMB and does not require an entity.
+6. A Position skill shows the generic aim ray and, where available, a believable finite blue range circle.
+7. Moving the cursor outside a known finite range clips the aim indicator to the boundary and casts only at a validator-approved location.
+8. A self/no-target skill can be confirmed without requiring an entity.
 9. Invalid confirmation leaves the skill armed and increments the reject counter rather than handing control back to vanilla AI.
 10. After a successful cast, the previous persistent RMB order can resume.
 
@@ -83,22 +75,23 @@ The data model contains action/effect range and effect-specific projectile geome
 
 Do not build per-champion presentation tables solely for targeting indicators. If a future stable API exposes vanilla action/effect metadata at runtime, consume these generically:
 
-- Direction max range from action/effect range;
-- line/projectile width from the effect's hit geometry;
-- Position AOE radius from effect shape metadata;
+- current Direction max range from active action/effect range;
+- line/projectile width from active effect hit geometry;
+- Position AOE radius from active effect shape metadata;
 - other non-circular shapes as their generic effect geometry permits.
 
 Until then, truthful generic indicators are preferred over fabricated hitboxes.
 
-## Deferred existing edge case: timeline 0x pause
+## Timeline 0x pause
 
-A watched match once entered a state distinct from the full pause menu in which all normal playback-speed buttons were unselected, the visible timeline stopped, but Candidate A continued simulating. Selecting a speed resumed presentation and temporarily using high speed caught presentation back up.
+The previously unidentified no-speed-selected timeline state is the game's native **`S = Pause Match`** shortcut. It pauses match presentation without opening the full pause menu, leaving the normal speed buttons unselected.
 
-The triggering shortcut/path is unknown. `pause_probe` now treats recognized playback controls with none selected as a timeline pause so Candidate A should stop too. Reproduction is not a prerequisite for skill work; validate this safeguard opportunistically if the state occurs again.
+`pause_probe` treats recognized playback controls with none selected as a timeline pause so Candidate A should stop with presentation. This can now be reproduced deliberately with `S` if the pacing safeguard needs focused validation.
 
 ## Other deferred behavior
 
 - attack recovery/orb-walk timing (current full basic-attack cooldown hold is conservative);
 - narrow idle retaliation when an otherwise-idle selected champion is attacked in legal basic-attack range;
 - Gunfighter-specific move-while-attacking command composition;
-- Morgard/ping override investigation if it remains observable after explicit-command behavior is otherwise stable.
+- Morgard/ping override investigation if it remains observable after explicit-command behavior is otherwise stable;
+- native Shortcuts-menu integration for Direct Control bindings.
