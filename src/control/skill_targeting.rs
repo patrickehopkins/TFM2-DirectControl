@@ -99,6 +99,14 @@ impl SkillSlot {
             Self::R => InputKindV1::Ult,
         }
     }
+
+    fn minimum_level(self) -> usize {
+        match self {
+            Self::Q => 1,
+            Self::W => 3,
+            Self::R => 5,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -325,6 +333,13 @@ fn target_dir(from: (u64, u64), to: (u64, u64)) -> InputTargetV1 {
         dir_y: clamp(dy),
         ..Default::default()
     }
+}
+
+fn slot_unlocked(ctx: &mut StableAiContext<'_>, slot: SkillSlot) -> Option<bool> {
+    let player_id = ctx.player_id();
+    let sim = ctx.sim()?;
+    let player = sim.get_player(player_id)?;
+    Some(player.level() >= slot.minimum_level())
 }
 
 fn clicked_entity(ctx: &mut StableAiContext<'_>, click: (u64, u64)) -> Option<usize> {
@@ -627,6 +642,18 @@ pub fn manual_skill_input(
     self_position: Option<(u64, u64)>,
 ) -> Option<InputV1> {
     let slot = armed()?;
+
+    // Never ask the game's validator about a skill that does not exist for this champion level yet.
+    // Physical testing found that probing a locked W/R can wedge the watched simulation worker rather
+    // than simply return false. The game's skill progression is Q at level 1, W at level 3, R at
+    // level 5, so reject locked slots before any is_valid_input call or preview/range probing.
+    let unlocked = slot_unlocked(ctx, slot)?;
+    if !unlocked {
+        REJECT_COUNT.fetch_add(1, Ordering::Relaxed);
+        clear_targeting_state();
+        return None;
+    }
+
     let self_position = self_position?;
     update_preview(ctx, slot, self_position);
 
