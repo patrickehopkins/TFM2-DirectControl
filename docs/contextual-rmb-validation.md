@@ -1,6 +1,6 @@
 # Contextual RMB validation
 
-Status: contextual picking and cursor projection are physically validated. Current follow-up splits attack intent into explicit chase and exact attack execution so an out-of-range attack never falls into TFM2's higher-level combat/return behavior.
+Status: contextual picking, cursor projection, manual ownership, vision-aware target loss, and explicit pursuit are physically validated. Current follow-up teaches the pacer about the match viewer's separate timeline-pause state so presentation cannot silently fall behind Candidate A.
 
 ## Goal
 
@@ -63,6 +63,8 @@ The control layer now treats RMB-on-hostile as a persistent **target intent**, n
 
 This avoids sending rejected attack inputs while also avoiding the undesirable behavior of walking ranged champions directly into their targets during every attack cooldown.
 
+The full-cooldown hold is intentionally conservative. Physical testing now shows a small but visible post-attack pursuit delay with Lancer. Treat this as later attack-recovery/orb-walk polish rather than a generic targeting failure; changing it safely requires respecting attack duration/cancel timing instead of blindly moving on the first cooldown tick.
+
 ## Picker geometry
 
 Stage 6A uses the entity's stable simulation `radius()` as the initial click shape. There is no extra fixed world-space tolerance yet. This is deliberate: a fixed simulation-space padding would feel different at different camera zooms.
@@ -107,6 +109,20 @@ After neutral hold was introduced:
 
 This result motivated the attack-pursuit split above. The working hypothesis is no longer that entity selection is wrong; the problematic case is specifically an out-of-range/rejected `Attack(Target)` being allowed to interact with pre-existing higher-level behavior.
 
+## Fourth physical result
+
+After explicit chase-vs-attack resolution was introduced:
+
+- low health + distant visible enemy -> **PASS**;
+- moving visible enemy -> **PASS**, with target identity retained through pursuit;
+- entering attack range -> **PARTIAL PASS / FUNCTIONALLY CORRECT**: Lancer attacked the intended target, but paused for a visibly conservative recovery interval before resuming pursuit. This matches the current full-cooldown hold policy and is now classified as polish rather than targeting failure;
+- enemy entering bush/fog -> **PASS**;
+- target death -> **INDETERMINATE** during this pass because test activity prevented a clean observed kill;
+- selected champion no longer used skills autonomously while manually controlled;
+- a commanded jungle target could die while nearby hostile units continued attacking the selected champion, and the selected champion remained idle instead of opportunistically retargeting. This is strong evidence that manual ownership is functioning as intended.
+
+The generic control path is now highly responsive in ordinary play.
+
 ## Target-loss diagnostics
 
 The control layer counts attack target drops by cause:
@@ -135,17 +151,35 @@ world_y = camera_center_y + dy * extent_y / Game_map_height
 
 with `Game_map_width/height` coming from the stable `Game` draw map (observed 2048x2048). Cursor points outside `ingame.center_log` are rejected. The second physical test passed this correction across pan/zoom and Match Info layout changes.
 
+## Timeline playback pause
+
+The fourth physical pass exposed a separate viewer state that is not the full pause menu: all playback-speed buttons became unselected, the visible match stopped advancing, but Candidate A continued simulating. Selecting a playback speed resumed the viewer; temporarily selecting maximum speed caught presentation back up to simulation.
+
+The game exposes a distinct `in_game_pause_time` action and the live layout contains selectable speed widgets:
+
+- `speed_buttons.speed05x`
+- `speed_buttons.speed1x`
+- `speed_buttons.speed15x`
+- `speed_buttons.speed2x`
+- `speed_buttons.speed3x`
+
+`pause_probe` now treats "speed widgets are recognized but none is selected" as a timeline pause. This freezes Candidate A through the existing presentation pause gate and re-anchors the wall-clock pacer when a speed is selected again. If a future game build stops exposing these widgets as selectable, the detection fails open rather than inventing a pause.
+
 ## Current retest
 
 After `cargo check`, `cargo test`, and reinstalling the development build:
 
-1. At low health, RMB a visible enemy that is clearly outside attack range. The selected athlete should physically pursue that target instead of recalling/retreating.
-2. Let the target move while remaining visible. Pursuit should remain attached to the same target id.
-3. Once the target enters legal basic-attack range, the athlete should attack that exact target.
-4. Let the target enter fog/bush. Tracking should break immediately and the athlete should hold; it must not auto-reacquire if the target reappears.
-5. Let a retained target die while visible. The athlete should hold after death rather than selecting another target or recalling.
+1. Confirm ordinary contextual RMB movement/pursuit still behaves as in the fourth physical pass.
+2. If the timeline 0x state can be reproduced, verify the overlay reports a timeline pause and Candidate A tick progression stops while the viewer is stopped.
+3. Select a normal playback speed again. Candidate A should resume from a re-anchored pace rather than having accumulated runnable catch-up time during the pause.
 
-Morgard/team-call behavior can be revisited after these pass.
+The yellow-marker calibration does not need another broad validation unless it regresses again.
+
+## Deferred generic behavior: idle retaliation
+
+A later non-1.0 behavior should allow a manually controlled champion that is otherwise idle/holding to begin basic-attacking an enemy that attacks it while already within legal attack range. This must remain narrow defensive retaliation, not a return to general AI threat assessment or autonomous target search.
+
+Do not implement this until the explicit-command MVP is complete.
 
 ## Character-specific follow-up: Gunfighter
 
