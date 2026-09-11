@@ -34,6 +34,7 @@ const NO_TICK: u64 = u64::MAX;
 const COMMAND_NONE: u8 = 0;
 const COMMAND_MOVE: u8 = 1;
 const COMMAND_ATTACK: u8 = 2;
+const COMMAND_RETURN: u8 = 3;
 
 // Exact entity collision geometry first. Screen-pixel click forgiveness remains a later polish item.
 const MINIMUM_PICK_RADIUS_SIM: u64 = 0;
@@ -47,7 +48,7 @@ static RMB_Y: AtomicU64 = AtomicU64::new(0);
 static RMB_VERSION: AtomicU64 = AtomicU64::new(0);
 static RESOLVED_RMB_VERSION: AtomicU64 = AtomicU64::new(0);
 
-// Persistent command selected by the simulation thread from the latest RMB request.
+// Persistent command selected by the simulation thread from the latest RMB request or B recall.
 static ACTIVE_COMMAND_KIND: AtomicU8 = AtomicU8::new(COMMAND_NONE);
 static ACTIVE_MOVE_X: AtomicU64 = AtomicU64::new(0);
 static ACTIVE_MOVE_Y: AtomicU64 = AtomicU64::new(0);
@@ -64,6 +65,7 @@ static MOVE_COMMAND_COUNT: AtomicU64 = AtomicU64::new(0); // physical RMB reques
 static RMB_RESOLVE_COUNT: AtomicU64 = AtomicU64::new(0);
 static MOVE_RESOLVE_COUNT: AtomicU64 = AtomicU64::new(0);
 static ATTACK_RESOLVE_COUNT: AtomicU64 = AtomicU64::new(0);
+static RETURN_COMMAND_COUNT: AtomicU64 = AtomicU64::new(0);
 static MANUAL_INPUT_RETURNS: AtomicU64 = AtomicU64::new(0);
 static ATTACK_INPUT_RETURNS: AtomicU64 = AtomicU64::new(0);
 static HOLD_INPUT_RETURNS: AtomicU64 = AtomicU64::new(0);
@@ -80,12 +82,14 @@ pub struct ControlDiagnostics {
     /// Latest RMB simulation point. Kept under the old name so the existing overlay stays useful.
     pub move_target: Option<(u64, u64)>,
     pub attack_target: Option<usize>,
+    pub returning: bool,
     pub select_count: u64,
     /// Physical RMB requests; name retained for compatibility with the current overlay.
     pub move_command_count: u64,
     pub rmb_resolve_count: u64,
     pub move_resolve_count: u64,
     pub attack_resolve_count: u64,
+    pub return_command_count: u64,
     pub manual_input_returns: u64,
     pub attack_input_returns: u64,
     pub hold_input_returns: u64,
@@ -122,6 +126,14 @@ fn set_active_attack(target_id: usize) {
     ACTIVE_COMMAND_KIND.store(COMMAND_ATTACK, Ordering::Release);
 }
 
+fn set_active_return() {
+    ACTIVE_COMMAND_KIND.store(COMMAND_NONE, Ordering::Release);
+    ACTIVE_MOVE_X.store(0, Ordering::Relaxed);
+    ACTIVE_MOVE_Y.store(0, Ordering::Relaxed);
+    ACTIVE_ATTACK_TARGET.store(NO_TARGET, Ordering::Relaxed);
+    ACTIVE_COMMAND_KIND.store(COMMAND_RETURN, Ordering::Release);
+}
+
 fn clear_last_self_position() {
     LAST_SELF_POSITION_ACTIVE.store(false, Ordering::Release);
     LAST_SELF_X.store(0, Ordering::Relaxed);
@@ -155,6 +167,7 @@ pub fn reset() {
     RMB_RESOLVE_COUNT.store(0, Ordering::Release);
     MOVE_RESOLVE_COUNT.store(0, Ordering::Release);
     ATTACK_RESOLVE_COUNT.store(0, Ordering::Release);
+    RETURN_COMMAND_COUNT.store(0, Ordering::Release);
     MANUAL_INPUT_RETURNS.store(0, Ordering::Release);
     ATTACK_INPUT_RETURNS.store(0, Ordering::Release);
     HOLD_INPUT_RETURNS.store(0, Ordering::Release);
@@ -174,7 +187,7 @@ pub fn selected_athlete() -> Option<usize> {
 }
 
 pub fn select_athlete(athlete_id: usize) {
-    // A newly selected athlete must never inherit the previous athlete's move, attack, or skill aim.
+    // A newly selected athlete must never inherit the previous athlete's move, attack, recall, or skill aim.
     SELECTED_ATHLETE.store(NO_ATHLETE, Ordering::Release);
     clear_move_target();
     clear_last_self_position();
@@ -217,6 +230,15 @@ pub fn clamp_skill_target_to_range(
     range: u64,
 ) -> (u64, u64) {
     skill_targeting::clamp_to_range(from, to, range)
+}
+
+/// B/recall is a persistent explicit manual order. It replaces movement/attack and cancels any
+/// armed skill. RMB or a later successful skill cast can interrupt it.
+pub fn request_return_home() {
+    clear_move_target();
+    skill_targeting::cancel();
+    set_active_return();
+    RETURN_COMMAND_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Compatibility entry point used by the render-thread RMB code.
@@ -413,6 +435,7 @@ fn active_manual_input(
             // attack is ready; then either attack if legal or resume pursuit if range was lost.
             neutral_hold_input(self_position)
         }
+        COMMAND_RETURN => Some(InputV1::return_home()),
         _ => None,
     }
 }
@@ -440,7 +463,12 @@ pub fn manual_input_for(ctx: &mut StableAiContext<'_>, tick: u64) -> Option<Inpu
 
     // An armed skill does not erase the persistent RMB order. Only a successful LMB confirmation
     // preempts it for this simulation tick; the move/attack intent can resume on the next tick.
+    // Return is different: a successful skill cast intentionally interrupts recall instead of
+    // silently resuming it one tick later.
     if let Some(input) = skill_targeting::manual_skill_input(ctx, self_position) {
+        if ACTIVE_COMMAND_KIND.load(Ordering::Acquire) == COMMAND_RETURN {
+            clear_active_command();
+        }
         MANUAL_INPUT_RETURNS.fetch_add(1, Ordering::Relaxed);
         LAST_MANUAL_TICK.store(tick, Ordering::Relaxed);
         return Some(input);
@@ -458,7 +486,8 @@ pub fn manual_input_for(ctx: &mut StableAiContext<'_>, tick: u64) -> Option<Inpu
 
 pub fn diagnostics() -> ControlDiagnostics {
     let last_tick = LAST_MANUAL_TICK.load(Ordering::Acquire);
-    let attack_target = match ACTIVE_COMMAND_KIND.load(Ordering::Acquire) {
+    let active_kind = ACTIVE_COMMAND_KIND.load(Ordering::Acquire);
+    let attack_target = match active_kind {
         COMMAND_ATTACK => match ACTIVE_ATTACK_TARGET.load(Ordering::Acquire) {
             NO_TARGET => None,
             target => Some(target),
@@ -470,11 +499,13 @@ pub fn diagnostics() -> ControlDiagnostics {
         selected_athlete: selected_athlete(),
         move_target: move_target(),
         attack_target,
+        returning: active_kind == COMMAND_RETURN,
         select_count: SELECT_COUNT.load(Ordering::Acquire),
         move_command_count: MOVE_COMMAND_COUNT.load(Ordering::Acquire),
         rmb_resolve_count: RMB_RESOLVE_COUNT.load(Ordering::Acquire),
         move_resolve_count: MOVE_RESOLVE_COUNT.load(Ordering::Acquire),
         attack_resolve_count: ATTACK_RESOLVE_COUNT.load(Ordering::Acquire),
+        return_command_count: RETURN_COMMAND_COUNT.load(Ordering::Acquire),
         manual_input_returns: MANUAL_INPUT_RETURNS.load(Ordering::Acquire),
         attack_input_returns: ATTACK_INPUT_RETURNS.load(Ordering::Acquire),
         hold_input_returns: HOLD_INPUT_RETURNS.load(Ordering::Acquire),
