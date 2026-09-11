@@ -35,11 +35,9 @@ const VK_F1_CODE: i32 = 0x70;
 const PLAYER_SLOT_COUNT: usize = 10;
 const SIM_UNITS_PER_WORLD_UNIT: f32 = 1000.0;
 
-// Skill slots use their intended MOBA-style physical keys. During development the user has moved
-// TFM2's conflicting in-match shortcuts away from Q/R so these can be tested directly.
-const TEST_SKILL_Q_KEY: &str = "Q";
-const TEST_SKILL_W_KEY: &str = "W";
-const TEST_SKILL_R_KEY: &str = "R";
+const SKILL_Q_KEY: &str = "Q";
+const SKILL_W_KEY: &str = "W";
+const SKILL_R_KEY: &str = "R";
 
 static WAS_INGAME: AtomicBool = AtomicBool::new(false);
 static START_CHORD_WAS_DOWN: AtomicBool = AtomicBool::new(false);
@@ -66,7 +64,6 @@ struct CursorWorld {
     sim_x: u64,
     sim_y: u64,
     marker_units_per_px: f32,
-    used_center_log_origin: bool,
 }
 
 #[derive(Debug, Default)]
@@ -156,7 +153,7 @@ impl DirectControlExtension {
             "UI",
             text,
             "asset/base/font/set/regular",
-            (28.0, y, 1_780.0, 22.0),
+            (28.0, y, 1_120.0, 22.0),
             19_999,
             13.0,
             color,
@@ -220,8 +217,6 @@ impl DirectControlExtension {
         }
 
         let slot = rising.trailing_zeros() as usize;
-        // The visible F-key card order is not Candidate A's internal player_id order. Resolve the
-        // displayed card to an athlete id and control by athlete identity instead. No team policy.
         if let Some(athlete_id) = slot_mapping::resolve_fkey(ctx, slot) {
             control::select_athlete(athlete_id);
         }
@@ -244,10 +239,7 @@ impl DirectControlExtension {
             return None;
         }
 
-        // This is the projection physically validated during the camera work. The cursor offset is
-        // measured in logical UI coordinates but scaled by the backing Game render-map dimensions.
-        // Do not normalize it through the 1920x1080 UI map first; that was the marker-offset regression.
-        let (origin_ui_x, origin_ui_y, used_center_log_origin) =
+        let (origin_ui_x, origin_ui_y) =
             if let Some((x, y, w, h)) = ctx.ui_node_rect("ingame.center_log") {
                 if mouse.ui_x < x
                     || mouse.ui_y < y
@@ -256,9 +248,9 @@ impl DirectControlExtension {
                 {
                     return None;
                 }
-                (x + w * 0.5, y + h * 0.5, true)
+                (x + w * 0.5, y + h * 0.5)
             } else {
-                (ui_w * 0.5, ui_h * 0.5, false)
+                (ui_w * 0.5, ui_h * 0.5)
             };
 
         let dx = mouse.ui_x - origin_ui_x;
@@ -284,7 +276,6 @@ impl DirectControlExtension {
             sim_x: sim_x_f.round() as u64,
             sim_y: sim_y_f.round() as u64,
             marker_units_per_px,
-            used_center_log_origin,
         })
     }
 
@@ -295,8 +286,7 @@ impl DirectControlExtension {
             .copied()
     }
 
-    /// Poll Q/W/R skill keys + LMB/RMB/Escape.
-    /// Returns true when a rising RMB was consumed as target cancel.
+    /// Returns true when a rising RMB was consumed as skill-target cancel.
     fn poll_skill_targeting(
         &self,
         ctx: &StableClient<'_>,
@@ -321,11 +311,11 @@ impl DirectControlExtension {
             return false;
         }
 
-        if ctx.key_pressed(TEST_SKILL_Q_KEY) {
+        if ctx.key_pressed(SKILL_Q_KEY) {
             control::arm_skill(control::SkillSlot::Q);
-        } else if ctx.key_pressed(TEST_SKILL_W_KEY) {
+        } else if ctx.key_pressed(SKILL_W_KEY) {
             control::arm_skill(control::SkillSlot::W);
-        } else if ctx.key_pressed(TEST_SKILL_R_KEY) {
+        } else if ctx.key_pressed(SKILL_R_KEY) {
             control::arm_skill(control::SkillSlot::R);
         }
 
@@ -389,9 +379,9 @@ impl DirectControlExtension {
 
     fn draw_skill_preview(ctx: &mut StableClient<'_>, camera: camera_probe::CameraSnapshot) {
         let skill = control::skill_targeting_snapshot();
-        let Some(_slot) = skill.armed else {
+        if skill.armed.is_none() {
             return;
-        };
+        }
         let Some(self_sim) = skill.self_position else {
             return;
         };
@@ -420,7 +410,6 @@ impl DirectControlExtension {
             camera.extent_b,
         );
 
-        // Self/no-target skills do not need a direction/range target. A small caster marker is enough.
         if skill.mode == control::SkillPreviewMode::None {
             ctx.draw_circle(
                 "Game",
@@ -433,12 +422,6 @@ impl DirectControlExtension {
             return;
         }
 
-        // Universal non-self targeting grammar:
-        //   - sky-blue disk = trusted finite maximum cast radius (when available),
-        //   - yellow ray = current aim direction/point,
-        //   - ray endpoint never exceeds the trusted radius.
-        // Runtime vanilla StableAction metadata is not currently exposed, so a missing range is
-        // displayed as unknown rather than inventing a map-sized range.
         let aim_sim = if let Some(range) = skill.range_sim {
             ctx.draw_circle(
                 "Game",
@@ -478,12 +461,11 @@ impl DirectControlExtension {
         );
     }
 
-    fn draw_mouse_overlay(ctx: &mut StableClient<'_>, mouse: MouseSnapshot) {
+    fn draw_cursor(ctx: &mut StableClient<'_>, mouse: MouseSnapshot) {
         if !mouse.valid {
             return;
         }
-
-        let crosshair_color = if mouse.right_down {
+        let color = if mouse.right_down {
             0xff4040ff
         } else if mouse.left_down {
             0x40ff80ff
@@ -498,7 +480,7 @@ impl DirectControlExtension {
             mouse.ui_y,
             2.0,
             20_000,
-            crosshair_color,
+            color,
         );
         ctx.draw_line(
             "UI",
@@ -508,406 +490,127 @@ impl DirectControlExtension {
             mouse.ui_y + 14.0,
             2.0,
             20_000,
-            crosshair_color,
+            color,
         );
-        ctx.draw_circle(
-            "UI",
-            mouse.ui_x,
-            mouse.ui_y,
-            3.0,
-            20_001,
-            crosshair_color,
-        );
+        ctx.draw_circle("UI", mouse.ui_x, mouse.ui_y, 3.0, 20_001, color);
+    }
 
-        ctx.draw_rect("UI", 18.0, 18.0, 900.0, 34.0, 19_998, 6.0, 0x101018dd);
-        Self::draw_text_line(
-            ctx,
-            24.0,
-            &format!(
-                "TFM2 Direct Control | cursor UI ({:.1},{:.1}) | client {}x{} | LMB {} | RMB {}",
-                mouse.ui_x,
-                mouse.ui_y,
-                mouse.client_w,
-                mouse.client_h,
-                if mouse.left_down { "DOWN" } else { "up" },
-                if mouse.right_down { "DOWN" } else { "up" },
-            ),
-            0xffffffff,
-        );
+    fn draw_world_cursor_and_skill(ctx: &mut StableClient<'_>, mouse: MouseSnapshot) {
+        let Ok(()) = camera_probe::ensure_installed() else {
+            return;
+        };
+        let Some(camera) = Self::best_camera() else {
+            return;
+        };
+
+        if let Some(cursor) = Self::cursor_world(ctx, mouse, camera) {
+            ctx.draw_set_camera(
+                "Game",
+                camera.center_x,
+                camera.center_y,
+                camera.extent_a,
+                camera.extent_b,
+            );
+            ctx.draw_circle(
+                "Game",
+                cursor.world_x,
+                cursor.world_y,
+                11.0 * cursor.marker_units_per_px,
+                100_000,
+                CURSOR_WORLD_COLOR,
+            );
+            ctx.draw_circle(
+                "Game",
+                cursor.world_x,
+                cursor.world_y,
+                7.0 * cursor.marker_units_per_px,
+                100_001,
+                CURSOR_WORLD_COLOR,
+            );
+        }
+        Self::draw_skill_preview(ctx, camera);
     }
 
     fn draw_start_gate(ctx: &mut StableClient<'_>) {
-        let pacing = pacing_probe::snapshot();
-        let first_tick = pacing
-            .first_candidate_a_tick
-            .map(|tick| tick.to_string())
-            .unwrap_or_else(|| "--".to_owned());
-        let last_tick = pacing
-            .last_candidate_a_tick
-            .map(|tick| tick.to_string())
-            .unwrap_or_else(|| "--".to_owned());
+        ctx.draw_rect("UI", 18.0, 58.0, 820.0, 74.0, 19_998, 6.0, 0x101018dd);
+        Self::draw_text_line(
+            ctx,
+            64.0,
+            &format!(
+                "DIRECT CONTROL: {} | Ctrl+Home starts live simulation",
+                pacing_probe::presentation_phase_label()
+            ),
+            0x80ffbfff,
+        );
+        Self::draw_text_line(
+            ctx,
+            88.0,
+            "Waiting for match view. Ctrl+End is the emergency permanent release.",
+            0xffd080ff,
+        );
+    }
 
-        ctx.draw_rect("UI", 18.0, 58.0, 1_450.0, 92.0, 19_998, 6.0, 0x101018dd);
+    fn draw_status(ctx: &mut StableClient<'_>, pause_ui: &pause_probe::PauseUiSnapshot) {
+        let pacing = pacing_probe::snapshot();
+        let control_state = control::diagnostics();
+        let skill = control::skill_targeting_snapshot();
+
+        let selected = control_state
+            .selected_athlete
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "none".to_owned());
+        let order = if let Some(target_id) = control_state.attack_target {
+            format!("attack {target_id}")
+        } else if let Some((x, y)) = control_state.move_target {
+            format!("move ({x},{y})")
+        } else {
+            "hold".to_owned()
+        };
+        let armed = skill.armed.map(|slot| slot.label()).unwrap_or("--");
+        let range = skill
+            .range_sim
+            .map(|value| value.to_string())
+            .unwrap_or_else(|| "?".to_owned());
+        let pause_note = if pause_ui.paused {
+            pause_ui.marker.as_deref().unwrap_or("presentation paused")
+        } else {
+            "running"
+        };
+
+        ctx.draw_rect("UI", 18.0, 58.0, 1_030.0, 112.0, 19_998, 6.0, 0x101018d8);
         Self::draw_text_line(
             ctx,
             62.0,
             &format!(
-                "STAGE 5A START GATE: {} | Candidate A tick {} -> {} | held ~{} ms",
+                "DIRECT CONTROL: {} | start {} | {}",
                 pacing_probe::presentation_phase_label(),
-                first_tick,
-                last_tick,
-                pacing.start_total_wait_ms,
+                if pacing.start_requested { "YES" } else { "no" },
+                pause_note
             ),
-            0x80ff9fff,
+            if pause_ui.paused { 0xffd080ff } else { 0x80ffbfff },
         );
         Self::draw_text_line(
             ctx,
             84.0,
-            "CTRL+HOME: start/release Candidate A into 60 Hz live simulation",
-            0xffd080ff,
+            &format!("SELECTED: athlete {selected} | ORDER: {order}"),
+            0xffffffff,
         );
         Self::draw_text_line(
             ctx,
             106.0,
-            "If the battlefield cannot appear while held, Ctrl+Home here is the escape hatch and proves loading depends on simulation progress.",
-            0x80d8ffff,
-        );
-    }
-
-    fn draw_probe(
-        &self,
-        ctx: &mut StableClient<'_>,
-        mouse: MouseSnapshot,
-        pause_ui: &pause_probe::PauseUiSnapshot,
-    ) {
-        ctx.draw_rect("UI", 18.0, 58.0, 1_820.0, 448.0, 19_998, 6.0, 0x101018dd);
-
-        match simulation_probe::ensure_installed() {
-            Ok(()) => Self::draw_text_line(
-                ctx,
-                62.0,
-                "SIM TASK PROBE: A confirmed watched-match job | contextual RMB + manual skill targeting",
-                0x80ff9fff,
-            ),
-            Err(error) => {
-                Self::draw_text_line(
-                    ctx,
-                    62.0,
-                    &format!("SIM TASK PROBE: FAILED - {error}"),
-                    0xff7070ff,
-                );
-                return;
-            }
-        }
-
-        for (index, probe) in simulation_probe::snapshots().iter().enumerate() {
-            Self::draw_text_line(
-                ctx,
-                84.0 + index as f32 * 22.0,
-                &format!(
-                    "{} RVA 0x{:X} | enter {} active {} done {} | thread {} | ctx 0x{:X} | last {} ms max {} ms",
-                    probe.name,
-                    probe.rva,
-                    probe.entries,
-                    probe.active,
-                    probe.completions,
-                    probe.last_thread_id,
-                    probe.last_context,
-                    probe.last_duration_ms,
-                    probe.max_duration_ms,
-                ),
-                0xffd080ff,
-            );
-        }
-
-        if let Ok(sig) = simulation_probe::core_signatures() {
-            Self::draw_text_line(
-                ctx,
-                150.0,
-                &format!("CORE WRAPPER RVA 0x{:X} first32: {}", sig.wrapper_rva, sig.wrapper_bytes),
-                0xffd080ff,
-            );
-            Self::draw_text_line(
-                ctx,
-                172.0,
-                &format!("CORE RUNNER  RVA 0x{:X} first32: {}", sig.runner_rva, sig.runner_bytes),
-                0xffd080ff,
-            );
-        }
-
-        let clock = ctx
-            .ui_text("ingame.header.game_time.value")
-            .unwrap_or_else(|| "--:--".to_owned());
-
-        let mut cursor_projection = None;
-        match camera_probe::ensure_installed() {
-            Ok(()) => {
-                if let Some(camera) = Self::best_camera() {
-                    Self::draw_text_line(
-                        ctx,
-                        194.0,
-                        &format!(
-                            "visible clock {} | camera calls {} mode {} zoom {:.2} center ({:.2},{:.2})",
-                            clock,
-                            camera.calls,
-                            camera.mode,
-                            camera.zoom,
-                            camera.center_x,
-                            camera.center_y,
-                        ),
-                        0xffffffff,
-                    );
-
-                    cursor_projection = Self::cursor_world(ctx, mouse, camera);
-                    if let Some(cursor) = cursor_projection {
-                        ctx.draw_set_camera(
-                            "Game",
-                            camera.center_x,
-                            camera.center_y,
-                            camera.extent_a,
-                            camera.extent_b,
-                        );
-                        ctx.draw_circle(
-                            "Game",
-                            cursor.world_x,
-                            cursor.world_y,
-                            11.0 * cursor.marker_units_per_px,
-                            100_000,
-                            CURSOR_WORLD_COLOR,
-                        );
-                        ctx.draw_circle(
-                            "Game",
-                            cursor.world_x,
-                            cursor.world_y,
-                            7.0 * cursor.marker_units_per_px,
-                            100_001,
-                            CURSOR_WORLD_COLOR,
-                        );
-                    }
-                    Self::draw_skill_preview(ctx, camera);
-                }
-            }
-            Err(error) => Self::draw_text_line(
-                ctx,
-                194.0,
-                &format!("visible clock {} | camera hook failed: {error}", clock),
-                0xff7070ff,
-            ),
-        }
-
-        let pacing = pacing_probe::snapshot();
-        let first_tick = pacing
-            .first_candidate_a_tick
-            .map(|tick| tick.to_string())
-            .unwrap_or_else(|| "--".to_owned());
-        let last_tick = pacing
-            .last_candidate_a_tick
-            .map(|tick| tick.to_string())
-            .unwrap_or_else(|| "--".to_owned());
-        let last_player = pacing
-            .last_candidate_a_player
-            .map(|player| player.to_string())
-            .unwrap_or_else(|| "--".to_owned());
-        let last_athlete = pacing
-            .last_candidate_a_athlete
-            .map(|athlete| athlete.to_string())
-            .unwrap_or_else(|| "--".to_owned());
-        let origin_tick = pacing
-            .pacer_origin_tick
-            .map(|tick| tick.to_string())
-            .unwrap_or_else(|| "--".to_owned());
-
-        Self::draw_text_line(
-            ctx,
-            216.0,
             &format!(
-                "AI CALLBACKS (all sims) {} | Candidate A {} | thread {} | players 0x{:X} | tick {} -> {} | player {} athlete {}",
-                pacing.total_think_calls,
-                pacing.candidate_a_think_calls,
-                pacing.last_candidate_a_thread,
-                pacing.seen_player_mask,
-                first_tick,
-                last_tick,
-                last_player,
-                last_athlete,
-            ),
-            0x80d8ffff,
-        );
-        Self::draw_text_line(
-            ctx,
-            238.0,
-            &format!(
-                "PACER: phase {} | start {} | origin {} | elapsed {} ms | pace waits {} | start held ~{} ms | pause held ~{} ms",
-                pacing_probe::presentation_phase_label(),
-                if pacing.start_requested { "YES" } else { "no" },
-                origin_tick,
-                pacing.pacer_elapsed_ms,
-                pacing.pacer_wait_count,
-                pacing.start_total_wait_ms,
-                pacing.pause_total_wait_ms,
-            ),
-            0x80ffbfff,
-        );
-        Self::draw_text_line(
-            ctx,
-            260.0,
-            &format!(
-                "JOB: entry {} ctx 0x{:X} | finish {} | fail-open {}",
-                pacing.active_job_entry,
-                pacing.active_job_context,
-                if pacing.manual_finish_requested { "YES" } else { "no" },
-                if pacing.safety_fail_open { "YES" } else { "no" },
-            ),
-            0x80ffbfff,
-        );
-
-        let pause_marker = pause_ui
-            .marker
-            .as_deref()
-            .unwrap_or("pause_ui not visible");
-        Self::draw_text_line(
-            ctx,
-            282.0,
-            &format!(
-                "PAUSE UI: detected {} | scanned {} nodes | {}",
-                if pause_ui.paused { "YES" } else { "no" },
-                pause_ui.scanned_nodes,
-                pause_marker,
-            ),
-            if pause_ui.paused {
-                0xffd080ff
-            } else {
-                0x80ffffff
-            },
-        );
-
-        let mapping = slot_mapping::snapshot();
-        let mapping_text = if let Some(error) = mapping.error.as_deref() {
-            format!(
-                "F-KEY MAP: F{} FAILED: {} | card {:?}",
-                mapping.fkey_slot.map(|slot| slot + 1).unwrap_or(0),
-                error,
-                mapping.card_text,
-            )
-        } else if let (Some(slot), Some(name), Some(athlete_id)) = (
-            mapping.fkey_slot,
-            mapping.athlete_name.as_deref(),
-            mapping.athlete_id,
-        ) {
-            format!(
-                "F-KEY MAP: F{} -> {} -> athlete {} | card {:?}",
-                slot + 1,
-                name,
-                athlete_id,
-                mapping.card_text,
-            )
-        } else {
-            "F-KEY MAP: -- (press F1-F10 after starting)".to_owned()
-        };
-        Self::draw_text_line(ctx, 304.0, &mapping_text, 0x80d8ffff);
-
-        let control_state = control::diagnostics();
-        let selection = control_state
-            .selected_athlete
-            .map(|athlete| format!("athlete {athlete}"))
-            .unwrap_or_else(|| "none".to_owned());
-        let target = control_state
-            .move_target
-            .map(|(x, y)| format!("({x},{y})"))
-            .unwrap_or_else(|| "--".to_owned());
-        let attack = control_state
-            .attack_target
-            .map(|target_id| target_id.to_string())
-            .unwrap_or_else(|| "--".to_owned());
-        let manual_tick = control_state
-            .last_manual_tick
-            .map(|tick| tick.to_string())
-            .unwrap_or_else(|| "--".to_owned());
-        Self::draw_text_line(
-            ctx,
-            326.0,
-            &format!(
-                "CONTROL: selected {} | RMB(sim) {} | attack {} | cmds {} | resolved M{} A{} | returns {} (atk {}) | tick {}",
-                selection,
-                target,
-                attack,
-                control_state.move_command_count,
-                control_state.move_resolve_count,
-                control_state.attack_resolve_count,
-                control_state.manual_input_returns,
-                control_state.attack_input_returns,
-                manual_tick,
-            ),
-            if pacing_probe::manual_control_released() {
-                0xff7070ff
-            } else {
-                0x80ffffff
-            },
-        );
-
-        let projection_text = cursor_projection
-            .map(|cursor| {
-                format!(
-                    "CURSOR: world ({:.2},{:.2}) -> sim ({},{}) | origin {}",
-                    cursor.world_x,
-                    cursor.world_y,
-                    cursor.sim_x,
-                    cursor.sim_y,
-                    if cursor.used_center_log_origin {
-                        "center_log"
-                    } else {
-                        "UI center fallback"
-                    },
-                )
-            })
-            .unwrap_or_else(|| "CURSOR: projection unavailable".to_owned());
-        Self::draw_text_line(ctx, 348.0, &projection_text, 0x80d8ffff);
-        Self::draw_text_line(
-            ctx,
-            370.0,
-            "CTRL+HOME = START | F1-F10 select | RMB move/attack | Q/W/R arm | LMB confirm | RMB/Esc cancel",
-            if pacing.start_requested {
-                0x80d8ffff
-            } else {
-                0xffd080ff
-            },
-        );
-        Self::draw_text_line(
-            ctx,
-            392.0,
-            "CTRL+END = release control + pacing and finish simulation — CANNOT RESUME THIS MATCH",
-            if pacing.manual_finish_requested {
-                0xff7070ff
-            } else {
-                0xffd080ff
-            },
-        );
-
-        let skill = control::skill_targeting_snapshot();
-        let armed = skill.armed.map(|slot| slot.label()).unwrap_or("--");
-        let range = skill
-            .range_sim
-            .map(|range| range.to_string())
-            .unwrap_or_else(|| "?".to_owned());
-        Self::draw_text_line(
-            ctx,
-            414.0,
-            &format!(
-                "SKILL: armed {} | mode {} | finite range {} | arms {} confirms {} casts {} rejected {} cancels {}",
-                armed,
+                "SKILL: {armed} | mode {} | range {range} | casts {} | rejected {}",
                 skill.mode.label(),
-                range,
-                skill.arm_count,
-                skill.confirm_count,
                 skill.cast_count,
-                skill.reject_count,
-                skill.cancel_count,
+                skill.reject_count
             ),
-            if skill.armed.is_some() {
-                0xffd080ff
-            } else {
-                0x80d8ffff
-            },
+            if skill.armed.is_some() { 0xffd080ff } else { 0x80d8ffff },
+        );
+        Self::draw_text_line(
+            ctx,
+            128.0,
+            "F1-F10 select | RMB move/attack | Q/W/R arm | LMB confirm | RMB/Esc cancel | Ctrl+End release",
+            0x80d8ffff,
         );
     }
 }
@@ -919,8 +622,6 @@ impl StableExtension for DirectControlExtension {
         let was_ingame = WAS_INGAME.swap(ingame, Ordering::AcqRel);
 
         if !ingame && was_ingame {
-            // Prepare the one-way start/release state for the next match. The actual Candidate-A
-            // job boundary is also detected on the simulation thread.
             pacing_probe::prepare_next_match();
             control::reset();
             slot_mapping::reset();
@@ -928,8 +629,6 @@ impl StableExtension for DirectControlExtension {
 
         if ingame && !was_ingame {
             camera_probe::clear_candidates();
-            // Deliberately DO NOT reset pacing here. Resetting the pacer at InGame was what erased
-            // the relationship to pre-match simulation time and created hidden lead.
             pause_probe::reset();
             control::reset();
             slot_mapping::reset();
@@ -953,10 +652,11 @@ impl StableExtension for DirectControlExtension {
         let mouse = self.read_mouse(ctx);
         let skill_consumed_rmb = self.poll_skill_targeting(ctx, mouse, ingame);
         self.poll_rmb_move(ctx, mouse, ingame, skill_consumed_rmb);
-        Self::draw_mouse_overlay(ctx, mouse);
+        Self::draw_cursor(ctx, mouse);
 
         if ingame {
-            self.draw_probe(ctx, mouse, &pause_ui);
+            Self::draw_world_cursor_and_skill(ctx, mouse);
+            Self::draw_status(ctx, &pause_ui);
         } else {
             Self::draw_start_gate(ctx);
         }
