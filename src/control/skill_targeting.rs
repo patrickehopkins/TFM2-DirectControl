@@ -4,10 +4,10 @@
 //! and LMB confirmation. The paced simulation thread decides which InputTarget shape the selected
 //! champion actually accepts through StableAiContext::is_valid_input.
 //!
-//! StableAction exposes exact range/casting metadata, but the stable runtime contexts do not expose
-//! vanilla champions' StableAction objects. We therefore distinguish *trusted* finite range from
-//! "the validator accepts the map edge". The latter is NOT treated as global range; it means the
-//! validator cannot tell us the action's range and the preview leaves the range circle absent.
+//! Preview mode is deliberately only a hint. Vanilla action metadata is not exposed through the
+//! stable runtime AI context, and situational target requirements can make a legal Target skill look
+//! like another shape while no valid target exists. Every LMB confirmation therefore probes the
+//! legal forms again instead of trusting a cached preview guess.
 
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 
@@ -52,12 +52,6 @@ static PREVIEW_RANGE_SIM: AtomicU64 = AtomicU64::new(0);
 static SELF_ACTIVE: AtomicBool = AtomicBool::new(false);
 static SELF_X: AtomicU64 = AtomicU64::new(0);
 static SELF_Y: AtomicU64 = AtomicU64::new(0);
-
-// Target shape is stable for one champion/slot, so retain it across arm/cancel cycles. Selection
-// changes clear these caches. Range is intentionally re-probed because level/buffs can change it.
-static CACHED_MODE_Q: AtomicU8 = AtomicU8::new(MODE_UNKNOWN);
-static CACHED_MODE_W: AtomicU8 = AtomicU8::new(MODE_UNKNOWN);
-static CACHED_MODE_R: AtomicU8 = AtomicU8::new(MODE_UNKNOWN);
 
 static ARM_COUNT: AtomicU64 = AtomicU64::new(0);
 static CANCEL_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -154,41 +148,14 @@ pub struct SkillTargetingSnapshot {
     pub mode: SkillPreviewMode,
     pub cursor: Option<(u64, u64)>,
     pub self_position: Option<(u64, u64)>,
-    /// Present only when runtime validation found a finite boundary. Map-edge acceptance is unknown,
-    /// not a fake map-sized range.
+    /// Present only when runtime validation found a finite boundary. Map-edge acceptance remains
+    /// unknown rather than being displayed as a fake map-sized range.
     pub range_sim: Option<u64>,
     pub arm_count: u64,
     pub cancel_count: u64,
     pub confirm_count: u64,
     pub cast_count: u64,
     pub reject_count: u64,
-}
-
-fn cached_mode(slot: SkillSlot) -> SkillPreviewMode {
-    let code = match slot {
-        SkillSlot::Q => CACHED_MODE_Q.load(Ordering::Acquire),
-        SkillSlot::W => CACHED_MODE_W.load(Ordering::Acquire),
-        SkillSlot::R => CACHED_MODE_R.load(Ordering::Acquire),
-    };
-    SkillPreviewMode::from_code(code)
-}
-
-fn remember_mode(slot: SkillSlot, mode: SkillPreviewMode) {
-    if mode == SkillPreviewMode::Unknown {
-        return;
-    }
-    let cache = match slot {
-        SkillSlot::Q => &CACHED_MODE_Q,
-        SkillSlot::W => &CACHED_MODE_W,
-        SkillSlot::R => &CACHED_MODE_R,
-    };
-    cache.store(mode.code(), Ordering::Release);
-}
-
-fn clear_mode_cache() {
-    CACHED_MODE_Q.store(MODE_UNKNOWN, Ordering::Release);
-    CACHED_MODE_W.store(MODE_UNKNOWN, Ordering::Release);
-    CACHED_MODE_R.store(MODE_UNKNOWN, Ordering::Release);
 }
 
 fn clear_preview() {
@@ -220,7 +187,6 @@ fn clear_targeting_state() {
 
 pub fn reset() {
     clear_targeting_state();
-    clear_mode_cache();
     CURSOR_VERSION.store(0, Ordering::Release);
     CONFIRM_VERSION.store(0, Ordering::Release);
     RESOLVED_CONFIRM_VERSION.store(0, Ordering::Release);
@@ -233,14 +199,12 @@ pub fn reset() {
 
 pub fn on_selection_changed() {
     clear_targeting_state();
-    clear_mode_cache();
 }
 
 pub fn arm(slot: SkillSlot) {
     ARMED_SLOT.store(slot.code(), Ordering::Release);
     clear_confirm();
     clear_preview();
-    PREVIEW_MODE.store(cached_mode(slot).code(), Ordering::Release);
     ARM_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
@@ -378,6 +342,14 @@ fn clicked_entity(ctx: &mut StableAiContext<'_>, click: (u64, u64)) -> Option<us
     .map(|picked| picked.id)
 }
 
+fn own_entity_id(ctx: &mut StableAiContext<'_>) -> Option<usize> {
+    let player_id = ctx.player_id();
+    let sim = ctx.sim()?;
+    let player = sim.get_player(player_id)?;
+    let champion = player.champion()?;
+    Some(champion.id())
+}
+
 fn visible_target_ids(ctx: &mut StableAiContext<'_>) -> Vec<usize> {
     let team = ctx.team();
     let Some(sim) = ctx.sim() else {
@@ -395,9 +367,8 @@ fn visible_target_ids(ctx: &mut StableAiContext<'_>) -> Vec<usize> {
     ids
 }
 
-/// Infer the *input shape*, not effect geometry. Prefer specific forms before Position because some
-/// built-in actions are permissive about positional inputs even when their intended control is more
-/// specific.
+/// Infer only a presentation hint. This is deliberately re-evaluated while armed and is never used
+/// as the sole authority for LMB execution.
 fn infer_mode(
     ctx: &mut StableAiContext<'_>,
     slot: SkillSlot,
@@ -406,6 +377,14 @@ fn infer_mode(
 ) -> SkillPreviewMode {
     if ctx.is_valid_input(&action(slot, target_none())) {
         return SkillPreviewMode::None;
+    }
+
+    // Some vanilla self buffs are represented as a Targeting action with AllyOnlySelf rather than
+    // CastingType::None. Probe our own champion explicitly so those do not masquerade as Direction.
+    if let Some(self_id) = own_entity_id(ctx) {
+        if ctx.is_valid_input(&action(slot, target_entity(self_id))) {
+            return SkillPreviewMode::Target;
+        }
     }
 
     if let Some(id) = clicked_entity(ctx, cursor) {
@@ -544,16 +523,18 @@ fn update_preview(
         return;
     };
 
-    let mut mode = SkillPreviewMode::from_code(PREVIEW_MODE.load(Ordering::Acquire));
-    if mode == SkillPreviewMode::Unknown {
-        mode = infer_mode(ctx, slot, self_position, cursor);
-        if mode != SkillPreviewMode::Unknown {
-            PREVIEW_MODE.store(mode.code(), Ordering::Release);
-            remember_mode(slot, mode);
+    let inferred = infer_mode(ctx, slot, self_position, cursor);
+    let previous = SkillPreviewMode::from_code(PREVIEW_MODE.load(Ordering::Acquire));
+    let mode = if inferred != SkillPreviewMode::Unknown {
+        if inferred != previous {
+            PREVIEW_MODE.store(inferred.code(), Ordering::Release);
             PREVIEW_RANGE_STATE.store(RANGE_UNCHECKED, Ordering::Release);
             PREVIEW_RANGE_SIM.store(0, Ordering::Relaxed);
         }
-    }
+        inferred
+    } else {
+        previous
+    };
 
     if PREVIEW_RANGE_STATE.load(Ordering::Acquire) != RANGE_UNCHECKED {
         return;
@@ -566,66 +547,76 @@ fn update_preview(
         } else {
             PREVIEW_RANGE_STATE.store(RANGE_UNAVAILABLE, Ordering::Release);
         }
-    } else if matches!(mode, SkillPreviewMode::Target | SkillPreviewMode::Direction | SkillPreviewMode::None) {
-        // Exact action metadata exists in StableAction, but is not exposed for vanilla actions from
-        // this runtime context. Do not fabricate a range from cursor position or map dimensions.
+    } else if mode != SkillPreviewMode::Unknown {
         PREVIEW_RANGE_STATE.store(RANGE_UNAVAILABLE, Ordering::Release);
     }
 }
 
+fn legal_target_exists(ctx: &mut StableAiContext<'_>, slot: SkillSlot) -> bool {
+    visible_target_ids(ctx)
+        .into_iter()
+        .take(64)
+        .any(|id| ctx.is_valid_input(&action(slot, target_entity(id))))
+}
+
+/// Resolve the actual click independently of the preview guess. This is the execution authority.
 fn resolve_confirm(
     ctx: &mut StableAiContext<'_>,
     slot: SkillSlot,
     self_position: (u64, u64),
     click: (u64, u64),
 ) -> Option<InputV1> {
-    let mode = SkillPreviewMode::from_code(PREVIEW_MODE.load(Ordering::Acquire));
+    let none = action(slot, target_none());
+    if ctx.is_valid_input(&none) {
+        PREVIEW_MODE.store(MODE_NONE, Ordering::Release);
+        return Some(none);
+    }
 
-    let valid = |ctx: &StableAiContext<'_>, input: InputV1| {
-        ctx.is_valid_input(&input).then_some(input)
-    };
-
-    match mode {
-        SkillPreviewMode::None => valid(ctx, action(slot, target_none())),
-        SkillPreviewMode::Target => {
-            let id = clicked_entity(ctx, click)?;
-            valid(ctx, action(slot, target_entity(id)))
+    let clicked = clicked_entity(ctx, click);
+    if let Some(id) = clicked {
+        let targeted = action(slot, target_entity(id));
+        if ctx.is_valid_input(&targeted) {
+            PREVIEW_MODE.store(MODE_TARGET, Ordering::Release);
+            return Some(targeted);
         }
-        SkillPreviewMode::Direction => valid(ctx, action(slot, target_dir(self_position, click))),
-        SkillPreviewMode::Position => {
-            let range = match PREVIEW_RANGE_STATE.load(Ordering::Acquire) {
-                RANGE_KNOWN => Some(PREVIEW_RANGE_SIM.load(Ordering::Acquire)),
-                _ => None,
-            };
-            let target = range
-                .map(|range| clamp_to_range(self_position, click, range))
-                .unwrap_or(click);
-            valid(ctx, action(slot, target_pos(target.0, target.1)))
-        }
-        SkillPreviewMode::Unknown => {
-            // Prefer specific semantic forms before Position. This is also the fallback while a
-            // cooldown or situational prerequisite prevents us from learning the mode in advance.
-            let none = action(slot, target_none());
-            if ctx.is_valid_input(&none) {
-                return Some(none);
-            }
-
-            if let Some(id) = clicked_entity(ctx, click) {
-                let targeted = action(slot, target_entity(id));
-                if ctx.is_valid_input(&targeted) {
-                    return Some(targeted);
-                }
-            }
-
-            let direction = action(slot, target_dir(self_position, click));
-            if ctx.is_valid_input(&direction) {
-                return Some(direction);
-            }
-
-            let position = action(slot, target_pos(click.0, click.1));
-            ctx.is_valid_input(&position).then_some(position)
+    } else if let Some(self_id) = own_entity_id(ctx) {
+        // Blank-map LMB is allowed to confirm a self-only Targeting buff. We intentionally do not
+        // auto-self-cast when the user actually clicked another entity: a failed ally/enemy click
+        // should remain a failed target selection, not silently redirect onto the caster.
+        let self_targeted = action(slot, target_entity(self_id));
+        if ctx.is_valid_input(&self_targeted) {
+            PREVIEW_MODE.store(MODE_TARGET, Ordering::Release);
+            return Some(self_targeted);
         }
     }
+
+    // If this action demonstrably accepts entity targets right now, a wrong/out-of-range entity
+    // click is a rejection. Do not fall through to a permissive Direction/Position interpretation.
+    if legal_target_exists(ctx, slot) {
+        PREVIEW_MODE.store(MODE_TARGET, Ordering::Release);
+        return None;
+    }
+
+    let direction = action(slot, target_dir(self_position, click));
+    if ctx.is_valid_input(&direction) {
+        PREVIEW_MODE.store(MODE_DIRECTION, Ordering::Release);
+        return Some(direction);
+    }
+
+    let range = match PREVIEW_RANGE_STATE.load(Ordering::Acquire) {
+        RANGE_KNOWN => Some(PREVIEW_RANGE_SIM.load(Ordering::Acquire)),
+        _ => None,
+    };
+    let point = range
+        .map(|range| clamp_to_range(self_position, click, range))
+        .unwrap_or(click);
+    let position = action(slot, target_pos(point.0, point.1));
+    if ctx.is_valid_input(&position) {
+        PREVIEW_MODE.store(MODE_POSITION, Ordering::Release);
+        return Some(position);
+    }
+
+    None
 }
 
 /// Called only for the already-selected athlete from the paced StablePlayerAi callback.
