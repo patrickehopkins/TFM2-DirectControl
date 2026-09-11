@@ -178,6 +178,7 @@ fn resolve_latest_rmb(ctx: &mut StableAiContext<'_>) {
         return;
     }
 
+    let controlled_team = ctx.team();
     let Some(sim) = ctx.sim() else {
         // Fail safe: do not consume the request until authoritative simulation state is available.
         return;
@@ -185,7 +186,7 @@ fn resolve_latest_rmb(ctx: &mut StableAiContext<'_>) {
 
     if let Some(picked) = pick_hostile_entity(
         &sim,
-        ctx.team(),
+        controlled_team,
         x,
         y,
         MINIMUM_PICK_RADIUS_SIM,
@@ -214,6 +215,7 @@ fn active_manual_input(ctx: &mut StableAiContext<'_>) -> Option<InputV1> {
                 return None;
             }
 
+            let controlled_team = ctx.team();
             let Some(sim) = ctx.sim() else {
                 return None;
             };
@@ -226,8 +228,8 @@ fn active_manual_input(ctx: &mut StableAiContext<'_>) -> Option<InputV1> {
             // Vanilla input can resume until the user issues another RMB command.
             if !target.is_alive()
                 || !target.is_targetable()
-                || target.team() == ctx.team()
-                || !sim.is_visible(ctx.team(), target_id)
+                || target.team() == controlled_team
+                || !sim.is_visible(controlled_team, target_id)
             {
                 clear_active_command();
                 return None;
