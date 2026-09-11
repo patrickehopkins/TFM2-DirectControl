@@ -1,6 +1,6 @@
 # Q/W/R + LMB skill targeting
 
-Status: first generic skill-targeting implementation, awaiting further physical validation.
+Status: generic skill execution physically validated across multiple champion/skill families. Dynamic range/geometry indicators remain unfinished polish/technical work.
 
 ## Controls
 
@@ -26,7 +26,7 @@ The stable API exposes four `InputTargetKindV1` forms:
 - `Dir` — direction vector from caster;
 - `None` — no explicit target.
 
-Rather than maintaining per-champion targeting tables, the simulation callback probes candidate forms through `StableAiContext::is_valid_input`. Once a valid shape is found for an armed skill, it is cached for that targeting session. LMB confirmation is also validated before an input is emitted.
+Rather than maintaining per-champion targeting tables, the simulation callback probes candidate forms through `StableAiContext::is_valid_input`. Preview inference is advisory only; each LMB confirmation re-tests legal target forms so a stale/misclassified preview cannot veto a valid cast.
 
 A failed LMB is consumed once and leaves the skill armed. It does **not** become a delayed automatic cast if a cooldown becomes ready later; the user must click again.
 
@@ -58,18 +58,18 @@ The intended generic visual grammar is:
 
 The runtime stable interface does not currently expose a generic AOE-radius or projectile-width getter for vanilla skills, so those values must not be fabricated or hard-coded from one patch.
 
-## First validation targets
+## Validation status
 
-1. Existing RMB ground movement and hostile targeting still work when no skill is armed.
-2. Q, W, and R each arm the expected slot and show `SKILL: armed ...` in the overlay.
-3. RMB or Escape cancels an armed skill without moving the champion.
-4. LMB on an in-range targeted skill casts on the clicked legal entity.
-5. A Direction skill casts in the cursor direction and shows the yellow direction line.
-6. A Position skill shows the generic aim ray and, where available, a believable finite blue range circle.
-7. Moving the cursor outside a known finite range clips the aim indicator to the boundary and casts only at a validator-approved location.
-8. A self/no-target skill can be confirmed without requiring an entity.
-9. Invalid confirmation leaves the skill armed and increments the reject counter rather than handing control back to vanilla AI.
-10. After a successful cast, the previous persistent RMB order can resume.
+Generic manual skill execution is considered **passed** based on physical testing across Pyromancer, Siegebreaker, Berserker, Executioner, Monk, and Swordmaster. The tested set covered multiple skill behaviors and all responded correctly under direct control once native key conflicts and target-form resolution were accounted for.
+
+A previous assumption that Berserker had a broken self-cast/self-only buff was incorrect; further testing indicates the observed restriction was the skill's intended target legality rather than a direct-control failure. Likewise, earlier apparent unresponsiveness on some skills should not be treated as implementation failures when the game's own target restrictions reject the attempted target.
+
+The following remain **separate from the passed execution path**:
+
+- live max-range radial acquisition and ray clipping for every skill;
+- AOE radius/projectile-width visualization;
+- exact presentation behavior for self/no-target skills;
+- future chase-to-cast behavior for targeted skills outside legal range.
 
 ## Deferred geometry polish
 
@@ -87,13 +87,6 @@ Until then, truthful generic indicators are preferred over fabricated hitboxes.
 The previously unidentified no-speed-selected timeline state is the game's native **`S = Pause Match`** shortcut. It pauses match presentation without opening the full pause menu, leaving the normal speed buttons unselected.
 
 `pause_probe` treats recognized playback controls with none selected as a timeline pause so Candidate A should stop with presentation. This can now be reproduced deliberately with `S` if the pacing safeguard needs focused validation.
-
-## Latest skill observations
-
-- Berserker's self buff can currently be cast only when LMB lands on Berserker's own hitbox. This is progress, but self-only skills should eventually confirm without requiring a precise self click so they remain usable while chasing or moving.
-- Berserker W remains non-functional under manual control and needs separate investigation.
-- Executioner W works on enemy champions but did not cast on creeps in the latest test. It is not yet known whether creep rejection is intentional game behavior or a targeting-resolution issue.
-- Pyromancer was not retested in the latest pass; its previously working behavior should be preserved while the other targeting forms are corrected.
 
 ## Other deferred behavior
 
