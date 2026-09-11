@@ -1,6 +1,6 @@
 # Contextual RMB validation
 
-Status: first physical pass strongly validates contextual picking; follow-up build tightens manual authority and restores the previously validated cursor projection.
+Status: contextual picking and cursor projection are physically validated; current follow-up replaces implicit vanilla fallback with an explicit neutral hold for the selected athlete.
 
 ## Goal
 
@@ -28,11 +28,24 @@ This stage intentionally supports only contextual RMB:
 - visible hostile champion/minion/tower/other targetable entity -> attack exact entity id;
 - dead, untargetable, friendly, or non-visible entities cannot become RMB attack targets;
 - a chosen attack target remains identified by entity id as it moves;
-- a later RMB always replaces the previous manual move/attack command.
-
-Once an athlete is selected for manual control, vanilla `base_input` must remain suppressed for that athlete until manual control is explicitly released or another athlete is selected. Losing an attack target means no manual action that tick; it does not hand authority back to vanilla AI.
+- a later RMB always replaces the previous manual move/attack command;
+- loss of legal vision breaks target tracking and does not auto-reacquire the unit later;
+- target loss does not surrender the selected athlete back to vanilla AI.
 
 Q/W/R targeting is deliberately not part of this stage.
+
+## StablePlayerAi ownership rule
+
+The official stable API states that `StablePlayerAi::think` returning `None` keeps the built-in input, while returning `Some(InputV1)` replaces it.
+
+Therefore a manually selected athlete cannot use `None` as an idle state. When no user command is active, the control layer emits a neutral `MoveTo` to the athlete's current position. The last known self-position is retained as a fallback if one callback temporarily lacks a simulation view.
+
+This means:
+
+- low-health retreat logic must not seize a manually selected athlete;
+- shop/recall desire must not seize a manually selected athlete;
+- team macro calls such as Morgard may continue influencing all vanilla-controlled actors, but the selected athlete still receives a concrete manual input every tick;
+- losing an attack target because it dies, becomes untargetable, changes team, or leaves vision transitions to neutral hold rather than built-in AI.
 
 ## Picker geometry
 
@@ -54,15 +67,37 @@ Observed in a watched match:
 
 These results are strong evidence that entity picking, relation filtering, persistent entity-id targeting, and command replacement are working.
 
-The caveat was apparent vanilla AI takeover around champions/towers: the selected character could move away, chase, or use skills outside the user's command. Review found a concrete cause in the first implementation: when the active attack ceased to produce a manual input, the pacing hook fell through to `base_input`. The follow-up revision treats selection as authoritative manual ownership and returns the control layer's `Option<InputV1>` directly, so `None` suppresses vanilla input rather than resuming it.
+## Second physical result
+
+Follow-up testing reported:
+
+- entering champion/tower threat without a new order -> **PASS**; the selected athlete could remain still under threat;
+- RMB a moving enemy -> **PARTIAL PASS**; pursuit worked, but control sometimes redirected to another target;
+- let the target die -> **FAIL**; vanilla AI immediately resumed control;
+- RMB ground -> **PASS**;
+- pan/zoom and Match Info marker alignment -> **PASS**; the yellow marker remained under the reticle.
+
+Additional observation: low health, recall/shop desire, and a Morgard team call appeared capable of taking control. The official `None` semantics provide a concrete explanation for much of this behavior: whenever our manual command vanished, returning `None` explicitly preserved the built-in input for that tick.
+
+The new build therefore emits neutral hold instead of `None` for a selected athlete whenever no active manual action remains.
+
+## Target-loss diagnostics
+
+The control layer now counts attack target drops by cause:
+
+- vision loss;
+- target death;
+- other invalidation (missing entity, untargetable, or team mismatch).
+
+Vision loss is intentional behavior. If an enemy enters fog/bush or otherwise ceases to be legally visible, the exact target id is discarded and will not be silently reacquired later. The player must issue a new target command.
 
 ## Cursor projection regression
 
-The same first physical test reported that the yellow world marker was offset from the UI reticle again.
+The first physical test reported that the yellow world marker was offset from the UI reticle again.
 
 Review found that `cursor_world()` had drifted away from the camera formula already physically validated in `docs/camera-research.md`. It normalized the logical UI cursor delta through the 1920x1080 UI map before applying the Game-map projection, effectively using the wrong denominator.
 
-The follow-up restores the validated mapping:
+The follow-up restored the validated mapping:
 
 ```text
 dx = mouse_ui_x - center_log_center_x
@@ -72,24 +107,23 @@ world_x = camera_center_x + dx * extent_x / Game_map_width
 world_y = camera_center_y + dy * extent_y / Game_map_height
 ```
 
-with `Game_map_width/height` coming from the stable `Game` draw map (observed 2048x2048). Cursor points outside `ingame.center_log` are rejected.
+with `Game_map_width/height` coming from the stable `Game` draw map (observed 2048x2048). Cursor points outside `ingame.center_log` are rejected. The second physical test passed this correction across pan/zoom and Match Info layout changes.
 
-## Follow-up physical test
+## Current retest
 
 After `cargo check`, `cargo test`, and reinstalling the development build:
 
-1. Select one athlete and issue ground RMB. Confirm normal movement.
-2. Do not issue another command while entering champion/tower threat. The selected athlete must not autonomously cast skills, retreat, chase a different unit, or otherwise resume vanilla decisions.
-3. RMB an enemy champion and let the target move. Confirm exact-target pursuit/attack remains attached to that entity.
-4. Let the target die or otherwise become invalid. The selected athlete should stop receiving that attack command without vanilla AI immediately choosing a new action.
-5. RMB empty ground afterward. Confirm control resumes immediately.
-6. Pan and zoom while moving the cursor around the battlefield. The yellow Game-space marker should remain centered under the UI reticle.
-7. Repeat the marker check with Match Info / alternate battlefield layout if available.
+1. Select an athlete, give no command, and observe low-health / shop-ready behavior. The athlete should hold rather than retreat or recall on its own.
+2. RMB a visible hostile and let it move. The exact target should remain retained while legally visible.
+3. Force that target into fog/bush if practical. Tracking should break at visibility loss, then the athlete should hold; it must not auto-reacquire if the target reappears.
+4. Let a retained target die. The athlete should hold after death rather than selecting another target or recalling.
+5. During a Morgard/team call, keep a visible valid hostile targeted. If the selected athlete still obeys a different team directive while the attack target remains retained, that is evidence of a second control path downstream of StablePlayerAi and should be investigated separately.
 
-The overlay now shows the latest RMB simulation point, active attack target id, move/attack resolve counters, and attack-input return count to separate picking failures from command-execution failures.
+The yellow-marker calibration does not need another broad validation unless it regresses again.
 
-## Unknown to resolve physically
+## Remaining unknown
 
-The stable API documents `InputV1::action(InputKindV1::Attack, Target(entity_id))`, but does not explicitly document whether an out-of-range attack input automatically chases the selected target.
+The stable API documents `InputV1::action(InputKindV1::Attack, Target(entity_id))` but does not explicitly document all movement/chase behavior around that command. Physical testing shows useful pursuit, but any remaining retargeting after neutral hold is installed must be separated into:
 
-The first physical pass suggests the command behaves usefully enough to pursue/attack moving targets, but the follow-up test should still distinguish intentional target pursuit from any residual vanilla AI behavior now that manual authority is strict.
+- intentional target invalidation (especially visibility loss), versus
+- a genuine downstream game/team directive overriding a still-valid final per-tick manual input.
