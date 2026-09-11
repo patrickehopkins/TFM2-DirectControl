@@ -88,9 +88,16 @@ The previously unidentified no-speed-selected timeline state is the game's nativ
 
 `pause_probe` treats recognized playback controls with none selected as a timeline pause so Candidate A should stop with presentation. This can now be reproduced deliberately with `S` if the pacing safeguard needs focused validation.
 
+## Latest skill observations
+
+- Berserker's self buff can currently be cast only when LMB lands on Berserker's own hitbox. This is progress, but self-only skills should eventually confirm without requiring a precise self click so they remain usable while chasing or moving.
+- Berserker W remains non-functional under manual control and needs separate investigation.
+- Executioner W works on enemy champions but did not cast on creeps in the latest test. It is not yet known whether creep rejection is intentional game behavior or a targeting-resolution issue.
+- Pyromancer was not retested in the latest pass; its previously working behavior should be preserved while the other targeting forms are corrected.
+
 ## Other deferred behavior
 
-- attack recovery/orb-walk timing (current full basic-attack cooldown hold is conservative);
+- **Auto-attack chase recovery / orb-walk timing:** do not invent our own reset timing. Observe a vanilla AI-controlled champion that is simply walking toward a moving enemy and basic-attacking it, then copy the game's own cadence for when movement resumes after each auto-attack. The engine already knows the legal attack animation/cancel/recovery timing, so the preferred solution is to mirror that behavior rather than approximate it from the full attack cooldown.
 - narrow idle retaliation when an otherwise-idle selected champion is attacked in legal basic-attack range;
 - Gunfighter-specific move-while-attacking command composition;
 - Morgard/ping override investigation if it remains observable after explicit-command behavior is otherwise stable;
