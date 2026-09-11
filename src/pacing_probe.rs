@@ -489,7 +489,7 @@ impl StablePlayerAi for CandidateAObserverAi {
         pace_candidate_a(tick);
 
         if manual_input_enabled() {
-            if let Some(input) = control::manual_input_for(athlete_id, tick) {
+            if let Some(input) = control::manual_input_for(ctx, tick) {
                 return Some(input);
             }
         }
