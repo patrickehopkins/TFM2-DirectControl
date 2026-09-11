@@ -38,6 +38,7 @@ const SIM_UNITS_PER_WORLD_UNIT: f32 = 1000.0;
 const SKILL_Q_KEY: &str = "Q";
 const SKILL_W_KEY: &str = "W";
 const SKILL_R_KEY: &str = "R";
+const RETURN_HOME_KEY: &str = "B";
 
 static WAS_INGAME: AtomicBool = AtomicBool::new(false);
 static START_CHORD_WAS_DOWN: AtomicBool = AtomicBool::new(false);
@@ -219,6 +220,19 @@ impl DirectControlExtension {
         let slot = rising.trailing_zeros() as usize;
         if let Some(athlete_id) = slot_mapping::resolve_fkey(ctx, slot) {
             control::select_athlete(athlete_id);
+        }
+    }
+
+    fn poll_return_home(ctx: &StableClient<'_>, ingame: bool) {
+        if !ingame
+            || !pacing_probe::manual_input_enabled()
+            || control::selected_athlete().is_none()
+        {
+            return;
+        }
+
+        if ctx.key_pressed(RETURN_HOME_KEY) {
+            control::request_return_home();
         }
     }
 
@@ -559,7 +573,9 @@ impl DirectControlExtension {
             .selected_athlete
             .map(|id| id.to_string())
             .unwrap_or_else(|| "none".to_owned());
-        let order = if let Some(target_id) = control_state.attack_target {
+        let order = if control_state.returning {
+            "return home".to_owned()
+        } else if let Some(target_id) = control_state.attack_target {
             format!("attack {target_id}")
         } else if let Some((x, y)) = control_state.move_target {
             format!("move ({x},{y})")
@@ -609,7 +625,7 @@ impl DirectControlExtension {
         Self::draw_text_line(
             ctx,
             128.0,
-            "F1-F10 select | RMB move/attack | Q/W/R arm | LMB confirm | RMB/Esc cancel | Ctrl+End release",
+            "F1-F10 select | RMB move/attack | B return | Q/W/R arm | LMB confirm | RMB/Esc cancel | Ctrl+End release",
             0x80d8ffff,
         );
     }
@@ -644,6 +660,7 @@ impl StableExtension for DirectControlExtension {
         pacing_probe::set_presentation_state(ingame, pause_ui.paused);
         Self::poll_finish_chord(ingame);
         Self::poll_player_selection(ctx, ingame);
+        Self::poll_return_home(ctx, ingame);
 
         if !control_scene {
             return;
@@ -667,7 +684,7 @@ fn init(host: &StableHost) -> StableMod {
     match simulation_probe::ensure_installed() {
         Ok(()) => host.log(
             LogLevel::Info,
-            "TFM2 Direct Control loaded (contextual RMB + manual skill targeting)",
+            "TFM2 Direct Control loaded (contextual RMB + manual skill targeting + return home)",
         ),
         Err(error) => host.log(
             LogLevel::Error,
