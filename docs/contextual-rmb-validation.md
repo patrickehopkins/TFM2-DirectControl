@@ -1,6 +1,6 @@
 # Contextual RMB validation
 
-Status: contextual picking and cursor projection are physically validated; current follow-up replaces implicit vanilla fallback with an explicit neutral hold for the selected athlete.
+Status: contextual picking and cursor projection are physically validated. Current follow-up splits attack intent into explicit chase and exact attack execution so an out-of-range attack never falls into TFM2's higher-level combat/return behavior.
 
 ## Goal
 
@@ -12,7 +12,10 @@ RMB point published by client
         v
 paced Candidate-A StablePlayerAi callback
         |
-        +--> visible targetable hostile under point --> persistent Attack(Target(entity_id))
+        +--> visible targetable hostile under point --> persistent tracked target
+        |                                              |
+        |                                              +--> exact Attack valid -> Attack(Target)
+        |                                              `--> attack ready but invalid -> MoveTo(target current position)
         |
         `--> otherwise -------------------------------> persistent MoveTo(x, y)
 ```
@@ -25,8 +28,8 @@ This stage intentionally supports only contextual RMB:
 
 - empty ground -> move;
 - friendly unit -> move to the clicked ground point;
-- visible hostile champion/minion/tower/other targetable entity -> attack exact entity id;
-- dead, untargetable, friendly, or non-visible entities cannot become RMB attack targets;
+- visible hostile champion/minion/tower/other targetable entity -> retain exact entity id;
+- dead, untargetable, friendly, or non-visible entities cannot remain RMB attack targets;
 - a chosen attack target remains identified by entity id as it moves;
 - a later RMB always replaces the previous manual move/attack command;
 - loss of legal vision breaks target tracking and does not auto-reacquire the unit later;
@@ -46,6 +49,19 @@ This means:
 - shop/recall desire must not seize a manually selected athlete;
 - team macro calls such as Morgard may continue influencing all vanilla-controlled actors, but the selected athlete still receives a concrete manual input every tick;
 - losing an attack target because it dies, becomes untargetable, changes team, or leaves vision transitions to neutral hold rather than built-in AI.
+
+## Attack pursuit rule
+
+Physical testing showed that repeatedly emitting `Attack(Target)` while the target was out of range could still result in recall/retreat-style behavior instead of literal pursuit. The stable API exposes `ctx.is_valid_input(&input)`, which checks whether the exact input is currently legal, including range/cooldown conditions, and player cooldown reads expose remaining basic-attack cooldown.
+
+The control layer now treats RMB-on-hostile as a persistent **target intent**, not as a promise to emit `Attack` every tick:
+
+- target not legally visible -> drop target and hold;
+- exact attack currently valid -> emit `Attack(Target)`;
+- exact attack invalid while basic attack is ready -> emit `MoveTo(target.pos())` and keep the target id;
+- exact attack invalid while the basic attack is on cooldown -> hold current position until the attack is ready, then re-evaluate.
+
+This avoids sending rejected attack inputs while also avoiding the undesirable behavior of walking ranged champions directly into their targets during every attack cooldown.
 
 ## Picker geometry
 
@@ -77,13 +93,23 @@ Follow-up testing reported:
 - RMB ground -> **PASS**;
 - pan/zoom and Match Info marker alignment -> **PASS**; the yellow marker remained under the reticle.
 
-Additional observation: low health, recall/shop desire, and a Morgard team call appeared capable of taking control. The official `None` semantics provide a concrete explanation for much of this behavior: whenever our manual command vanished, returning `None` explicitly preserved the built-in input for that tick.
+The official `None` semantics explained the immediate handoff after target loss, so neutral hold was introduced.
 
-The new build therefore emits neutral hold instead of `None` for a selected athlete whenever no active manual action remains.
+## Third physical result
+
+After neutral hold was introduced:
+
+- low-health / combat pursuit still showed **FAIL** when a visible, out-of-range enemy was clicked: the selected athlete could immediately begin returning to base instead of moving toward the target;
+- exact pursuit of a visible moving target still **FAILED intermittently** for the same reason;
+- target disappearing into team fog/bush -> **PASS**: the selected athlete stopped immediately, which is the desired target-loss behavior;
+- Morgard/team-call override remained **INDETERMINATE** and is intentionally deferred until generic target pursuit is reliable;
+- cursor/world-marker alignment remained good.
+
+This result motivated the attack-pursuit split above. The working hypothesis is no longer that entity selection is wrong; the problematic case is specifically an out-of-range/rejected `Attack(Target)` being allowed to interact with pre-existing higher-level behavior.
 
 ## Target-loss diagnostics
 
-The control layer now counts attack target drops by cause:
+The control layer counts attack target drops by cause:
 
 - vision loss;
 - target death;
@@ -113,17 +139,16 @@ with `Game_map_width/height` coming from the stable `Game` draw map (observed 20
 
 After `cargo check`, `cargo test`, and reinstalling the development build:
 
-1. Select an athlete, give no command, and observe low-health / shop-ready behavior. The athlete should hold rather than retreat or recall on its own.
-2. RMB a visible hostile and let it move. The exact target should remain retained while legally visible.
-3. Force that target into fog/bush if practical. Tracking should break at visibility loss, then the athlete should hold; it must not auto-reacquire if the target reappears.
-4. Let a retained target die. The athlete should hold after death rather than selecting another target or recalling.
-5. During a Morgard/team call, keep a visible valid hostile targeted. If the selected athlete still obeys a different team directive while the attack target remains retained, that is evidence of a second control path downstream of StablePlayerAi and should be investigated separately.
+1. At low health, RMB a visible enemy that is clearly outside attack range. The selected athlete should physically pursue that target instead of recalling/retreating.
+2. Let the target move while remaining visible. Pursuit should remain attached to the same target id.
+3. Once the target enters legal basic-attack range, the athlete should attack that exact target.
+4. Let the target enter fog/bush. Tracking should break immediately and the athlete should hold; it must not auto-reacquire if the target reappears.
+5. Let a retained target die while visible. The athlete should hold after death rather than selecting another target or recalling.
 
-The yellow-marker calibration does not need another broad validation unless it regresses again.
+Morgard/team-call behavior can be revisited after these pass.
 
-## Remaining unknown
+## Character-specific follow-up: Gunfighter
 
-The stable API documents `InputV1::action(InputKindV1::Attack, Target(entity_id))` but does not explicitly document all movement/chase behavior around that command. Physical testing shows useful pursuit, but any remaining retargeting after neutral hold is installed must be separated into:
+Gunfighter can move while attacking. Current generic control treats movement and attack as mutually exclusive per-tick inputs, so issuing movement during an attack causes Gunfighter to finish one attack animation and then stop attacking until another attack command is issued.
 
-- intentional target invalidation (especially visibility loss), versus
-- a genuine downstream game/team directive overriding a still-valid final per-tick manual input.
+Do not special-case this until generic RMB pursuit is stable. Gunfighter will need a later command-composition/state solution that preserves its move-while-attacking identity rather than forcing the generic one-command-at-a-time model onto it.
