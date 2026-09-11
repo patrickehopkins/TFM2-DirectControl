@@ -1,6 +1,6 @@
 # Contextual RMB validation
 
-Status: implementation prepared on `feat/contextual-rmb-targeting`; requires local Rust build and one-match physical validation.
+Status: first physical pass strongly validates contextual picking; follow-up build tightens manual authority and restores the previously validated cursor projection.
 
 ## Goal
 
@@ -28,8 +28,9 @@ This stage intentionally supports only contextual RMB:
 - visible hostile champion/minion/tower/other targetable entity -> attack exact entity id;
 - dead, untargetable, friendly, or non-visible entities cannot become RMB attack targets;
 - a chosen attack target remains identified by entity id as it moves;
-- if that target dies, becomes untargetable, changes team, or becomes non-visible, manual ownership of that attack command ends;
 - a later RMB always replaces the previous manual move/attack command.
+
+Once an athlete is selected for manual control, vanilla `base_input` must remain suppressed for that athlete until manual control is explicitly released or another athlete is selected. Losing an attack target means no manual action that tick; it does not hand authority back to vanilla AI.
 
 Q/W/R targeting is deliberately not part of this stage.
 
@@ -39,51 +40,56 @@ Stage 6A uses the entity's stable simulation `radius()` as the initial click sha
 
 After exact-target behavior is proven, mouse forgiveness should be specified in screen pixels and converted to simulation units from the live camera scale before publication/resolution.
 
-## Build gate
+## First physical result
 
-From the repository root with the official stable SDK bootstrapped locally:
+Observed in a watched match:
 
-```powershell
-cargo check
-cargo test
+1. RMB empty ground -> **PASS**.
+2. RMB directly on an enemy champion -> **PASS WITH CAVEATS**.
+3. RMB enemy minion -> **PASS**.
+4. RMB enemy tower -> **PASS WITH CAVEATS**.
+5. RMB friendly -> **PASS**.
+6. Click an enemy and let it move -> **PASS WITH CAVEATS**; target identity followed the moving entity.
+7. While attacking, RMB empty ground -> **PASS**.
+
+These results are strong evidence that entity picking, relation filtering, persistent entity-id targeting, and command replacement are working.
+
+The caveat was apparent vanilla AI takeover around champions/towers: the selected character could move away, chase, or use skills outside the user's command. Review found a concrete cause in the first implementation: when the active attack ceased to produce a manual input, the pacing hook fell through to `base_input`. The follow-up revision treats selection as authoritative manual ownership and returns the control layer's `Option<InputV1>` directly, so `None` suppresses vanilla input rather than resuming it.
+
+## Cursor projection regression
+
+The same first physical test reported that the yellow world marker was offset from the UI reticle again.
+
+Review found that `cursor_world()` had drifted away from the camera formula already physically validated in `docs/camera-research.md`. It normalized the logical UI cursor delta through the 1920x1080 UI map before applying the Game-map projection, effectively using the wrong denominator.
+
+The follow-up restores the validated mapping:
+
+```text
+dx = mouse_ui_x - center_log_center_x
+dy = mouse_ui_y - center_log_center_y
+
+world_x = camera_center_x + dx * extent_x / Game_map_width
+world_y = camera_center_y + dy * extent_y / Game_map_height
 ```
 
-Expected picker unit tests cover:
+with `Game_map_width/height` coming from the stable `Game` draw map (observed 2048x2048). Cursor points outside `ingame.center_log` are rejected.
 
-- team relation filtering;
-- dead/untargetable filtering;
-- visibility filtering;
-- optional visibility bypass for future targeting policies;
-- minimum-radius math;
-- overlapping-entity nearest-center selection;
-- deterministic equal-distance tie-breaking.
+## Follow-up physical test
 
-## One-match physical test
+After `cargo check`, `cargo test`, and reinstalling the development build:
 
-Use the existing Stage 5A flow unless the current `main` instructions change:
+1. Select one athlete and issue ground RMB. Confirm normal movement.
+2. Do not issue another command while entering champion/tower threat. The selected athlete must not autonomously cast skills, retreat, chase a different unit, or otherwise resume vanilla decisions.
+3. RMB an enemy champion and let the target move. Confirm exact-target pursuit/attack remains attached to that entity.
+4. Let the target die or otherwise become invalid. The selected athlete should stop receiving that attack command without vanilla AI immediately choosing a new action.
+5. RMB empty ground afterward. Confirm control resumes immediately.
+6. Pan and zoom while moving the cursor around the battlefield. The yellow Game-space marker should remain centered under the UI reticle.
+7. Repeat the marker check with Match Info / alternate battlefield layout if available.
 
-1. Start a watched match and enter the paced interactive state.
-2. Select a visible athlete with the existing F-key mapping.
-3. RMB several empty-ground points. Existing MoveTo behavior must remain unchanged.
-4. RMB directly on a visible hostile champion. The controlled champion must target that exact champion rather than merely moving to the original click point.
-5. Repeat on a hostile minion.
-6. Repeat on a hostile tower when targetable.
-7. RMB directly on a friendly champion/minion. It must not become an attack target; the click should remain ground movement.
-8. While attacking a moving hostile, do not click again. The command must retain that entity id as the target moves.
-9. Issue a ground RMB while attacking. The attack must be replaced by MoveTo immediately.
-10. Let or cause the attack target to die. The stale entity id must not remain a manual attack command.
+The overlay now shows the latest RMB simulation point, active attack target id, move/attack resolve counters, and attack-input return count to separate picking failures from command-execution failures.
 
 ## Unknown to resolve physically
 
-The stable API documents `InputV1::action(InputKindV1::Attack, Target(entity_id))`, but does not document whether an out-of-range attack input automatically chases the selected target.
+The stable API documents `InputV1::action(InputKindV1::Attack, Target(entity_id))`, but does not explicitly document whether an out-of-range attack input automatically chases the selected target.
 
-Test both:
-
-- hostile already inside basic-attack range;
-- hostile clearly outside basic-attack range.
-
-If in-range works but out-of-range does not chase, keep the exact target id and add a chase-to-target phase rather than falling back to nearest-target AI or discarding target identity.
-
-## Current diagnostic note
-
-The existing overlay still labels the RMB point as a MoveTo target because this branch deliberately avoids mixing a broad `lib.rs` presentation edit into the first command-path change. The physical behavior is the initial pass/fail signal. If targeting fails ambiguously, expose the already-collected resolver counters and active attack target id in the overlay before changing command behavior.
+The first physical pass suggests the command behaves usefully enough to pursue/attack moving targets, but the follow-up test should still distinguish intentional target pursuit from any residual vanilla AI behavior now that manual authority is strict.
