@@ -7,6 +7,7 @@ Status: generic skill execution physically validated across multiple champion/sk
 - `Q` arms `InputKindV1::Skill`.
 - `W` arms `InputKindV1::Skill2`.
 - `R` arms `InputKindV1::Ult`.
+- `B` issues an explicit Return Home order for the selected athlete. It replaces movement/attack and cancels armed skill targeting; RMB or a later successful skill cast interrupts the return order.
 - `LMB` confirms the armed skill at the current battlefield cursor.
 - `RMB` while a skill is armed cancels targeting and is consumed; it does not also issue a move/attack order.
 - `Escape` cancels targeting.
