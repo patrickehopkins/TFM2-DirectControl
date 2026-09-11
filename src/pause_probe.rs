@@ -1,15 +1,30 @@
 //! Read-only pause-state discovery from the live client UI.
 //!
-//! Runtime testing identified `pause_ui` as the actual full-screen pause root. Stage 4C's
-//! clock-stall fallback was intentionally removed because it could deadlock resume: once Candidate
-//! A was blocked, the visible clock could not advance to prove that the pause had ended.
+//! There are two distinct ways the match presentation can stop while the InGame scene remains
+//! active:
 //!
-//! The direct pause root is therefore the primary signal. A small text/state traversal remains only
-//! as a compatibility fallback if a later UI build stops exposing that exact root path.
+//! 1. the ordinary full-screen `pause_ui`; and
+//! 2. the match viewer's timeline/playback pause, where the speed selector has no active speed.
+//!
+//! Candidate A must stop for either one. Otherwise the simulation continues at 60 Hz while the
+//! viewer is stationary and direct-control input once again targets state ahead of what the player
+//! can see.
+//!
+//! The speed buttons are exposed as selectable widgets by the stable UI API. We only infer a
+//! timeline pause when at least one speed widget is recognized and *none* of the recognized speed
+//! widgets is selected. If a future game version changes those widget types/paths, this probe fails
+//! open instead of inventing a pause.
 
 use mod_api_stable::StableClient;
 
 const MAX_UI_NODES: usize = 2_000;
+const SPEED_BUTTON_PATHS: [&str; 5] = [
+    "speed_buttons.speed05x",
+    "speed_buttons.speed1x",
+    "speed_buttons.speed15x",
+    "speed_buttons.speed2x",
+    "speed_buttons.speed3x",
+];
 
 #[derive(Debug, Clone)]
 pub struct PauseUiSnapshot {
@@ -44,12 +59,59 @@ pub fn update(ctx: &StableClient<'_>, interactive_match: bool) -> PauseUiSnapsho
         };
     }
 
+    if let Some(snapshot) = timeline_pause_state(ctx) {
+        if snapshot.paused {
+            return snapshot;
+        }
+    }
+
     let (paused, scanned_nodes, marker) = scan_visible_resume_text(ctx);
     PauseUiSnapshot {
         paused,
         scanned_nodes,
         marker,
     }
+}
+
+fn timeline_pause_state(ctx: &StableClient<'_>) -> Option<PauseUiSnapshot> {
+    let mut recognized = 0usize;
+    let mut selected = 0usize;
+    let mut selected_name: Option<&str> = None;
+
+    for path in SPEED_BUTTON_PATHS {
+        let Some(is_selected) = ctx.ui_selectable_selected(path) else {
+            continue;
+        };
+
+        recognized += 1;
+        if is_selected {
+            selected += 1;
+            selected_name = Some(path);
+        }
+    }
+
+    if recognized == 0 {
+        return None;
+    }
+
+    if selected == 0 {
+        return Some(PauseUiSnapshot {
+            paused: true,
+            scanned_nodes: recognized,
+            marker: Some(format!(
+                "timeline paused [0/{recognized} recognized speed buttons selected]"
+            )),
+        });
+    }
+
+    Some(PauseUiSnapshot {
+        paused: false,
+        scanned_nodes: recognized,
+        marker: Some(format!(
+            "timeline running [{} selected]",
+            selected_name.unwrap_or("speed")
+        )),
+    })
 }
 
 fn scan_visible_resume_text(ctx: &StableClient<'_>) -> (bool, usize, Option<String>) {
