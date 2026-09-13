@@ -2,6 +2,10 @@
 
 This file records the current functionality-first scope and implementation priority so deferred systems do not drift back into the critical path.
 
+## Release boundary
+
+**Pings/team commands are the release boundary.** The intent is to ship the first public Direct Control release after the control/QoL work immediately before Pings is complete and validated, rather than holding release for the potentially larger ping-behavior subsystem. Unless explicitly stated otherwise, any new pre-release jobs added from this point should be inserted immediately before Pings/team commands.
+
 ## Implementation priority
 
 1. **Hold/Stop** — **validated.** `H` is the current binding because native `S` pauses match presentation. It stops movement, attacking, skill aim, and Return/recall while retaining manual ownership.
@@ -53,8 +57,13 @@ This file records the current functionality-first scope and implementation prior
    - when manual control is taken of a champion, automatically switch spectator vision/fog-of-war to that champion's team;
    - this should follow whichever side the selected champion belongs to rather than assuming the user's original team;
    - keep this as a small control-QoL job before pings/team commands.
-14. **Pings/team commands** — potentially large subsystem; do after the core direct-control command vocabulary and QoL above are stable.
-15. **Shop control** — automatic shop remains acceptable until this stage.
+14. **F-key selection mapping hardening**
+   - preserve the game's native role order exactly: `F1-F5 = player team Top, Jungle, Mid, Bottom, Support`; `F6-F10 = opponent team Top, Jungle, Mid, Bottom, Support`;
+   - current Direct Control implementation finds visible `(F1)`-`(F10)` player cards in the UI tree and name-matches them back to stable athlete ids; this works, but is more indirect and more UI-layout-sensitive than necessary;
+   - investigate piggy-backing the base game's existing Follow Own / Follow Enemy role tracking so the same native team/role identity source drives manual selection;
+   - prefer native/stable team-role data over repeated UI-tree scans if accessible; keep the existing mapper only as a fallback if needed.
+15. **Pings/team commands** — **post-release work / release boundary.** Potentially large subsystem; do not hold the first public release for this unless explicitly reconsidered.
+16. **Shop control** — automatic shop remains acceptable until this stage.
 
 ## Must iron out before release
 
@@ -83,7 +92,7 @@ Do not silently copy or bundle that mod's implementation. For the eventual Works
 
 ## Deferred / later polish
 
-- **Friendly champion selection cleanup:** do not redesign selection here. F1-F10 is sufficient for functionality; other mods can restrict scope or presentation.
+- **Friendly champion selection cleanup:** do not redesign the visible selection UI here. F1-F10 is sufficient for functionality; only harden how those fixed role slots resolve to athlete ids.
 - **Gunfighter move-while-attacking composition:** character-specific follow-up after generic controls are stable; attack-move is particularly important to this character.
 - **Idle retaliation:** possible later behavior where an otherwise-idle selected champion that is attacked by an enemy already in legal basic-attack range returns fire.
 - **Native Shortcuts-menu integration:** desirable final UX, but stable API currently provides no trivial registration hook.
