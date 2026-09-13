@@ -58,12 +58,20 @@ This file records the current functionality-first scope and implementation prior
    - this should follow whichever side the selected champion belongs to rather than assuming the user's original team;
    - keep this as a small control-QoL job before pings/team commands.
 14. **F-key selection mapping hardening**
-   - preserve the game's native role order exactly: `F1-F5 = player team Top, Jungle, Mid, Bottom, Support`; `F6-F10 = opponent team Top, Jungle, Mid, Bottom, Support`;
+   - preserve the game's native role order exactly after verifying it during implementation; current working hypothesis is `F1-F5 = player team Top, Jungle, Mid, Bottom, Support` and `F6-F10 = opponent team` in that same order;
    - current Direct Control implementation finds visible `(F1)`-`(F10)` player cards in the UI tree and name-matches them back to stable athlete ids; this works, but is more indirect and more UI-layout-sensitive than necessary;
    - investigate piggy-backing the base game's existing Follow Own / Follow Enemy role tracking so the same native team/role identity source drives manual selection;
-   - prefer native/stable team-role data over repeated UI-tree scans if accessible; keep the existing mapper only as a fallback if needed.
-15. **Pings/team commands** — **post-release work / release boundary.** Potentially large subsystem; do not hold the first public release for this unless explicitly reconsidered.
-16. **Shop control** — automatic shop remains acceptable until this stage.
+   - A/B test the native-derived mapper against the existing UI/name mapper and revert/retain the existing mapper if the native route introduces complications;
+   - prefer native/stable team-role data over repeated UI-tree scans if accessible; keep the existing mapper as a fallback.
+15. **Pregame / pre-simulation start handling** — final pre-release polish/fallback before Pings.
+   - preferred route: reuse any clean solution discovered by the Flame Simulator pre-game pre-simulation probe so the player can enter the map before meaningful match simulation gets ahead of them;
+   - if no clean start-gate/pause solution is found, apply a flat **+60 second offset** to the normal opening schedule rather than allowing the vanilla timings to occur before the player can meaningfully participate;
+   - the fallback offset must preserve all normal relative timing: character AI activation, lane creep spawns/waves, jungle spawns, Serpen and Morgar spawns, and other scheduled opening events each occur one minute later than they normally would; do **not** bunch all of those events together at the 1:00 mark;
+   - treat this as a match-start schedule offset, not a blanket modification to ordinary combat cooldowns/action durations;
+   - the first minute can function as a League-like pregame roam/setup window before normal match activity begins;
+   - optionally add a temporary spawn-area collision wall/barrier only if testing shows unrestricted first-minute roaming creates undesirable exploits. Prefer free roaming if it behaves well.
+16. **Pings/team commands** — **post-release work / release boundary.** Potentially large subsystem; do not hold the first public release for this unless explicitly reconsidered.
+17. **Shop control** — automatic shop remains acceptable until this stage.
 
 ## Must iron out before release
 
