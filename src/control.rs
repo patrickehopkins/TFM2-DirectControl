@@ -39,6 +39,11 @@ const COMMAND_HOLD: u8 = 4;
 
 // Exact entity collision geometry first. Screen-pixel click forgiveness remains a later polish item.
 const MINIMUM_PICK_RADIUS_SIM: u64 = 0;
+// There is no native Stop input. When H interrupts Return we issue one movement tick toward the map
+// center, then anchor Hold on the following tick. The destination can be far away because it is only
+// emitted once; actual displacement is bounded to a single simulation tick.
+const HOLD_RECALL_CANCEL_TARGET_OFFSET_SIM: u64 = 32_000;
+const DEFAULT_MAP_MAX_SIM: u64 = 960_000;
 
 static SELECTED_ATHLETE: AtomicUsize = AtomicUsize::new(NO_ATHLETE);
 
@@ -55,6 +60,7 @@ static ACTIVE_MOVE_X: AtomicU64 = AtomicU64::new(0);
 static ACTIVE_MOVE_Y: AtomicU64 = AtomicU64::new(0);
 static ACTIVE_ATTACK_TARGET: AtomicUsize = AtomicUsize::new(NO_TARGET);
 static HOLD_ANCHOR_ACTIVE: AtomicBool = AtomicBool::new(false);
+static HOLD_BREAK_RETURN_PENDING: AtomicBool = AtomicBool::new(false);
 
 // Last known selected-champion position. This lets us keep emitting a concrete neutral input even
 // if one callback temporarily cannot expose StableSim after manual ownership has already begun.
@@ -109,6 +115,7 @@ fn clear_active_command() {
     ACTIVE_MOVE_Y.store(0, Ordering::Relaxed);
     ACTIVE_ATTACK_TARGET.store(NO_TARGET, Ordering::Relaxed);
     HOLD_ANCHOR_ACTIVE.store(false, Ordering::Release);
+    HOLD_BREAK_RETURN_PENDING.store(false, Ordering::Release);
 }
 
 fn set_active_move(x: u64, y: u64) {
@@ -118,6 +125,7 @@ fn set_active_move(x: u64, y: u64) {
     ACTIVE_MOVE_Y.store(y, Ordering::Relaxed);
     ACTIVE_ATTACK_TARGET.store(NO_TARGET, Ordering::Relaxed);
     HOLD_ANCHOR_ACTIVE.store(false, Ordering::Release);
+    HOLD_BREAK_RETURN_PENDING.store(false, Ordering::Release);
     ACTIVE_COMMAND_KIND.store(COMMAND_MOVE, Ordering::Release);
 }
 
@@ -128,6 +136,7 @@ fn set_active_attack(target_id: usize) {
     ACTIVE_MOVE_X.store(0, Ordering::Relaxed);
     ACTIVE_MOVE_Y.store(0, Ordering::Relaxed);
     HOLD_ANCHOR_ACTIVE.store(false, Ordering::Release);
+    HOLD_BREAK_RETURN_PENDING.store(false, Ordering::Release);
     ACTIVE_COMMAND_KIND.store(COMMAND_ATTACK, Ordering::Release);
 }
 
@@ -137,17 +146,22 @@ fn set_active_return() {
     ACTIVE_MOVE_Y.store(0, Ordering::Relaxed);
     ACTIVE_ATTACK_TARGET.store(NO_TARGET, Ordering::Relaxed);
     HOLD_ANCHOR_ACTIVE.store(false, Ordering::Release);
+    HOLD_BREAK_RETURN_PENDING.store(false, Ordering::Release);
     ACTIVE_COMMAND_KIND.store(COMMAND_RETURN, Ordering::Release);
 }
 
 fn set_active_hold() {
     // H is a real persistent command, not merely "no order". The authoritative simulation callback
     // captures the champion's position on its next tick and keeps that fixed anchor until replaced.
+    // A zero-distance MoveTo does not cancel an active Return channel, so remember whether this Hold
+    // replaced Return and inject one ordinary movement tick before establishing the fixed anchor.
+    let break_return = ACTIVE_COMMAND_KIND.load(Ordering::Acquire) == COMMAND_RETURN;
     ACTIVE_COMMAND_KIND.store(COMMAND_NONE, Ordering::Release);
     ACTIVE_MOVE_X.store(0, Ordering::Relaxed);
     ACTIVE_MOVE_Y.store(0, Ordering::Relaxed);
     ACTIVE_ATTACK_TARGET.store(NO_TARGET, Ordering::Relaxed);
     HOLD_ANCHOR_ACTIVE.store(false, Ordering::Release);
+    HOLD_BREAK_RETURN_PENDING.store(break_return, Ordering::Release);
     ACTIVE_COMMAND_KIND.store(COMMAND_HOLD, Ordering::Release);
 }
 
@@ -174,9 +188,33 @@ fn last_self_position() -> Option<(u64, u64)> {
     ))
 }
 
+fn hold_recall_cancel_target(from: (u64, u64)) -> (u64, u64) {
+    let center = DEFAULT_MAP_MAX_SIM / 2;
+    let x = if from.0 < center {
+        from.0
+            .saturating_add(HOLD_RECALL_CANCEL_TARGET_OFFSET_SIM)
+            .min(DEFAULT_MAP_MAX_SIM)
+    } else {
+        from.0.saturating_sub(HOLD_RECALL_CANCEL_TARGET_OFFSET_SIM)
+    };
+    let y = if x == from.0 {
+        if from.1 < center {
+            from.1
+                .saturating_add(HOLD_RECALL_CANCEL_TARGET_OFFSET_SIM)
+                .min(DEFAULT_MAP_MAX_SIM)
+        } else {
+            from.1.saturating_sub(HOLD_RECALL_CANCEL_TARGET_OFFSET_SIM)
+        }
+    } else {
+        from.1
+    };
+    (x, y)
+}
+
 pub fn reset() {
     SELECTED_ATHLETE.store(NO_ATHLETE, Ordering::Release);
     clear_move_target();
+    HOLD_BREAK_RETURN_PENDING.store(false, Ordering::Release);
     clear_last_self_position();
     skill_targeting::reset();
     SELECT_COUNT.store(0, Ordering::Release);
@@ -256,6 +294,13 @@ pub fn request_return_home() {
     skill_targeting::cancel();
     set_active_return();
     RETURN_COMMAND_COUNT.fetch_add(1, Ordering::Relaxed);
+}
+
+/// H is an explicit persistent stop. If it replaces Return, active_manual_input emits one movement
+/// tick first because a zero-distance hold does not interrupt TFM2's recall channel.
+pub fn request_hold() {
+    skill_targeting::cancel();
+    clear_move_target();
 }
 
 /// Compatibility entry point used by the render-thread RMB code.
@@ -454,6 +499,13 @@ fn active_manual_input(
         }
         COMMAND_RETURN => Some(InputV1::return_home()),
         COMMAND_HOLD => {
+            if HOLD_BREAK_RETURN_PENDING.swap(false, Ordering::AcqRel) {
+                let from = self_position.or_else(last_self_position)?;
+                let (x, y) = hold_recall_cancel_target(from);
+                HOLD_INPUT_RETURNS.fetch_add(1, Ordering::Relaxed);
+                return Some(InputV1::move_to(x, y));
+            }
+
             if !HOLD_ANCHOR_ACTIVE.load(Ordering::Acquire) {
                 let (x, y) = self_position.or_else(last_self_position)?;
                 ACTIVE_MOVE_X.store(x, Ordering::Relaxed);
