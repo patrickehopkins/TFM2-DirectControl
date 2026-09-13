@@ -20,11 +20,13 @@ This file records the current functionality-first scope and implementation prior
    - do not auto-hunt distant visible enemies before they enter legal basic-attack range;
    - physical testing completed without complications;
    - native TFM2 `A = Back 10 Seconds` must be remapped during development unless/until shortcut integration can prevent the conflict.
-5. **Single-target skill chase + follow-up attack** — **next implementation step.**
-   - when a targeted skill is ordered on an out-of-range legal target, retain that exact target and move toward it until the skill becomes legal;
-   - cast the skill as soon as it becomes legal;
-   - after the skill connects/executes, transition into the same exact-target auto-attack chase behavior so melee characters can continue pursuing a fleeing target without extra clicks;
-   - never retain a target through loss of legal vision.
+5. **Single-target skill chase + follow-up attack** — **implemented; awaiting physical validation.**
+   - a confirmed hostile Target skill that is currently out of range retains the exact clicked entity and moves toward it until the skill becomes legal;
+   - runtime validator evidence is used conservatively to distinguish hostile Target skills from Direction/Position/Self actions rather than treating every failed entity click as a chase request;
+   - cast the skill immediately once the exact Target input becomes legal;
+   - after a successful hostile single-target cast, transition that same entity into the existing exact-target auto-attack/chase behavior without requiring another click;
+   - if the target dies, becomes untargetable, changes relation, or leaves legal vision before the cast, drop the pending chase rather than tracking through fog;
+   - locked-slot validation remains ahead of all skill probing.
 6. **Minimap movement** — RMB/click movement through the minimap should issue a normal move order to the corresponding map location, allowing camera-independent travel.
 7. **MOBA-style camera movement** — add practical camera controls for active pursuit, preferably matching familiar LoL behavior: configurable movement bindings and/or edge-of-screen scrolling.
 8. **Clicks beyond the playable map edge** — battlefield clicks just outside the legal map should still express the intended direction. Clamp/project the request onto a legal/pathable map-edge destination so pathfinding moves the champion toward that edge rather than silently eating the order. Never allow movement off-map.
