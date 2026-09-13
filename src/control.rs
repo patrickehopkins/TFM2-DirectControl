@@ -35,6 +35,7 @@ const COMMAND_NONE: u8 = 0;
 const COMMAND_MOVE: u8 = 1;
 const COMMAND_ATTACK: u8 = 2;
 const COMMAND_RETURN: u8 = 3;
+const COMMAND_HOLD: u8 = 4;
 
 // Exact entity collision geometry first. Screen-pixel click forgiveness remains a later polish item.
 const MINIMUM_PICK_RADIUS_SIM: u64 = 0;
@@ -48,11 +49,12 @@ static RMB_Y: AtomicU64 = AtomicU64::new(0);
 static RMB_VERSION: AtomicU64 = AtomicU64::new(0);
 static RESOLVED_RMB_VERSION: AtomicU64 = AtomicU64::new(0);
 
-// Persistent command selected by the simulation thread from the latest RMB request or B recall.
+// Persistent command selected by the simulation thread from the latest explicit user order.
 static ACTIVE_COMMAND_KIND: AtomicU8 = AtomicU8::new(COMMAND_NONE);
 static ACTIVE_MOVE_X: AtomicU64 = AtomicU64::new(0);
 static ACTIVE_MOVE_Y: AtomicU64 = AtomicU64::new(0);
 static ACTIVE_ATTACK_TARGET: AtomicUsize = AtomicUsize::new(NO_TARGET);
+static HOLD_ANCHOR_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 // Last known selected-champion position. This lets us keep emitting a concrete neutral input even
 // if one callback temporarily cannot expose StableSim after manual ownership has already begun.
@@ -106,6 +108,7 @@ fn clear_active_command() {
     ACTIVE_MOVE_X.store(0, Ordering::Relaxed);
     ACTIVE_MOVE_Y.store(0, Ordering::Relaxed);
     ACTIVE_ATTACK_TARGET.store(NO_TARGET, Ordering::Relaxed);
+    HOLD_ANCHOR_ACTIVE.store(false, Ordering::Release);
 }
 
 fn set_active_move(x: u64, y: u64) {
@@ -114,6 +117,7 @@ fn set_active_move(x: u64, y: u64) {
     ACTIVE_MOVE_X.store(x, Ordering::Relaxed);
     ACTIVE_MOVE_Y.store(y, Ordering::Relaxed);
     ACTIVE_ATTACK_TARGET.store(NO_TARGET, Ordering::Relaxed);
+    HOLD_ANCHOR_ACTIVE.store(false, Ordering::Release);
     ACTIVE_COMMAND_KIND.store(COMMAND_MOVE, Ordering::Release);
 }
 
@@ -123,6 +127,7 @@ fn set_active_attack(target_id: usize) {
     ACTIVE_ATTACK_TARGET.store(target_id, Ordering::Relaxed);
     ACTIVE_MOVE_X.store(0, Ordering::Relaxed);
     ACTIVE_MOVE_Y.store(0, Ordering::Relaxed);
+    HOLD_ANCHOR_ACTIVE.store(false, Ordering::Release);
     ACTIVE_COMMAND_KIND.store(COMMAND_ATTACK, Ordering::Release);
 }
 
@@ -131,7 +136,19 @@ fn set_active_return() {
     ACTIVE_MOVE_X.store(0, Ordering::Relaxed);
     ACTIVE_MOVE_Y.store(0, Ordering::Relaxed);
     ACTIVE_ATTACK_TARGET.store(NO_TARGET, Ordering::Relaxed);
+    HOLD_ANCHOR_ACTIVE.store(false, Ordering::Release);
     ACTIVE_COMMAND_KIND.store(COMMAND_RETURN, Ordering::Release);
+}
+
+fn set_active_hold() {
+    // H is a real persistent command, not merely "no order". The authoritative simulation callback
+    // captures the champion's position on its next tick and keeps that fixed anchor until replaced.
+    ACTIVE_COMMAND_KIND.store(COMMAND_NONE, Ordering::Release);
+    ACTIVE_MOVE_X.store(0, Ordering::Relaxed);
+    ACTIVE_MOVE_Y.store(0, Ordering::Relaxed);
+    ACTIVE_ATTACK_TARGET.store(NO_TARGET, Ordering::Relaxed);
+    HOLD_ANCHOR_ACTIVE.store(false, Ordering::Release);
+    ACTIVE_COMMAND_KIND.store(COMMAND_HOLD, Ordering::Release);
 }
 
 fn clear_last_self_position() {
@@ -261,7 +278,7 @@ pub fn clear_move_target() {
     RMB_Y.store(0, Ordering::Relaxed);
     let stable_version = RMB_VERSION.fetch_add(1, Ordering::Release) + 1;
     RESOLVED_RMB_VERSION.store(stable_version, Ordering::Release);
-    clear_active_command();
+    set_active_hold();
 }
 
 fn rmb_request() -> Option<(u64, u64, u64)> {
@@ -436,6 +453,19 @@ fn active_manual_input(
             neutral_hold_input(self_position)
         }
         COMMAND_RETURN => Some(InputV1::return_home()),
+        COMMAND_HOLD => {
+            if !HOLD_ANCHOR_ACTIVE.load(Ordering::Acquire) {
+                let (x, y) = self_position.or_else(last_self_position)?;
+                ACTIVE_MOVE_X.store(x, Ordering::Relaxed);
+                ACTIVE_MOVE_Y.store(y, Ordering::Relaxed);
+                HOLD_ANCHOR_ACTIVE.store(true, Ordering::Release);
+            }
+            HOLD_INPUT_RETURNS.fetch_add(1, Ordering::Relaxed);
+            Some(InputV1::move_to(
+                ACTIVE_MOVE_X.load(Ordering::Relaxed),
+                ACTIVE_MOVE_Y.load(Ordering::Relaxed),
+            ))
+        }
         _ => None,
     }
 }
