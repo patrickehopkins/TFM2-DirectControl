@@ -35,6 +35,7 @@ const VK_F1_CODE: i32 = 0x70;
 const PLAYER_SLOT_COUNT: usize = 10;
 const SIM_UNITS_PER_WORLD_UNIT: f32 = 1000.0;
 
+const ATTACK_MOVE_KEY: &str = "A";
 const SKILL_Q_KEY: &str = "Q";
 const SKILL_W_KEY: &str = "W";
 const SKILL_R_KEY: &str = "R";
@@ -270,8 +271,7 @@ impl DirectControlExtension {
         }
 
         if ctx.key_pressed(HOLD_KEY) {
-            control::cancel_skill_targeting();
-            control::clear_move_target();
+            control::request_hold();
         }
     }
 
@@ -339,8 +339,9 @@ impl DirectControlExtension {
             .copied()
     }
 
-    /// Returns true when a rising RMB was consumed as skill-target cancel.
-    fn poll_skill_targeting(
+    /// Polls the shared LMB/RMB targeting layer for A attack-move and Q/W/R skill targeting.
+    /// Returns true only when a rising RMB was consumed purely as a skill-target cancel.
+    fn poll_targeting(
         &self,
         ctx: &StableClient<'_>,
         mouse: MouseSnapshot,
@@ -360,16 +361,40 @@ impl DirectControlExtension {
         }
 
         if ctx.key_pressed("Escape") {
+            control::cancel_attack_move();
             control::cancel_skill_targeting();
             return false;
         }
 
-        if ctx.key_pressed(SKILL_Q_KEY) {
+        if ctx.key_pressed(ATTACK_MOVE_KEY) {
+            control::arm_attack_move();
+        } else if ctx.key_pressed(SKILL_Q_KEY) {
             control::arm_skill(control::SkillSlot::Q);
         } else if ctx.key_pressed(SKILL_W_KEY) {
             control::arm_skill(control::SkillSlot::W);
         } else if ctx.key_pressed(SKILL_R_KEY) {
             control::arm_skill(control::SkillSlot::R);
+        }
+
+        if control::attack_move_armed() {
+            // RMB cancels the A cursor but is deliberately *not* consumed: the normal contextual RMB
+            // path below is allowed to replace the current order, matching ordinary MOBA expectations.
+            if rmb_pressed {
+                control::cancel_attack_move();
+                return false;
+            }
+
+            let Some(camera) = Self::best_camera() else {
+                return false;
+            };
+            let Some(cursor) = Self::cursor_world(ctx, mouse, camera) else {
+                return false;
+            };
+
+            if lmb_pressed {
+                control::confirm_attack_move(cursor.sim_x, cursor.sim_y);
+            }
+            return false;
         }
 
         if !control::skill_targeting_active() {
@@ -616,6 +641,15 @@ impl DirectControlExtension {
             "AI / spectator".to_owned()
         } else if control_state.returning {
             "return home".to_owned()
+        } else if control_state.attack_moving {
+            let destination = control_state
+                .attack_move_destination
+                .map(|(x, y)| format!("({x},{y})"))
+                .unwrap_or_else(|| "(?)".to_owned());
+            match control_state.attack_target {
+                Some(target_id) => format!("attack-move {destination} -> target {target_id}"),
+                None => format!("attack-move {destination}"),
+            }
         } else if let Some(target_id) = control_state.attack_target {
             format!("attack {target_id}")
         } else if let Some((x, y)) = control_state.move_target {
@@ -628,6 +662,11 @@ impl DirectControlExtension {
             .range_sim
             .map(|value| value.to_string())
             .unwrap_or_else(|| "?".to_owned());
+        let targeting = if control::attack_move_armed() {
+            "A-MOVE ARMED"
+        } else {
+            "A-move --"
+        };
         let pause_note = if pause_ui.paused {
             pause_ui.marker.as_deref().unwrap_or("presentation paused")
         } else {
@@ -656,17 +695,21 @@ impl DirectControlExtension {
             ctx,
             106.0,
             &format!(
-                "SKILL: {armed} | mode {} | range {range} | casts {} | rejected {}",
+                "SKILL: {armed} | mode {} | range {range} | {targeting} | casts {} | rejected {}",
                 skill.mode.label(),
                 skill.cast_count,
                 skill.reject_count
             ),
-            if skill.armed.is_some() { 0xffd080ff } else { 0x80d8ffff },
+            if skill.armed.is_some() || control::attack_move_armed() {
+                0xffd080ff
+            } else {
+                0x80d8ffff
+            },
         );
         Self::draw_text_line(
             ctx,
             128.0,
-            "F1-F10 select | RMB move/attack | H hold | B return | Q/W/R arm | LMB confirm | End AI release | Ctrl+End global release",
+            "F1-F10 select | RMB move/attack | A attack-move + LMB | H hold | B return | Q/W/R arm | End AI release | Ctrl+End global release",
             0x80d8ffff,
         );
     }
@@ -711,8 +754,8 @@ impl StableExtension for DirectControlExtension {
         }
 
         let mouse = self.read_mouse(ctx);
-        let skill_consumed_rmb = self.poll_skill_targeting(ctx, mouse, ingame);
-        self.poll_rmb_move(ctx, mouse, ingame, skill_consumed_rmb);
+        let targeting_consumed_rmb = self.poll_targeting(ctx, mouse, ingame);
+        self.poll_rmb_move(ctx, mouse, ingame, targeting_consumed_rmb);
         Self::draw_cursor(ctx, mouse);
 
         if ingame {
@@ -728,7 +771,7 @@ fn init(host: &StableHost) -> StableMod {
     match simulation_probe::ensure_installed() {
         Ok(()) => host.log(
             LogLevel::Info,
-            "TFM2 Direct Control loaded (contextual RMB + manual skills + hold + return home)",
+            "TFM2 Direct Control loaded (contextual RMB + A attack-move + manual skills + hold + return home)",
         ),
         Err(error) => host.log(
             LogLevel::Error,
