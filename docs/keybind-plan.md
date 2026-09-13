@@ -60,6 +60,24 @@ Reason: rewinding while Direct Control is live leaves the presentation behind th
 
 Native spectator-only functions that do not alter playback position/rate can remain available unless they conflict with an active Direct Control binding or another pre-release system. F1-F10 native Follow Own/Enemy actions are naturally replaced by manual champion selection while Direct Control mode is active and return to normal when control is released.
 
+## Snap-to-live desync watchdog — required
+
+The playback-command gate is the first line of defense, but Direct Control must also include a second, independent safeguard that detects presentation/live-simulation divergence while manual control is active and corrects it automatically.
+
+Required behavior:
+
+- compare the current presentation/playback position against the live paced simulation position while Direct Control owns a champion;
+- tolerate only a small expected lead/lag window needed by the normal presentation path;
+- if the presentation is detectably rewound, advanced, paused, or otherwise decoupled from the live controlled state, **snap the presentation directly back to the live point**;
+- restore the normal live playback state/rate as part of the correction when needed;
+- do **not** recover by accelerating playback until it catches up. Catch-up playback still leaves the user controlling one simulation state while watching another, which is unacceptable during Direct Control;
+- prefer event-driven detection if the native playback controller exposes a seek/rate/state change hook or comparable signal;
+- if no clean event is available, use a lightweight periodic comparison rather than an expensive per-frame repair loop;
+- enable this watchdog only while Direct Control mode/manual champion ownership is active; releasing with `End` returns playback control to normal spectator behavior and disables automatic snap-to-live correction;
+- the watchdog is a fail-safe, not a substitute for suppressing known playback-changing commands. Both protections are required.
+
+The intended invariant is simple: **while Direct Control is active, the player should never remain meaningfully behind or ahead of the live simulation they are controlling.** Any unexpected presentation desync should self-correct immediately enough that the player does not need to notice it and manually recover.
+
 ## Shortcut settings UI
 
 Preferred UI:
