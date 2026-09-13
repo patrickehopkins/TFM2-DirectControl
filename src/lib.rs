@@ -1,5 +1,6 @@
 mod camera_probe;
 mod control;
+mod minimap;
 mod pacing_probe;
 mod pause_probe;
 mod simulation_probe;
@@ -445,6 +446,13 @@ impl DirectControlExtension {
             return;
         }
 
+        // Minimap sits outside ingame.center_log, so resolve it before the camera/world projection.
+        // The live UI tree supplies its current rectangle; no resolution-specific box is hard-coded.
+        if let Some((sim_x, sim_y)) = minimap::cursor_to_sim(ctx, mouse.ui_x, mouse.ui_y) {
+            control::publish_move_target(sim_x, sim_y);
+            return;
+        }
+
         let Some(camera) = Self::best_camera() else {
             return;
         };
@@ -709,7 +717,7 @@ impl DirectControlExtension {
         Self::draw_text_line(
             ctx,
             128.0,
-            "F1-F10 select | RMB move/attack | A attack-move + LMB | H hold | B return | Q/W/R arm | End AI release | Ctrl+End global release",
+            "F1-F10 select | RMB move/attack/minimap | A attack-move + LMB | H hold | B return | Q/W/R arm | End AI release | Ctrl+End global release",
             0x80d8ffff,
         );
     }
@@ -724,6 +732,7 @@ impl StableExtension for DirectControlExtension {
         if !ingame && was_ingame {
             pacing_probe::prepare_next_match();
             control::reset();
+            minimap::reset();
             slot_mapping::reset();
         }
 
@@ -731,6 +740,7 @@ impl StableExtension for DirectControlExtension {
             camera_probe::clear_candidates();
             pause_probe::reset();
             control::reset();
+            minimap::reset();
             slot_mapping::reset();
             START_CHORD_WAS_DOWN.store(false, Ordering::Release);
             FINISH_CHORD_WAS_DOWN.store(false, Ordering::Release);
@@ -771,7 +781,7 @@ fn init(host: &StableHost) -> StableMod {
     match simulation_probe::ensure_installed() {
         Ok(()) => host.log(
             LogLevel::Info,
-            "TFM2 Direct Control loaded (contextual RMB + A attack-move + manual skills + hold + return home)",
+            "TFM2 Direct Control loaded (contextual RMB + minimap movement + A attack-move + manual skills + hold + return home)",
         ),
         Err(error) => host.log(
             LogLevel::Error,
