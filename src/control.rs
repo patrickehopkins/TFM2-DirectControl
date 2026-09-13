@@ -11,9 +11,10 @@
 //! MoveTo to the athlete's own position (neutral hold), not a handoff back to vanilla AI.
 //!
 //! Attack intent is deliberately split into pursuit and execution. We only emit Attack(Target) when
-//! `StableAiContext::is_valid_input` accepts that exact attack. If the attack is ready but invalid
-//! (normally because the target is out of range), we chase the target with literal MoveTo instead of
-//! asking the game's higher-level attack behavior to decide how to approach it.
+//! `StableAiContext::is_valid_input` accepts that exact attack. When Attack is temporarily invalid,
+//! the current chase-timing experiment asks the same validator whether literal MoveTo(target) is
+//! legal on that exact frame. If movement is legal we chase; otherwise we hold. This lets the game's
+//! own action/cancel rules define recovery timing instead of inventing a cooldown-based delay.
 
 mod entity_picker;
 mod skill_targeting;
@@ -433,11 +434,10 @@ fn active_manual_input(
             }
 
             let controlled_team = ctx.team();
-            let player_id = ctx.player_id();
 
             // Copy every value needed from StableSim, then release that borrow before calling
             // ctx.is_valid_input(). This keeps the stable wrapper borrowing rules simple.
-            let (target_x, target_y, attack_cooldown) = {
+            let (target_x, target_y) = {
                 let Some(sim) = ctx.sim() else {
                     // Preserve target identity; caller converts this callback into neutral hold.
                     return None;
@@ -462,12 +462,7 @@ fn active_manual_input(
                     return None;
                 }
 
-                let (target_x, target_y) = target.pos();
-                let attack_cooldown = sim
-                    .get_player(player_id)
-                    .and_then(|player| player.cooldowns())
-                    .map(|cooldowns| cooldowns.0);
-                (target_x, target_y, attack_cooldown)
+                target.pos()
             };
 
             let attack = InputV1::action(
@@ -484,17 +479,15 @@ fn active_manual_input(
                 return Some(attack);
             }
 
-            if attack_cooldown == Some(0) || attack_cooldown.is_none() {
-                // Attack is ready but TFM2 rejects this exact target action. For the ordinary chase
-                // case this means range: preserve the target id, but approach with literal movement
-                // rather than letting Attack(Target) invoke built-in retreat/recall/threat logic.
+            // Chase-timing experiment: do not infer recovery from attack cooldown. Ask TFM2 whether
+            // a literal chase movement is legal on this exact frame. If its validator respects the
+            // attack's uncancellable/recovery window, this becomes the game's own timing oracle.
+            let chase = InputV1::move_to(target_x, target_y);
+            if ctx.is_valid_input(&chase) {
                 CHASE_INPUT_RETURNS.fetch_add(1, Ordering::Relaxed);
-                return Some(InputV1::move_to(target_x, target_y));
+                return Some(chase);
             }
 
-            // During the basic-attack recovery window, do not walk a ranged champion all the way
-            // into the target merely because is_valid_input also checks cooldown. Hold until the
-            // attack is ready; then either attack if legal or resume pursuit if range was lost.
             neutral_hold_input(self_position)
         }
         COMMAND_RETURN => Some(InputV1::return_home()),
