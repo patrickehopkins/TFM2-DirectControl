@@ -12,9 +12,9 @@
 //!
 //! Attack intent is deliberately split into pursuit and execution. We only emit Attack(Target) when
 //! `StableAiContext::is_valid_input` accepts that exact attack. When Attack is temporarily invalid,
-//! the current chase-timing experiment asks the same validator whether literal MoveTo(target) is
-//! legal on that exact frame. If movement is legal we chase; otherwise we hold. This lets the game's
-//! own action/cancel rules define recovery timing instead of inventing a cooldown-based delay.
+//! we ask the same validator whether literal MoveTo(target) is legal on that exact frame. If movement
+//! is legal we chase; otherwise we hold. This lets the game's own action/cancel rules define recovery
+//! timing instead of inventing a cooldown-based delay.
 
 mod entity_picker;
 mod skill_targeting;
@@ -37,6 +37,7 @@ const COMMAND_MOVE: u8 = 1;
 const COMMAND_ATTACK: u8 = 2;
 const COMMAND_RETURN: u8 = 3;
 const COMMAND_HOLD: u8 = 4;
+const COMMAND_ATTACK_MOVE: u8 = 5;
 
 // Exact entity collision geometry first. Screen-pixel click forgiveness remains a later polish item.
 const MINIMUM_PICK_RADIUS_SIM: u64 = 0;
@@ -47,6 +48,7 @@ const HOLD_RECALL_CANCEL_TARGET_OFFSET_SIM: u64 = 32_000;
 const DEFAULT_MAP_MAX_SIM: u64 = 960_000;
 
 static SELECTED_ATHLETE: AtomicUsize = AtomicUsize::new(NO_ATHLETE);
+static ATTACK_MOVE_ARMED: AtomicBool = AtomicBool::new(false);
 
 // Latest RMB point published by the render thread. VERSION is a tiny seqlock so x/y are coherent.
 static RMB_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -56,6 +58,8 @@ static RMB_VERSION: AtomicU64 = AtomicU64::new(0);
 static RESOLVED_RMB_VERSION: AtomicU64 = AtomicU64::new(0);
 
 // Persistent command selected by the simulation thread from the latest explicit user order.
+// ATTACK_MOVE reuses ACTIVE_MOVE_X/Y as its destination and ACTIVE_ATTACK_TARGET as its currently
+// acquired hostile. Losing that hostile does not erase the destination.
 static ACTIVE_COMMAND_KIND: AtomicU8 = AtomicU8::new(COMMAND_NONE);
 static ACTIVE_MOVE_X: AtomicU64 = AtomicU64::new(0);
 static ACTIVE_MOVE_Y: AtomicU64 = AtomicU64::new(0);
@@ -92,6 +96,8 @@ pub struct ControlDiagnostics {
     pub move_target: Option<(u64, u64)>,
     pub attack_target: Option<usize>,
     pub returning: bool,
+    pub attack_moving: bool,
+    pub attack_move_destination: Option<(u64, u64)>,
     pub select_count: u64,
     /// Physical RMB requests; name retained for compatibility with the current overlay.
     pub move_command_count: u64,
@@ -108,6 +114,13 @@ pub struct ControlDiagnostics {
     pub target_drop_dead_count: u64,
     pub target_drop_invalid_count: u64,
     pub last_manual_tick: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrackedTargetState {
+    Valid((u64, u64)),
+    Lost,
+    StateUnavailable,
 }
 
 fn clear_active_command() {
@@ -166,6 +179,16 @@ fn set_active_hold() {
     ACTIVE_COMMAND_KIND.store(COMMAND_HOLD, Ordering::Release);
 }
 
+fn set_active_attack_move(x: u64, y: u64) {
+    ACTIVE_COMMAND_KIND.store(COMMAND_NONE, Ordering::Release);
+    ACTIVE_MOVE_X.store(x, Ordering::Relaxed);
+    ACTIVE_MOVE_Y.store(y, Ordering::Relaxed);
+    ACTIVE_ATTACK_TARGET.store(NO_TARGET, Ordering::Relaxed);
+    HOLD_ANCHOR_ACTIVE.store(false, Ordering::Release);
+    HOLD_BREAK_RETURN_PENDING.store(false, Ordering::Release);
+    ACTIVE_COMMAND_KIND.store(COMMAND_ATTACK_MOVE, Ordering::Release);
+}
+
 fn clear_last_self_position() {
     LAST_SELF_POSITION_ACTIVE.store(false, Ordering::Release);
     LAST_SELF_X.store(0, Ordering::Relaxed);
@@ -214,6 +237,7 @@ fn hold_recall_cancel_target(from: (u64, u64)) -> (u64, u64) {
 
 pub fn reset() {
     SELECTED_ATHLETE.store(NO_ATHLETE, Ordering::Release);
+    ATTACK_MOVE_ARMED.store(false, Ordering::Release);
     clear_move_target();
     HOLD_BREAK_RETURN_PENDING.store(false, Ordering::Release);
     clear_last_self_position();
@@ -243,8 +267,10 @@ pub fn selected_athlete() -> Option<usize> {
 }
 
 pub fn select_athlete(athlete_id: usize) {
-    // A newly selected athlete must never inherit the previous athlete's move, attack, recall, or skill aim.
+    // A newly selected athlete must never inherit the previous athlete's move, attack, recall,
+    // attack-move, or skill aim.
     SELECTED_ATHLETE.store(NO_ATHLETE, Ordering::Release);
+    ATTACK_MOVE_ARMED.store(false, Ordering::Release);
     clear_move_target();
     clear_last_self_position();
     skill_targeting::on_selection_changed();
@@ -253,6 +279,7 @@ pub fn select_athlete(athlete_id: usize) {
 }
 
 pub fn arm_skill(slot: SkillSlot) {
+    ATTACK_MOVE_ARMED.store(false, Ordering::Release);
     skill_targeting::arm(slot);
 }
 
@@ -288,9 +315,29 @@ pub fn clamp_skill_target_to_range(
     skill_targeting::clamp_to_range(from, to, range)
 }
 
+pub fn arm_attack_move() {
+    skill_targeting::cancel();
+    ATTACK_MOVE_ARMED.store(true, Ordering::Release);
+}
+
+pub fn cancel_attack_move() {
+    ATTACK_MOVE_ARMED.store(false, Ordering::Release);
+}
+
+pub fn attack_move_armed() -> bool {
+    ATTACK_MOVE_ARMED.load(Ordering::Acquire)
+}
+
+pub fn confirm_attack_move(x: u64, y: u64) {
+    ATTACK_MOVE_ARMED.store(false, Ordering::Release);
+    clear_rmb_request();
+    set_active_attack_move(x, y);
+}
+
 /// B/recall is a persistent explicit manual order. It replaces movement/attack and cancels any
-/// armed skill. RMB or a later successful skill cast can interrupt it.
+/// armed skill or attack-move cursor. RMB or a later successful skill cast can interrupt it.
 pub fn request_return_home() {
+    ATTACK_MOVE_ARMED.store(false, Ordering::Release);
     clear_move_target();
     skill_targeting::cancel();
     set_active_return();
@@ -300,6 +347,7 @@ pub fn request_return_home() {
 /// H is an explicit persistent stop. If it replaces Return, active_manual_input emits one movement
 /// tick first because a zero-distance hold does not interrupt TFM2's recall channel.
 pub fn request_hold() {
+    ATTACK_MOVE_ARMED.store(false, Ordering::Release);
     skill_targeting::cancel();
     clear_move_target();
 }
@@ -309,6 +357,7 @@ pub fn request_hold() {
 /// The point is an unresolved contextual RMB request. The paced simulation callback decides whether
 /// it means Attack(entity) or MoveTo(point).
 pub fn publish_move_target(x: u64, y: u64) {
+    ATTACK_MOVE_ARMED.store(false, Ordering::Release);
     RMB_VERSION.fetch_add(1, Ordering::AcqRel); // odd = write in progress
     RMB_X.store(x, Ordering::Relaxed);
     RMB_Y.store(y, Ordering::Relaxed);
@@ -317,13 +366,18 @@ pub fn publish_move_target(x: u64, y: u64) {
     MOVE_COMMAND_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
-pub fn clear_move_target() {
+fn clear_rmb_request() {
     RMB_VERSION.fetch_add(1, Ordering::AcqRel);
     RMB_ACTIVE.store(false, Ordering::Relaxed);
     RMB_X.store(0, Ordering::Relaxed);
     RMB_Y.store(0, Ordering::Relaxed);
     let stable_version = RMB_VERSION.fetch_add(1, Ordering::Release) + 1;
     RESOLVED_RMB_VERSION.store(stable_version, Ordering::Release);
+}
+
+pub fn clear_move_target() {
+    ATTACK_MOVE_ARMED.store(false, Ordering::Release);
+    clear_rmb_request();
     set_active_hold();
 }
 
@@ -393,22 +447,131 @@ fn resolve_latest_rmb(ctx: &mut StableAiContext<'_>) {
     RESOLVED_RMB_VERSION.store(request_version, Ordering::Release);
 }
 
-fn drop_attack_as_dead() {
+fn record_target_drop(dead: bool, vision: bool, clear_whole_command: bool) {
     TARGET_DROP_COUNT.fetch_add(1, Ordering::Relaxed);
-    TARGET_DROP_DEAD_COUNT.fetch_add(1, Ordering::Relaxed);
-    clear_active_command();
+    if dead {
+        TARGET_DROP_DEAD_COUNT.fetch_add(1, Ordering::Relaxed);
+    } else if vision {
+        TARGET_DROP_VISION_COUNT.fetch_add(1, Ordering::Relaxed);
+    } else {
+        TARGET_DROP_INVALID_COUNT.fetch_add(1, Ordering::Relaxed);
+    }
+
+    if clear_whole_command {
+        clear_active_command();
+    } else {
+        ACTIVE_ATTACK_TARGET.store(NO_TARGET, Ordering::Release);
+    }
 }
 
-fn drop_attack_as_not_visible() {
-    TARGET_DROP_COUNT.fetch_add(1, Ordering::Relaxed);
-    TARGET_DROP_VISION_COUNT.fetch_add(1, Ordering::Relaxed);
-    clear_active_command();
+fn tracked_target_position(
+    ctx: &mut StableAiContext<'_>,
+    target_id: usize,
+    clear_whole_command_on_loss: bool,
+) -> TrackedTargetState {
+    let controlled_team = ctx.team();
+    let Some(sim) = ctx.sim() else {
+        return TrackedTargetState::StateUnavailable;
+    };
+    let Some(target) = sim.get_entity(target_id) else {
+        record_target_drop(false, false, clear_whole_command_on_loss);
+        return TrackedTargetState::Lost;
+    };
+
+    if !target.is_alive() {
+        record_target_drop(true, false, clear_whole_command_on_loss);
+        return TrackedTargetState::Lost;
+    }
+    if !target.is_targetable() || target.team() == controlled_team {
+        record_target_drop(false, false, clear_whole_command_on_loss);
+        return TrackedTargetState::Lost;
+    }
+    if !sim.is_visible(controlled_team, target_id) {
+        record_target_drop(false, true, clear_whole_command_on_loss);
+        return TrackedTargetState::Lost;
+    }
+
+    TrackedTargetState::Valid(target.pos())
 }
 
-fn drop_attack_as_invalid() {
-    TARGET_DROP_COUNT.fetch_add(1, Ordering::Relaxed);
-    TARGET_DROP_INVALID_COUNT.fetch_add(1, Ordering::Relaxed);
-    clear_active_command();
+fn attack_or_chase_input(
+    ctx: &mut StableAiContext<'_>,
+    self_position: Option<(u64, u64)>,
+    target_id: usize,
+    target_position: (u64, u64),
+) -> Option<InputV1> {
+    let attack = InputV1::action(
+        InputKindV1::Attack,
+        InputTargetV1 {
+            kind: InputTargetKindV1::Target.code(),
+            target_id,
+            ..Default::default()
+        },
+    );
+
+    if ctx.is_valid_input(&attack) {
+        ATTACK_INPUT_RETURNS.fetch_add(1, Ordering::Relaxed);
+        return Some(attack);
+    }
+
+    let chase = InputV1::move_to(target_position.0, target_position.1);
+    if ctx.is_valid_input(&chase) {
+        CHASE_INPUT_RETURNS.fetch_add(1, Ordering::Relaxed);
+        return Some(chase);
+    }
+
+    neutral_hold_input(self_position)
+}
+
+fn nearest_legal_attack_target(
+    ctx: &mut StableAiContext<'_>,
+    self_position: Option<(u64, u64)>,
+) -> Option<usize> {
+    let (self_x, self_y) = self_position?;
+    let controlled_team = ctx.team();
+
+    // Gather identities and geometry first so the StableSim borrow ends before is_valid_input().
+    let mut candidates: Vec<(u128, usize)> = {
+        let sim = ctx.sim()?;
+        let mut candidates = Vec::new();
+        for index in 0..sim.entity_count() {
+            let Some(entity) = sim.entity_at(index) else {
+                continue;
+            };
+            let id = entity.id();
+            if !entity.is_alive()
+                || !entity.is_targetable()
+                || entity.team() == controlled_team
+                || !sim.is_visible(controlled_team, id)
+            {
+                continue;
+            }
+
+            let (x, y) = entity.pos();
+            let dx = x.abs_diff(self_x) as u128;
+            let dy = y.abs_diff(self_y) as u128;
+            candidates.push((dx * dx + dy * dy, id));
+        }
+        candidates
+    };
+
+    candidates.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+
+    for (_, target_id) in candidates {
+        let attack = InputV1::action(
+            InputKindV1::Attack,
+            InputTargetV1 {
+                kind: InputTargetKindV1::Target.code(),
+                target_id,
+                ..Default::default()
+            },
+        );
+        if ctx.is_valid_input(&attack) {
+            return Some(target_id);
+        }
+    }
+
+    None
 }
 
 fn neutral_hold_input(self_position: Option<(u64, u64)>) -> Option<InputV1> {
@@ -429,66 +592,16 @@ fn active_manual_input(
         COMMAND_ATTACK => {
             let target_id = ACTIVE_ATTACK_TARGET.load(Ordering::Relaxed);
             if target_id == NO_TARGET {
-                drop_attack_as_invalid();
+                clear_active_command();
                 return None;
             }
 
-            let controlled_team = ctx.team();
-
-            // Copy every value needed from StableSim, then release that borrow before calling
-            // ctx.is_valid_input(). This keeps the stable wrapper borrowing rules simple.
-            let (target_x, target_y) = {
-                let Some(sim) = ctx.sim() else {
-                    // Preserve target identity; caller converts this callback into neutral hold.
-                    return None;
-                };
-                let Some(target) = sim.get_entity(target_id) else {
-                    drop_attack_as_invalid();
-                    return None;
-                };
-
-                if !target.is_alive() {
-                    drop_attack_as_dead();
-                    return None;
+            match tracked_target_position(ctx, target_id, true) {
+                TrackedTargetState::Valid(target_position) => {
+                    attack_or_chase_input(ctx, self_position, target_id, target_position)
                 }
-                if !target.is_targetable() || target.team() == controlled_team {
-                    drop_attack_as_invalid();
-                    return None;
-                }
-                if !sim.is_visible(controlled_team, target_id) {
-                    // Deliberate fog-of-war rule: losing legal vision breaks target tracking. We do
-                    // not auto-reacquire if the same unit later reappears.
-                    drop_attack_as_not_visible();
-                    return None;
-                }
-
-                target.pos()
-            };
-
-            let attack = InputV1::action(
-                InputKindV1::Attack,
-                InputTargetV1 {
-                    kind: InputTargetKindV1::Target.code(),
-                    target_id,
-                    ..Default::default()
-                },
-            );
-
-            if ctx.is_valid_input(&attack) {
-                ATTACK_INPUT_RETURNS.fetch_add(1, Ordering::Relaxed);
-                return Some(attack);
+                TrackedTargetState::Lost | TrackedTargetState::StateUnavailable => None,
             }
-
-            // Chase-timing experiment: do not infer recovery from attack cooldown. Ask TFM2 whether
-            // a literal chase movement is legal on this exact frame. If its validator respects the
-            // attack's uncancellable/recovery window, this becomes the game's own timing oracle.
-            let chase = InputV1::move_to(target_x, target_y);
-            if ctx.is_valid_input(&chase) {
-                CHASE_INPUT_RETURNS.fetch_add(1, Ordering::Relaxed);
-                return Some(chase);
-            }
-
-            neutral_hold_input(self_position)
         }
         COMMAND_RETURN => Some(InputV1::return_home()),
         COMMAND_HOLD => {
@@ -511,6 +624,55 @@ fn active_manual_input(
                 ACTIVE_MOVE_Y.load(Ordering::Relaxed),
             ))
         }
+        COMMAND_ATTACK_MOVE => {
+            let retained_target = ACTIVE_ATTACK_TARGET.load(Ordering::Acquire);
+            if retained_target != NO_TARGET {
+                match tracked_target_position(ctx, retained_target, false) {
+                    TrackedTargetState::Valid(target_position) => {
+                        return attack_or_chase_input(
+                            ctx,
+                            self_position,
+                            retained_target,
+                            target_position,
+                        );
+                    }
+                    TrackedTargetState::StateUnavailable => {
+                        return neutral_hold_input(self_position);
+                    }
+                    TrackedTargetState::Lost => {}
+                }
+            }
+
+            // Classic attack-move acquisition: do not auto-hunt distant visible enemies. We only
+            // acquire a hostile when Attack(Target) itself is legal now, choosing the nearest legal
+            // target to the controlled champion. Once acquired, retain it and use the same exact
+            // attack/chase timing as an explicit RMB target until it dies or otherwise becomes invalid.
+            if let Some(target_id) = nearest_legal_attack_target(ctx, self_position) {
+                ACTIVE_ATTACK_TARGET.store(target_id, Ordering::Release);
+                let attack = InputV1::action(
+                    InputKindV1::Attack,
+                    InputTargetV1 {
+                        kind: InputTargetKindV1::Target.code(),
+                        target_id,
+                        ..Default::default()
+                    },
+                );
+                ATTACK_INPUT_RETURNS.fetch_add(1, Ordering::Relaxed);
+                return Some(attack);
+            }
+
+            let destination = (
+                ACTIVE_MOVE_X.load(Ordering::Relaxed),
+                ACTIVE_MOVE_Y.load(Ordering::Relaxed),
+            );
+            let advance = InputV1::move_to(destination.0, destination.1);
+            if ctx.is_valid_input(&advance) {
+                CHASE_INPUT_RETURNS.fetch_add(1, Ordering::Relaxed);
+                Some(advance)
+            } else {
+                neutral_hold_input(self_position)
+            }
+        }
         _ => None,
     }
 }
@@ -521,9 +683,11 @@ fn active_manual_input(
 /// Subsequent ticks retain the resulting entity id or ground destination until the user clicks again,
 /// changes controlled athlete, leaves the match, or the attack target becomes invalid.
 ///
-/// Target invalidation never returns control to vanilla AI. If a tracked target dies, becomes
+/// Target invalidation never returns control to vanilla AI. If a direct tracked target dies, becomes
 /// untargetable, changes team, or leaves vision, the target is forgotten and the selected champion
-/// receives a neutral hold input until the user's next explicit command.
+/// receives a neutral hold input until the user's next explicit command. Attack-move differs only in
+/// that losing its acquired target resumes the original attack-move destination and permits a new
+/// in-range target to be acquired later.
 pub fn manual_input_for(ctx: &mut StableAiContext<'_>, tick: u64) -> Option<InputV1> {
     if selected_athlete() != Some(ctx.athlete_id()) {
         return None;
@@ -536,8 +700,8 @@ pub fn manual_input_for(ctx: &mut StableAiContext<'_>, tick: u64) -> Option<Inpu
 
     resolve_latest_rmb(ctx);
 
-    // An armed skill does not erase the persistent RMB order. Only a successful LMB confirmation
-    // preempts it for this simulation tick; the move/attack intent can resume on the next tick.
+    // An armed skill does not erase the persistent RMB/attack-move order. Only a successful LMB
+    // confirmation preempts it for this simulation tick; the prior order can resume on the next tick.
     // Return is different: a successful skill cast intentionally interrupts recall instead of
     // silently resuming it one tick later.
     if let Some(input) = skill_targeting::manual_skill_input(ctx, self_position) {
@@ -563,18 +727,24 @@ pub fn diagnostics() -> ControlDiagnostics {
     let last_tick = LAST_MANUAL_TICK.load(Ordering::Acquire);
     let active_kind = ACTIVE_COMMAND_KIND.load(Ordering::Acquire);
     let attack_target = match active_kind {
-        COMMAND_ATTACK => match ACTIVE_ATTACK_TARGET.load(Ordering::Acquire) {
+        COMMAND_ATTACK | COMMAND_ATTACK_MOVE => match ACTIVE_ATTACK_TARGET.load(Ordering::Acquire) {
             NO_TARGET => None,
             target => Some(target),
         },
         _ => None,
     };
+    let attack_move_destination = (active_kind == COMMAND_ATTACK_MOVE).then_some((
+        ACTIVE_MOVE_X.load(Ordering::Acquire),
+        ACTIVE_MOVE_Y.load(Ordering::Acquire),
+    ));
 
     ControlDiagnostics {
         selected_athlete: selected_athlete(),
         move_target: move_target(),
         attack_target,
         returning: active_kind == COMMAND_RETURN,
+        attack_moving: active_kind == COMMAND_ATTACK_MOVE,
+        attack_move_destination,
         select_count: SELECT_COUNT.load(Ordering::Acquire),
         move_command_count: MOVE_COMMAND_COUNT.load(Ordering::Acquire),
         rmb_resolve_count: RMB_RESOLVE_COUNT.load(Ordering::Acquire),
