@@ -27,30 +27,30 @@ This file records the current functionality-first scope and implementation prior
    - after a successful hostile single-target cast, transition that same entity into the existing exact-target auto-attack/chase behavior without requiring another click;
    - if the target dies, becomes untargetable, changes relation, or leaves legal vision before the cast, drop the pending chase rather than tracking through fog;
    - locked-slot validation remains ahead of all skill probing;
-   - known cooldown edge case: ordering the skill while it is on cooldown currently follows the target as though range were the blocker and may arrive/stand without casting. Future cooldown-aware behavior should fail the skill immediately into normal exact-target auto-attack behavior and show explicit red cooldown feedback.
-6. **Minimap movement** — **implemented; awaiting physical validation.**
-   - RMB on the minimap maps the click to simulation coordinates and publishes the same persistent movement request used by battlefield RMB;
-   - discover the minimap from the live stable-API UI tree and its computed rectangle rather than hard-coding screen coordinates;
-   - cache discovery only for the current match and rediscover after scene transitions or invalidation;
-   - current first pass uses the existing contextual RMB resolver after mapping the minimap point. If clicking directly over an enemy minimap marker proves able to turn the request into Attack rather than Move, split minimap orders into forced-ground movement in the next polish pass.
-7. **MOBA-style camera movement** — add practical camera controls for active pursuit, preferably matching familiar LoL behavior: configurable movement bindings and/or edge-of-screen scrolling.
-8. **Clicks beyond the playable map edge** — battlefield clicks just outside the legal map should still express the intended direction. Clamp/project the request onto a legal/pathable map-edge destination so pathfinding moves the champion toward that edge rather than silently eating the order. Never allow movement off-map.
-9. **Skill cooldown UI** — expose direct-control-friendly Q/W/R cooldown/readiness information with high visibility so the player does not have to infer cooldowns from the normal spectator presentation.
-   - show immediate red helper text such as `Q ON COOLDOWN` when a direct-control skill command is rejected for cooldown;
-   - use cooldown state to distinguish "out of range, keep chasing" from "not ready, fail the cast and transition into normal exact-target auto-attack behavior" for hostile single-target skills.
-10. **Click-target hitbox polish**
+   - known edge case: attempting a targeted skill while it is on cooldown can currently be mistaken for an out-of-range chase, causing the champion to approach and then stand near the target. This is handled by the dedicated cooldown behavior item below.
+6. **Minimap movement** — **under active correction / awaiting re-test.** RMB on the minimap should issue a camera-independent map-space move order. The first runtime-discovery implementation failed to recognize the actual minimap, repeatedly rescanned the UI tree in the click hot-path, caused visible frame stalls, and then fell through to camera-relative battlefield projection. Current correction bounds discovery work and supplies a bottom-right proportional fallback so minimap clicks can never depend on camera position.
+7. **Universal skill use while on cooldown** — next immediately after minimap validation.
+   - while Q/W/R is on cooldown, pressing/confirming it should produce **no gameplay response** for now;
+   - do not arm/ray-cast a cooldown skill;
+   - do not queue or begin single-target chase for a cooldown skill;
+   - do not queue a delayed cast;
+   - later cooldown UI should provide explicit red feedback/readability (for example `Q ON COOLDOWN`) without changing the no-response gameplay rule.
+8. **MOBA-style camera movement** — add practical camera controls for active pursuit, preferably matching familiar LoL behavior: configurable movement bindings and/or edge-of-screen scrolling.
+9. **Clicks beyond the playable map edge** — battlefield clicks just outside the legal map should still express the intended direction. Clamp/project the request onto a legal/pathable map-edge destination so pathfinding moves the champion toward that edge rather than silently eating the order. Never allow movement off-map.
+10. **Skill cooldown UI** — expose direct-control-friendly Q/W/R cooldown/readiness information with high visibility so the player does not have to infer cooldowns from the normal spectator presentation. Include explicit red feedback for attempted use while unavailable.
+11. **Click-target hitbox polish**
    - enlarge only the **clickable/selectable area**; never alter entity collision/pathing geometry;
    - towers and the final objective need substantially more forgiving selection because their rendered footprint is much larger than their current clickable collision circle;
    - champions should receive modest click forgiveness as well, especially to reduce rapid-RMB attack orders accidentally becoming ground MoveTo orders;
    - creeps may receive only enough forgiveness to remain usable without making the lane visually "sticky";
    - when enlarged selectable areas overlap, prefer **Champion > Building/Objective > Creep**.
-11. **Max-range skill radii / ray clipping revisit**
+12. **Max-range skill radii / ray clipping revisit**
    - this remains high-value direct-control QoL and must be revisited rather than accepted as permanently blocked;
    - radial/ray range must represent the current live match values after simulated balance patches;
    - do not hard-code per-champion ranges from one game patch;
    - investigate deeper live action/effect metadata or a version-resilient native extraction route if the stable runtime API remains insufficient.
-12. **Pings/team commands** — potentially large subsystem; do after the core direct-control command vocabulary and QoL above are stable.
-13. **Shop control** — automatic shop remains acceptable until this stage.
+13. **Pings/team commands** — potentially large subsystem; do after the core direct-control command vocabulary and QoL above are stable.
+14. **Shop control** — automatic shop remains acceptable until this stage.
 
 ## Must iron out before release
 
