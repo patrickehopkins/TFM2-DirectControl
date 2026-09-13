@@ -12,8 +12,16 @@ This file records the current functionality-first scope and implementation prior
    - do **not** release or accelerate pre-simulation;
    - `Ctrl+End` remains the stronger/global release.
 4. **`A` — attack-move** — important ranged-character micro and especially important to Gunfighter.
-5. **Pings/team commands** — potentially large subsystem; do after the core direct-control command vocabulary is stable.
-6. **Shop control** — automatic shop remains acceptable until this stage.
+5. **Single-target skill chase + follow-up attack**
+   - when a targeted skill is ordered on an out-of-range legal target, retain that exact target and move toward it until the skill becomes legal;
+   - cast the skill as soon as it becomes legal;
+   - after the skill connects/executes, transition into the same exact-target auto-attack chase behavior so melee characters can continue pursuing a fleeing target without extra clicks.
+6. **Minimap movement** — RMB/click movement through the minimap should issue a normal move order to the corresponding map location, allowing camera-independent travel.
+7. **MOBA-style camera movement** — add practical camera controls for active pursuit, preferably matching familiar LoL behavior: configurable movement bindings and/or edge-of-screen scrolling.
+8. **Clicks beyond the playable map edge** — battlefield clicks just outside the legal map should still express the intended direction. Clamp/project the request onto a legal/pathable map-edge destination so pathfinding moves the champion toward that edge rather than silently eating the order. Never allow movement off-map.
+9. **Skill cooldown UI** — expose direct-control-friendly Q/W/R cooldown/readiness information with high visibility so the player does not have to infer cooldowns from the normal spectator presentation.
+10. **Pings/team commands** — potentially large subsystem; do after the core direct-control command vocabulary and QoL are stable.
+11. **Shop control** — automatic shop remains acceptable until this stage.
 
 ## Must iron out before release
 
@@ -24,7 +32,13 @@ This file records the current functionality-first scope and implementation prior
 
 ## Current Hold/Stop behavior
 
-`H` cancels the selected champion's current move, exact-target attack, Return Home order, and armed skill targeting. The champion remains under authoritative manual ownership and therefore falls into the existing neutral hold-at-current-position behavior. No retaliation or autonomous target acquisition is attached to Hold.
+`H` cancels the selected champion's current move, exact-target attack, Return Home order, and armed skill targeting. Hold is now an explicit persistent command rather than a generic no-order fallback: the simulation callback captures the champion's position when Hold takes effect and repeatedly anchors movement to that fixed point until a later command replaces it. No retaliation or autonomous target acquisition is attached to Hold.
+
+## Companion mod / Workshop launch note
+
+**Anti-Freeze Fix** (Steam Workshop item `3800058476`) is currently considered a **highly recommended companion mod** for Teamfight Manager 2 v0.5.8-era Direct Control testing. Static inspection of its DLL indicates that it guards a native AI battle-planner expected-damage division where a zero estimate can otherwise wedge the simulation worker. A full Direct Control match completed without interruption with the companion enabled after previous native-style freezes had occurred.
+
+Do not silently copy or bundle that mod's implementation. For the eventual Workshop description, explicitly credit/shout out the Anti-Freeze Fix author and recommend the companion unless later game updates make it unnecessary.
 
 ## Deferred / later polish
 
