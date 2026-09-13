@@ -49,8 +49,12 @@ This file records the current functionality-first scope and implementation prior
    - radial/ray range must represent the current live match values after simulated balance patches;
    - do not hard-code per-champion ranges from one game patch;
    - investigate deeper live action/effect metadata or a version-resilient native extraction route if the stable runtime API remains insufficient.
-13. **Pings/team commands** — potentially large subsystem; do after the core direct-control command vocabulary and QoL above are stable.
-14. **Shop control** — automatic shop remains acceptable until this stage.
+13. **Automatic team fog-of-war on direct control**
+   - when manual control is taken of a champion, automatically switch spectator vision/fog-of-war to that champion's team;
+   - this should follow whichever side the selected champion belongs to rather than assuming the user's original team;
+   - keep this as a small control-QoL job before pings/team commands.
+14. **Pings/team commands** — potentially large subsystem; do after the core direct-control command vocabulary and QoL above are stable.
+15. **Shop control** — automatic shop remains acceptable until this stage.
 
 ## Must iron out before release
 
