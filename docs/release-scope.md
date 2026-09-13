@@ -29,14 +29,17 @@ This file records the current functionality-first scope and implementation prior
 - **Auto-attack chase recovery timing:** do not invent our own orb-walk/reset cadence. Observe vanilla AI simply chasing a moving enemy and basic-attacking, identify when vanilla resumes movement after an attack, and mirror that timing/cancel window. The current conservative full-cooldown hold is visibly too slow.
 - **Dynamic skill targeting presentation:** max-range radials/ray clipping must reflect the current live match values after simulated balance patches. Never hard-code per-champion range values from one patch.
 - **Basic Return behavior:** B uses the game's native Return Home input. Current repeated Return input immediately restarts recall after damage interruption; acceptable for functionality, but channel/restart behavior is a polish candidate before final release if it remains visually or mechanically undesirable.
+- **Native-hook version resilience:** before 1.0, harden version-sensitive native discovery. Prefer masked/pattern scanning plus structural validation over fixed RVAs; use executable version/hash as diagnostics rather than the only locator; derive related call targets dynamically where practical; reject zero/ambiguous matches safely; and degrade only the affected feature if a private game layout can no longer be verified.
 
 ## Current Hold/Stop behavior
 
-`H` cancels the selected champion's current move, exact-target attack, Return Home order, and armed skill targeting. Hold is now an explicit persistent command rather than a generic no-order fallback: the simulation callback captures the champion's position when Hold takes effect and repeatedly anchors movement to that fixed point until a later command replaces it. No retaliation or autonomous target acquisition is attached to Hold.
+`H` cancels the selected champion's current move, exact-target attack, Return Home order, and armed skill targeting. Hold is an explicit persistent command. Ordinary movement/attack stops by anchoring to a fixed position. Because TFM2 does not treat a zero-distance MoveTo as an interrupt to an active Return channel, the current implementation emits one ordinary movement tick when Hold replaces Return, then captures and holds the champion's resulting position on the next tick. No retaliation or autonomous target acquisition is attached to Hold.
 
 ## Companion mod / Workshop launch note
 
-**Anti-Freeze Fix** (Steam Workshop item `3800058476`) is currently considered a **highly recommended companion mod** for Teamfight Manager 2 v0.5.8-era Direct Control testing. Static inspection of its DLL indicates that it guards a native AI battle-planner expected-damage division where a zero estimate can otherwise wedge the simulation worker. A full Direct Control match completed without interruption with the companion enabled after previous native-style freezes had occurred.
+**Anti-Freeze Fix** (Steam Workshop item `3800058476`) is currently considered a **highly recommended companion mod** for Teamfight Manager 2 v0.5.8-era Direct Control testing. Static inspection of its DLL indicates that it guards a native AI battle-planner expected-damage division where a zero estimate can otherwise wedge the simulation worker.
+
+Causality is not yet proven: at least one full Direct Control match completed without interruption while Anti-Freeze Fix was disabled, and another completed with it enabled. Keep monitoring for freezes with the companion enabled. Recommendation is based on the technical relevance of the guarded native failure path as well as observed freeze symptoms, not on a completed controlled proof.
 
 Do not silently copy or bundle that mod's implementation. For the eventual Workshop description, explicitly credit/shout out the Anti-Freeze Fix author and recommend the companion unless later game updates make it unnecessary.
 
