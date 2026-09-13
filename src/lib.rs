@@ -44,6 +44,7 @@ const HOLD_KEY: &str = "H";
 static WAS_INGAME: AtomicBool = AtomicBool::new(false);
 static START_CHORD_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static FINISH_CHORD_WAS_DOWN: AtomicBool = AtomicBool::new(false);
+static TEMP_RELEASE_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static SELECT_KEYS_WERE_DOWN: AtomicU16 = AtomicU16::new(0);
 static LMB_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static RMB_WAS_DOWN: AtomicBool = AtomicBool::new(false);
@@ -191,6 +192,29 @@ impl DirectControlExtension {
         let was_down = FINISH_CHORD_WAS_DOWN.swap(chord_down, Ordering::AcqRel);
         if chord_down && !was_down {
             pacing_probe::request_finish_simulation();
+        }
+    }
+
+    fn poll_temporary_release(ingame: bool) {
+        if !ingame {
+            TEMP_RELEASE_WAS_DOWN.store(false, Ordering::Release);
+            return;
+        }
+
+        let end_down = unsafe { GetAsyncKeyState(VK_END as i32) < 0 };
+        let ctrl_down = unsafe { GetAsyncKeyState(VK_CONTROL as i32) < 0 };
+        let was_down = TEMP_RELEASE_WAS_DOWN.swap(end_down, Ordering::AcqRel);
+
+        if end_down
+            && !was_down
+            && !ctrl_down
+            && !pacing_probe::manual_control_released()
+            && control::selected_athlete().is_some()
+        {
+            // End relinquishes only our selected/manual champion. `control::reset()` clears retained
+            // orders and targeting, but deliberately does not touch pacing or the Candidate-A job.
+            // On the next simulation callback the athlete therefore receives its normal base_input.
+            control::reset();
         }
     }
 
@@ -588,7 +612,9 @@ impl DirectControlExtension {
             .selected_athlete
             .map(|id| id.to_string())
             .unwrap_or_else(|| "none".to_owned());
-        let order = if control_state.returning {
+        let order = if control_state.selected_athlete.is_none() {
+            "AI / spectator".to_owned()
+        } else if control_state.returning {
             "return home".to_owned()
         } else if let Some(target_id) = control_state.attack_target {
             format!("attack {target_id}")
@@ -640,7 +666,7 @@ impl DirectControlExtension {
         Self::draw_text_line(
             ctx,
             128.0,
-            "F1-F10 select | RMB move/attack | H hold | B return | Q/W/R arm | LMB confirm | RMB/Esc cancel | Ctrl+End release",
+            "F1-F10 select | RMB move/attack | H hold | B return | Q/W/R arm | LMB confirm | End AI release | Ctrl+End global release",
             0x80d8ffff,
         );
     }
@@ -665,6 +691,7 @@ impl StableExtension for DirectControlExtension {
             slot_mapping::reset();
             START_CHORD_WAS_DOWN.store(false, Ordering::Release);
             FINISH_CHORD_WAS_DOWN.store(false, Ordering::Release);
+            TEMP_RELEASE_WAS_DOWN.store(false, Ordering::Release);
             SELECT_KEYS_WERE_DOWN.store(0, Ordering::Release);
             LMB_WAS_DOWN.store(false, Ordering::Release);
             RMB_WAS_DOWN.store(false, Ordering::Release);
@@ -675,6 +702,7 @@ impl StableExtension for DirectControlExtension {
         pacing_probe::set_presentation_state(ingame, pause_ui.paused);
         Self::poll_finish_chord(ingame);
         Self::poll_player_selection(ctx, ingame);
+        Self::poll_temporary_release(ingame);
         Self::poll_return_home(ctx, ingame);
         Self::poll_hold(ctx, ingame);
 
