@@ -8,17 +8,23 @@
 //! stable runtime AI context, and situational target requirements can make a legal Target skill look
 //! like another shape while no valid target exists. Every LMB confirmation therefore probes the
 //! legal forms again instead of trusting a cached preview guess.
+//!
+//! Hostile single-target skills have one extra direct-control behavior: if the click identifies a
+//! legal/credible hostile Target skill but that exact cast is currently out of range, the simulation
+//! retains the entity id and moves toward it until the cast becomes legal. After the cast is emitted,
+//! the same entity becomes the normal exact-target attack/chase order in the parent control module.
 
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 
 use mod_api_stable::{InputKindV1, InputTargetKindV1, InputTargetV1, InputV1, StableAiContext};
 
-use super::entity_picker::{pick_entity, TeamRelation};
+use super::entity_picker::{pick_entity, EntityPick, TeamRelation};
 
 const SLOT_NONE: u8 = 0;
 const SLOT_Q: u8 = 1;
 const SLOT_W: u8 = 2;
 const SLOT_R: u8 = 3;
+const NO_TARGET: usize = usize::MAX;
 
 const MODE_UNKNOWN: u8 = 0;
 const MODE_TARGET: u8 = 1;
@@ -34,6 +40,11 @@ const DEFAULT_MAP_MAX_SIM: f64 = 960_000.0;
 const RANGE_SEARCH_STEPS: usize = 18;
 
 static ARMED_SLOT: AtomicU8 = AtomicU8::new(SLOT_NONE);
+
+// Out-of-range hostile Target casts leave the ordinary cursor-confirm state and enter this retained
+// simulation-side chase. Only one exact entity is retained, and loss of legal vision drops it.
+static PENDING_CHASE_SLOT: AtomicU8 = AtomicU8::new(SLOT_NONE);
+static PENDING_CHASE_TARGET: AtomicUsize = AtomicUsize::new(NO_TARGET);
 
 static CURSOR_ACTIVE: AtomicBool = AtomicBool::new(false);
 static CURSOR_X: AtomicU64 = AtomicU64::new(0);
@@ -166,6 +177,16 @@ pub struct SkillTargetingSnapshot {
     pub reject_count: u64,
 }
 
+#[derive(Debug)]
+enum ConfirmResolution {
+    Cast {
+        input: InputV1,
+        hostile_follow_up: Option<usize>,
+    },
+    ChaseHostile(usize),
+    Reject,
+}
+
 fn clear_preview() {
     PREVIEW_MODE.store(MODE_UNKNOWN, Ordering::Release);
     PREVIEW_RANGE_STATE.store(RANGE_UNCHECKED, Ordering::Release);
@@ -193,8 +214,29 @@ fn clear_targeting_state() {
     clear_preview();
 }
 
+fn clear_pending_chase() {
+    PENDING_CHASE_TARGET.store(NO_TARGET, Ordering::Relaxed);
+    PENDING_CHASE_SLOT.store(SLOT_NONE, Ordering::Release);
+}
+
+fn pending_chase() -> Option<(SkillSlot, usize)> {
+    let slot = SkillSlot::from_code(PENDING_CHASE_SLOT.load(Ordering::Acquire))?;
+    let target = PENDING_CHASE_TARGET.load(Ordering::Acquire);
+    (target != NO_TARGET).then_some((slot, target))
+}
+
+fn start_pending_chase(slot: SkillSlot, target_id: usize) {
+    // Confirmation is complete; hide the free cursor and retain only authoritative simulation-side
+    // identity. PREVIEW_MODE remains Target for the overlay while the chase is active.
+    clear_targeting_state();
+    PREVIEW_MODE.store(MODE_TARGET, Ordering::Release);
+    PENDING_CHASE_TARGET.store(target_id, Ordering::Relaxed);
+    PENDING_CHASE_SLOT.store(slot.code(), Ordering::Release);
+}
+
 pub fn reset() {
     clear_targeting_state();
+    clear_pending_chase();
     CURSOR_VERSION.store(0, Ordering::Release);
     CONFIRM_VERSION.store(0, Ordering::Release);
     RESOLVED_CONFIRM_VERSION.store(0, Ordering::Release);
@@ -207,9 +249,11 @@ pub fn reset() {
 
 pub fn on_selection_changed() {
     clear_targeting_state();
+    clear_pending_chase();
 }
 
 pub fn arm(slot: SkillSlot) {
+    clear_pending_chase();
     ARMED_SLOT.store(slot.code(), Ordering::Release);
     clear_confirm();
     clear_preview();
@@ -217,18 +261,23 @@ pub fn arm(slot: SkillSlot) {
 }
 
 pub fn cancel() {
-    if armed().is_some() {
+    if armed().is_some() || pending_chase().is_some() {
         CANCEL_COUNT.fetch_add(1, Ordering::Relaxed);
     }
     clear_targeting_state();
+    clear_pending_chase();
 }
 
 pub fn armed() -> Option<SkillSlot> {
     SkillSlot::from_code(ARMED_SLOT.load(Ordering::Acquire))
 }
 
+fn active_slot() -> Option<SkillSlot> {
+    armed().or_else(|| pending_chase().map(|(slot, _)| slot))
+}
+
 pub fn is_active() -> bool {
-    armed().is_some()
+    active_slot().is_some()
 }
 
 pub fn publish_cursor(x: u64, y: u64) {
@@ -342,7 +391,19 @@ fn slot_unlocked(ctx: &mut StableAiContext<'_>, slot: SkillSlot) -> Option<bool>
     Some(player.level() >= slot.minimum_level())
 }
 
-fn clicked_entity(ctx: &mut StableAiContext<'_>, click: (u64, u64)) -> Option<usize> {
+fn slot_cooldown(ctx: &mut StableAiContext<'_>, slot: SkillSlot) -> Option<usize> {
+    let player_id = ctx.player_id();
+    let sim = ctx.sim()?;
+    let player = sim.get_player(player_id)?;
+    let cooldowns = player.cooldowns()?;
+    Some(match slot {
+        SkillSlot::Q => cooldowns.1,
+        SkillSlot::W => cooldowns.2,
+        SkillSlot::R => cooldowns.3,
+    })
+}
+
+fn clicked_entity(ctx: &mut StableAiContext<'_>, click: (u64, u64)) -> Option<EntityPick> {
     let team = ctx.team();
     let sim = ctx.sim()?;
     pick_entity(
@@ -354,7 +415,6 @@ fn clicked_entity(ctx: &mut StableAiContext<'_>, click: (u64, u64)) -> Option<us
         click.1,
         0,
     )
-    .map(|picked| picked.id)
 }
 
 fn own_entity_id(ctx: &mut StableAiContext<'_>) -> Option<usize> {
@@ -365,7 +425,7 @@ fn own_entity_id(ctx: &mut StableAiContext<'_>) -> Option<usize> {
     Some(champion.id())
 }
 
-fn visible_target_ids(ctx: &mut StableAiContext<'_>) -> Vec<usize> {
+fn visible_target_ids(ctx: &mut StableAiContext<'_>) -> Vec<(usize, usize)> {
     let team = ctx.team();
     let Some(sim) = ctx.sim() else {
         return Vec::new();
@@ -376,7 +436,7 @@ fn visible_target_ids(ctx: &mut StableAiContext<'_>) -> Vec<usize> {
             continue;
         };
         if entity.is_alive() && entity.is_targetable() && sim.is_visible(team, entity.id()) {
-            ids.push(entity.id());
+            ids.push((entity.id(), entity.team()));
         }
     }
     ids
@@ -402,12 +462,12 @@ fn infer_mode(
         }
     }
 
-    if let Some(id) = clicked_entity(ctx, cursor) {
-        if ctx.is_valid_input(&action(slot, target_entity(id))) {
+    if let Some(picked) = clicked_entity(ctx, cursor) {
+        if ctx.is_valid_input(&action(slot, target_entity(picked.id))) {
             return SkillPreviewMode::Target;
         }
     }
-    for id in visible_target_ids(ctx).into_iter().take(64) {
+    for (id, _) in visible_target_ids(ctx).into_iter().take(64) {
         if ctx.is_valid_input(&action(slot, target_entity(id))) {
             return SkillPreviewMode::Target;
         }
@@ -567,11 +627,80 @@ fn update_preview(
     }
 }
 
+fn legal_target_relations(ctx: &mut StableAiContext<'_>, slot: SkillSlot) -> (bool, bool) {
+    let controlled_team = ctx.team();
+    let mut hostile = false;
+    let mut friendly = false;
+    for (id, team) in visible_target_ids(ctx).into_iter().take(64) {
+        if !ctx.is_valid_input(&action(slot, target_entity(id))) {
+            continue;
+        }
+        if team == controlled_team {
+            friendly = true;
+        } else {
+            hostile = true;
+        }
+        if hostile && friendly {
+            break;
+        }
+    }
+    (hostile, friendly)
+}
+
 fn legal_target_exists(ctx: &mut StableAiContext<'_>, slot: SkillSlot) -> bool {
-    visible_target_ids(ctx)
-        .into_iter()
-        .take(64)
-        .any(|id| ctx.is_valid_input(&action(slot, target_entity(id))))
+    let (hostile, friendly) = legal_target_relations(ctx, slot);
+    hostile || friendly
+}
+
+/// Returns true only when an invalid hostile Target click has enough runtime evidence to mean
+/// "correct target shape, currently out of range" rather than "this slot is Direction/Position/etc".
+/// When another legal entity target exists, relation is authoritative. When every entity is out of
+/// range, we fall back only if the skill is ready and all non-hostile-target shapes reject.
+fn hostile_target_chase_plausible(
+    ctx: &mut StableAiContext<'_>,
+    slot: SkillSlot,
+    self_position: (u64, u64),
+    click: (u64, u64),
+) -> bool {
+    match SkillPreviewMode::from_code(PREVIEW_MODE.load(Ordering::Acquire)) {
+        SkillPreviewMode::Direction | SkillPreviewMode::Position | SkillPreviewMode::None => {
+            return false;
+        }
+        SkillPreviewMode::Unknown | SkillPreviewMode::Target => {}
+    }
+
+    let (hostile_legal, friendly_legal) = legal_target_relations(ctx, slot);
+    if hostile_legal {
+        return true;
+    }
+    if friendly_legal {
+        // Runtime has demonstrated an ally/self Target action, but no hostile Target action.
+        return false;
+    }
+
+    if slot_cooldown(ctx, slot) != Some(0) {
+        return false;
+    }
+
+    if ctx.is_valid_input(&action(slot, target_none())) {
+        return false;
+    }
+    if let Some(self_id) = own_entity_id(ctx) {
+        if ctx.is_valid_input(&action(slot, target_entity(self_id))) {
+            return false;
+        }
+    }
+    if ctx.is_valid_input(&action(slot, target_dir(self_position, click))) {
+        return false;
+    }
+    if ctx.is_valid_input(&action(
+        slot,
+        target_pos(self_position.0, self_position.1),
+    )) {
+        return false;
+    }
+
+    true
 }
 
 /// Resolve the actual click independently of the preview guess. This is the execution authority.
@@ -580,19 +709,33 @@ fn resolve_confirm(
     slot: SkillSlot,
     self_position: (u64, u64),
     click: (u64, u64),
-) -> Option<InputV1> {
+) -> ConfirmResolution {
     let none = action(slot, target_none());
     if ctx.is_valid_input(&none) {
         PREVIEW_MODE.store(MODE_NONE, Ordering::Release);
-        return Some(none);
+        return ConfirmResolution::Cast {
+            input: none,
+            hostile_follow_up: None,
+        };
     }
 
     let clicked = clicked_entity(ctx, click);
-    if let Some(id) = clicked {
-        let targeted = action(slot, target_entity(id));
+    if let Some(ref picked) = clicked {
+        let targeted = action(slot, target_entity(picked.id));
         if ctx.is_valid_input(&targeted) {
             PREVIEW_MODE.store(MODE_TARGET, Ordering::Release);
-            return Some(targeted);
+            let hostile_follow_up = (picked.team != ctx.team()).then_some(picked.id);
+            return ConfirmResolution::Cast {
+                input: targeted,
+                hostile_follow_up,
+            };
+        }
+
+        if picked.team != ctx.team()
+            && hostile_target_chase_plausible(ctx, slot, self_position, click)
+        {
+            PREVIEW_MODE.store(MODE_TARGET, Ordering::Release);
+            return ConfirmResolution::ChaseHostile(picked.id);
         }
     } else if let Some(self_id) = own_entity_id(ctx) {
         // Blank-map LMB is allowed to confirm a self-only Targeting buff. We intentionally do not
@@ -601,21 +744,27 @@ fn resolve_confirm(
         let self_targeted = action(slot, target_entity(self_id));
         if ctx.is_valid_input(&self_targeted) {
             PREVIEW_MODE.store(MODE_TARGET, Ordering::Release);
-            return Some(self_targeted);
+            return ConfirmResolution::Cast {
+                input: self_targeted,
+                hostile_follow_up: None,
+            };
         }
     }
 
-    // If this action demonstrably accepts entity targets right now, a wrong/out-of-range entity
-    // click is a rejection. Do not fall through to a permissive Direction/Position interpretation.
+    // If this action demonstrably accepts entity targets right now, a wrong entity click is a
+    // rejection. Do not fall through to a permissive Direction/Position interpretation.
     if legal_target_exists(ctx, slot) {
         PREVIEW_MODE.store(MODE_TARGET, Ordering::Release);
-        return None;
+        return ConfirmResolution::Reject;
     }
 
     let direction = action(slot, target_dir(self_position, click));
     if ctx.is_valid_input(&direction) {
         PREVIEW_MODE.store(MODE_DIRECTION, Ordering::Release);
-        return Some(direction);
+        return ConfirmResolution::Cast {
+            input: direction,
+            hostile_follow_up: None,
+        };
     }
 
     let range = match PREVIEW_RANGE_STATE.load(Ordering::Acquire) {
@@ -628,19 +777,92 @@ fn resolve_confirm(
     let position = action(slot, target_pos(point.0, point.1));
     if ctx.is_valid_input(&position) {
         PREVIEW_MODE.store(MODE_POSITION, Ordering::Release);
-        return Some(position);
+        return ConfirmResolution::Cast {
+            input: position,
+            hostile_follow_up: None,
+        };
     }
 
-    None
+    ConfirmResolution::Reject
+}
+
+fn pending_chase_input(
+    ctx: &mut StableAiContext<'_>,
+    self_position: (u64, u64),
+    slot: SkillSlot,
+    target_id: usize,
+) -> Option<InputV1> {
+    // Preserve the locked-slot safety invariant even though a pending chase can only be created after
+    // the first unlocked confirmation. Future level/state changes should never bypass this guard.
+    if slot_unlocked(ctx, slot) != Some(true) {
+        REJECT_COUNT.fetch_add(1, Ordering::Relaxed);
+        clear_pending_chase();
+        clear_targeting_state();
+        return None;
+    }
+
+    let controlled_team = ctx.team();
+    let target_position = {
+        let Some(sim) = ctx.sim() else {
+            return Some(InputV1::move_to(self_position.0, self_position.1));
+        };
+        let Some(target) = sim.get_entity(target_id) else {
+            REJECT_COUNT.fetch_add(1, Ordering::Relaxed);
+            clear_pending_chase();
+            clear_targeting_state();
+            return None;
+        };
+        if !target.is_alive()
+            || !target.is_targetable()
+            || target.team() == controlled_team
+            || !sim.is_visible(controlled_team, target_id)
+        {
+            REJECT_COUNT.fetch_add(1, Ordering::Relaxed);
+            clear_pending_chase();
+            clear_targeting_state();
+            return None;
+        }
+        target.pos()
+    };
+
+    let cast = action(slot, target_entity(target_id));
+    if ctx.is_valid_input(&cast) {
+        CAST_COUNT.fetch_add(1, Ordering::Relaxed);
+        clear_pending_chase();
+        clear_targeting_state();
+        // The skill wins this tick; on the next simulation update the normal exact-target command
+        // takes over and inherits the validated attack/chase timing and vision-loss rules.
+        super::set_active_attack(target_id);
+        return Some(cast);
+    }
+
+    let chase = InputV1::move_to(target_position.0, target_position.1);
+    if ctx.is_valid_input(&chase) {
+        return Some(chase);
+    }
+
+    // If movement is temporarily uncancellable, hold rather than letting an unrelated older order
+    // resume. TFM2's validator remains the authority for when chase movement becomes legal.
+    Some(InputV1::move_to(self_position.0, self_position.1))
 }
 
 /// Called only for the already-selected athlete from the paced StablePlayerAi callback.
-/// Returns Some only on a successful one-tick skill cast; otherwise the persistent RMB order remains
-/// in force.
+/// Returns Some for a successful one-tick skill cast or while an accepted hostile Target skill is
+/// actively chasing its retained entity. Otherwise the persistent parent control order remains in force.
 pub fn manual_skill_input(
     ctx: &mut StableAiContext<'_>,
     self_position: Option<(u64, u64)>,
 ) -> Option<InputV1> {
+    let self_position = self_position?;
+
+    if let Some((slot, target_id)) = pending_chase() {
+        SELF_X.store(self_position.0, Ordering::Relaxed);
+        SELF_Y.store(self_position.1, Ordering::Relaxed);
+        SELF_ACTIVE.store(true, Ordering::Release);
+        PREVIEW_MODE.store(MODE_TARGET, Ordering::Release);
+        return pending_chase_input(ctx, self_position, slot, target_id);
+    }
+
     let slot = armed()?;
 
     // Never ask the game's validator about a skill that does not exist for this champion level yet.
@@ -654,7 +876,6 @@ pub fn manual_skill_input(
         return None;
     }
 
-    let self_position = self_position?;
     update_preview(ctx, slot, self_position);
 
     let Some((x, y, version)) = confirm_snapshot() else {
@@ -664,18 +885,26 @@ pub fn manual_skill_input(
         return None;
     }
 
-    // Consume exactly once. Failed validation leaves the skill armed, but another LMB is required;
-    // a rejected click can never turn into a delayed surprise cast after cooldown.
     RESOLVED_CONFIRM_VERSION.store(version, Ordering::Release);
     CONFIRM_ACTIVE.store(false, Ordering::Release);
 
     match resolve_confirm(ctx, slot, self_position, (x, y)) {
-        Some(input) => {
+        ConfirmResolution::Cast {
+            input,
+            hostile_follow_up,
+        } => {
             CAST_COUNT.fetch_add(1, Ordering::Relaxed);
             clear_targeting_state();
+            if let Some(target_id) = hostile_follow_up {
+                super::set_active_attack(target_id);
+            }
             Some(input)
         }
-        None => {
+        ConfirmResolution::ChaseHostile(target_id) => {
+            start_pending_chase(slot, target_id);
+            pending_chase_input(ctx, self_position, slot, target_id)
+        }
+        ConfirmResolution::Reject => {
             REJECT_COUNT.fetch_add(1, Ordering::Relaxed);
             None
         }
@@ -696,8 +925,12 @@ pub fn snapshot() -> SkillTargetingSnapshot {
         .then(|| PREVIEW_RANGE_SIM.load(Ordering::Acquire));
 
     SkillTargetingSnapshot {
-        armed: armed(),
-        mode: SkillPreviewMode::from_code(PREVIEW_MODE.load(Ordering::Acquire)),
+        armed: active_slot(),
+        mode: if pending_chase().is_some() {
+            SkillPreviewMode::Target
+        } else {
+            SkillPreviewMode::from_code(PREVIEW_MODE.load(Ordering::Acquire))
+        },
         cursor,
         self_position,
         range_sim: range,
