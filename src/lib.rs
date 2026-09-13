@@ -39,6 +39,7 @@ const SKILL_Q_KEY: &str = "Q";
 const SKILL_W_KEY: &str = "W";
 const SKILL_R_KEY: &str = "R";
 const RETURN_HOME_KEY: &str = "B";
+const HOLD_KEY: &str = "H";
 
 static WAS_INGAME: AtomicBool = AtomicBool::new(false);
 static START_CHORD_WAS_DOWN: AtomicBool = AtomicBool::new(false);
@@ -233,6 +234,20 @@ impl DirectControlExtension {
 
         if ctx.key_pressed(RETURN_HOME_KEY) {
             control::request_return_home();
+        }
+    }
+
+    fn poll_hold(ctx: &StableClient<'_>, ingame: bool) {
+        if !ingame
+            || !pacing_probe::manual_input_enabled()
+            || control::selected_athlete().is_none()
+        {
+            return;
+        }
+
+        if ctx.key_pressed(HOLD_KEY) {
+            control::cancel_skill_targeting();
+            control::clear_move_target();
         }
     }
 
@@ -625,7 +640,7 @@ impl DirectControlExtension {
         Self::draw_text_line(
             ctx,
             128.0,
-            "F1-F10 select | RMB move/attack | B return | Q/W/R arm | LMB confirm | RMB/Esc cancel | Ctrl+End release",
+            "F1-F10 select | RMB move/attack | H hold | B return | Q/W/R arm | LMB confirm | RMB/Esc cancel | Ctrl+End release",
             0x80d8ffff,
         );
     }
@@ -661,6 +676,7 @@ impl StableExtension for DirectControlExtension {
         Self::poll_finish_chord(ingame);
         Self::poll_player_selection(ctx, ingame);
         Self::poll_return_home(ctx, ingame);
+        Self::poll_hold(ctx, ingame);
 
         if !control_scene {
             return;
@@ -684,7 +700,7 @@ fn init(host: &StableHost) -> StableMod {
     match simulation_probe::ensure_installed() {
         Ok(()) => host.log(
             LogLevel::Info,
-            "TFM2 Direct Control loaded (contextual RMB + manual skill targeting + return home)",
+            "TFM2 Direct Control loaded (contextual RMB + manual skills + hold + return home)",
         ),
         Err(error) => host.log(
             LogLevel::Error,
