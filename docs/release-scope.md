@@ -20,17 +20,24 @@ This file records the current functionality-first scope and implementation prior
    - do not auto-hunt distant visible enemies before they enter legal basic-attack range;
    - physical testing completed without complications;
    - native TFM2 `A = Back 10 Seconds` must be remapped during development unless/until shortcut integration can prevent the conflict.
-5. **Single-target skill chase + follow-up attack** — **implemented; awaiting physical validation.**
+5. **Single-target skill chase + follow-up attack** — **validated.**
    - a confirmed hostile Target skill that is currently out of range retains the exact clicked entity and moves toward it until the skill becomes legal;
    - runtime validator evidence is used conservatively to distinguish hostile Target skills from Direction/Position/Self actions rather than treating every failed entity click as a chase request;
    - cast the skill immediately once the exact Target input becomes legal;
    - after a successful hostile single-target cast, transition that same entity into the existing exact-target auto-attack/chase behavior without requiring another click;
    - if the target dies, becomes untargetable, changes relation, or leaves legal vision before the cast, drop the pending chase rather than tracking through fog;
-   - locked-slot validation remains ahead of all skill probing.
-6. **Minimap movement** — RMB/click movement through the minimap should issue a normal move order to the corresponding map location, allowing camera-independent travel.
+   - locked-slot validation remains ahead of all skill probing;
+   - known cooldown edge case: ordering the skill while it is on cooldown currently follows the target as though range were the blocker and may arrive/stand without casting. Future cooldown-aware behavior should fail the skill immediately into normal exact-target auto-attack behavior and show explicit red cooldown feedback.
+6. **Minimap movement** — **implemented; awaiting physical validation.**
+   - RMB on the minimap maps the click to simulation coordinates and publishes the same persistent movement request used by battlefield RMB;
+   - discover the minimap from the live stable-API UI tree and its computed rectangle rather than hard-coding screen coordinates;
+   - cache discovery only for the current match and rediscover after scene transitions or invalidation;
+   - current first pass uses the existing contextual RMB resolver after mapping the minimap point. If clicking directly over an enemy minimap marker proves able to turn the request into Attack rather than Move, split minimap orders into forced-ground movement in the next polish pass.
 7. **MOBA-style camera movement** — add practical camera controls for active pursuit, preferably matching familiar LoL behavior: configurable movement bindings and/or edge-of-screen scrolling.
 8. **Clicks beyond the playable map edge** — battlefield clicks just outside the legal map should still express the intended direction. Clamp/project the request onto a legal/pathable map-edge destination so pathfinding moves the champion toward that edge rather than silently eating the order. Never allow movement off-map.
 9. **Skill cooldown UI** — expose direct-control-friendly Q/W/R cooldown/readiness information with high visibility so the player does not have to infer cooldowns from the normal spectator presentation.
+   - show immediate red helper text such as `Q ON COOLDOWN` when a direct-control skill command is rejected for cooldown;
+   - use cooldown state to distinguish "out of range, keep chasing" from "not ready, fail the cast and transition into normal exact-target auto-attack behavior" for hostile single-target skills.
 10. **Click-target hitbox polish**
    - enlarge only the **clickable/selectable area**; never alter entity collision/pathing geometry;
    - towers and the final objective need substantially more forgiving selection because their rendered footprint is much larger than their current clickable collision circle;
