@@ -63,15 +63,23 @@ This file records the current functionality-first scope and implementation prior
    - investigate piggy-backing the base game's existing Follow Own / Follow Enemy role tracking so the same native team/role identity source drives manual selection;
    - A/B test the native-derived mapper against the existing UI/name mapper and revert/retain the existing mapper if the native route introduces complications;
    - prefer native/stable team-role data over repeated UI-tree scans if accessible; keep the existing mapper as a fallback.
-15. **Pregame / pre-simulation start handling** — final pre-release polish/fallback before Pings.
+15. **Custom Direct Control keybinds / shortcut-mode separation** — pre-release polish before match-start timing. Full design inventory is in `docs/keybind-plan.md`.
+   - preferred design: add a dedicated **Direct Control** category/control scheme in Shortcuts Settings that becomes active only while a champion is under manual control; native spectator shortcuts resume immediately when `End` releases control;
+   - acceptable fallback: place Direct Control entries into the normal shortcut settings namespace with conflict handling/clear labeling if a separate mode is disproportionately invasive;
+   - rejected design: globally override native shortcut behavior with Direct Control defaults regardless of mode;
+   - catalogue all injected player-facing actions: F1-F10 champion selection, contextual RMB Move/Attack, minimap Move, A attack-move, H Hold, B Return, Q/W/R skills, LMB confirm, RMB/Esc cancel targeting, End temporary AI release, Ctrl+Home live-simulation start, Ctrl+End global release, plus any keyboard camera controls added by the camera-movement item;
+   - **playback-desync safety is mandatory:** while Direct Control mode is active, suppress native commands that change presentation time/rate/state even if rebound to otherwise non-conflicting keys. At minimum cover Back 10 Seconds, Forward 10 Seconds, Previous/Next Highlight, Pause Match, 0.5x/1x/1.5x/2x/3x speed controls, and Highlight Mode/equivalent playback modes;
+   - reason: rewinding or otherwise decoupling presentation from the still-advancing live simulation can leave the displayed match behind the controlled state and require manual fast-forwarding to resynchronize;
+   - spectator-only functions that do not alter playback position/rate may remain available unless they conflict with an active Direct Control binding or another pre-release feature.
+16. **Pregame / pre-simulation start handling** — final pre-release polish/fallback before Pings.
    - preferred route: reuse any clean solution discovered by the Flame Simulator pre-game pre-simulation probe so the player can enter the map before meaningful match simulation gets ahead of them;
    - if no clean start-gate/pause solution is found, apply a flat **+60 second offset** to the normal opening schedule rather than allowing the vanilla timings to occur before the player can meaningfully participate;
    - the fallback offset must preserve all normal relative timing: character AI activation, lane creep spawns/waves, jungle spawns, Serpen and Morgar spawns, and other scheduled opening events each occur one minute later than they normally would; do **not** bunch all of those events together at the 1:00 mark;
    - treat this as a match-start schedule offset, not a blanket modification to ordinary combat cooldowns/action durations;
    - the first minute can function as a League-like pregame roam/setup window before normal match activity begins;
    - optionally add a temporary spawn-area collision wall/barrier only if testing shows unrestricted first-minute roaming creates undesirable exploits. Prefer free roaming if it behaves well.
-16. **Pings/team commands** — **post-release work / release boundary.** Potentially large subsystem; do not hold the first public release for this unless explicitly reconsidered.
-17. **Shop control** — automatic shop remains acceptable until this stage.
+17. **Pings/team commands** — **post-release work / release boundary.** Potentially large subsystem; do not hold the first public release for this unless explicitly reconsidered.
+18. **Shop control** — automatic shop remains acceptable until this stage.
 
 ## Must iron out before release
 
@@ -103,5 +111,4 @@ Do not silently copy or bundle that mod's implementation. For the eventual Works
 - **Friendly champion selection cleanup:** do not redesign the visible selection UI here. F1-F10 is sufficient for functionality; only harden how those fixed role slots resolve to athlete ids.
 - **Gunfighter move-while-attacking composition:** character-specific follow-up after generic controls are stable; attack-move is particularly important to this character.
 - **Idle retaliation:** possible later behavior where an otherwise-idle selected champion that is attacked by an enemy already in legal basic-attack range returns fire.
-- **Native Shortcuts-menu integration:** desirable final UX, but stable API currently provides no trivial registration hook.
 - **Morgard/ping override investigation:** revisit only if explicit manual orders are still observably overridden after the core command path is stable.
