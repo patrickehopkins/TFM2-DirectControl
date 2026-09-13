@@ -6,14 +6,19 @@ This file records the current functionality-first scope and implementation prior
 
 1. **Hold/Stop** — **validated.** `H` is the current binding because native `S` pauses match presentation. It stops movement, attacking, skill aim, and Return/recall while retaining manual ownership.
 2. **Auto-attack chase timing** — **validated strongly.** When an exact-target Attack is temporarily illegal, Direct Control now asks TFM2 whether literal `MoveTo(target)` is legal on that exact simulation frame. Legal movement resumes pursuit immediately; illegal movement falls back to hold. Physical testing showed this closely matches desired attack/chase cadence without inventing a cooldown or windup timer.
-3. **`End` — temporary release to AI / return to spectator**
-   - release only the currently controlled champion;
-   - restore normal AI control immediately;
-   - clear retained manual move/attack/return/skill-targeting state;
-   - do **not** release, skip, or accelerate pre-simulation/pacing;
-   - `Ctrl+End` remains the stronger/global release;
-   - current implementation is ready for physical validation.
-4. **`A` — attack-move** — important ranged-character micro and especially important to Gunfighter.
+3. **`End` — temporary release to AI / return to spectator** — **validated.**
+   - releases only the currently controlled champion;
+   - restores normal AI control immediately;
+   - clears retained manual move/attack/return/skill-targeting state;
+   - does **not** release, skip, or accelerate pre-simulation/pacing;
+   - `Ctrl+End` remains the stronger/global release.
+4. **`A` — attack-move** — **implemented; awaiting physical validation.**
+   - `A` arms attack-move and LMB confirms the destination;
+   - move toward that point until a visible hostile becomes a legal basic-attack target;
+   - acquire the nearest currently legal target to the controlled champion, then retain it through the normal exact-target attack/chase timing;
+   - after the acquired target dies, becomes untargetable, or leaves vision, resume the original attack-move destination and allow a new legal target to be acquired;
+   - do not auto-hunt distant visible enemies before they enter legal basic-attack range;
+   - native TFM2 `A = Back 10 Seconds` must be remapped during development unless/until shortcut integration can prevent the conflict.
 5. **Single-target skill chase + follow-up attack**
    - when a targeted skill is ordered on an out-of-range legal target, retain that exact target and move toward it until the skill becomes legal;
    - cast the skill as soon as it becomes legal;
