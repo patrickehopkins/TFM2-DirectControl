@@ -5,11 +5,11 @@
 //! input/update handler and capture only a few verified fields from its `this`
 //! pointer.
 //!
-//! Direct Control also uses the same verified center fields for a deliberately
-//! narrow camera-control feature: while a champion is manually owned, the arrow
-//! keys pan the active match camera. The first manual pan latches the camera center
-//! so TFM2's Auto Camera cannot immediately pull it back; changing/releasing the
-//! controlled champion releases that latch again.
+//! Direct Control also uses the same verified center fields for free-camera control:
+//! mouse-edge scrolling and middle-mouse drag latch a manual camera center so TFM2's
+//! Auto Camera cannot immediately pull it back. Holding Space temporarily releases
+//! that latch so the base game's selected-champion follow behavior can recenter/follow.
+//! Releasing Space restores free-camera hold only if free camera was active before.
 //!
 //! Keep every version-specific RVA/offset in this module. Higher-level direct
 //! control code should consume `CameraSnapshot` and never know TFM2's private
@@ -19,7 +19,7 @@ use std::{
     ffi::c_void,
     ptr,
     sync::{
-        atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering},
         OnceLock,
     },
 };
@@ -49,24 +49,37 @@ const MEM_COMMIT: u32 = 0x1000;
 const MEM_RESERVE: u32 = 0x2000;
 const PAGE_EXECUTE_READWRITE: u32 = 0x40;
 
-// TFM2's simulation map is approximately 960 x 960 world units. Camera writes are
-// clamped to that verified world-space envelope so manual panning can never run away
-// into nonsensical memory-derived coordinates.
 const WORLD_MIN: f32 = 0.0;
 const WORLD_MAX: f32 = 960.0;
-const CAMERA_SPEED_VIEWPORTS_PER_SECOND: f32 = 0.80;
-const DEFAULT_FRAME_DT: f32 = 1.0 / 60.0;
+const EDGE_SCROLL_MARGIN_PX: i32 = 18;
+const EDGE_SCROLL_VIEWPORTS_PER_SECOND: f32 = 1.25;
+const MAX_FRAME_DT_SECONDS: f32 = 0.050;
+const DEFAULT_FRAME_DT_SECONDS: f32 = 1.0 / 60.0;
 const NO_ATHLETE: usize = usize::MAX;
 
-const VK_LEFT_CODE: i32 = 0x25;
-const VK_UP_CODE: i32 = 0x26;
-const VK_RIGHT_CODE: i32 = 0x27;
-const VK_DOWN_CODE: i32 = 0x28;
+const VK_MBUTTON_CODE: i32 = 0x04;
+const VK_SPACE_CODE: i32 = 0x20;
+
+#[repr(C)]
+struct WinPoint {
+    x: i32,
+    y: i32,
+}
+
+#[repr(C)]
+struct WinRect {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
 
 #[link(name = "kernel32")]
 extern "system" {
     fn GetModuleHandleW(module_name: *const u16) -> *mut c_void;
     fn GetCurrentProcess() -> *mut c_void;
+    fn GetCurrentProcessId() -> u32;
+    fn GetTickCount64() -> u64;
     fn VirtualAlloc(
         address: *mut c_void,
         size: usize,
@@ -85,6 +98,11 @@ extern "system" {
 #[link(name = "user32")]
 extern "system" {
     fn GetAsyncKeyState(vkey: i32) -> i16;
+    fn GetForegroundWindow() -> *mut c_void;
+    fn GetWindowThreadProcessId(hwnd: *mut c_void, process_id: *mut u32) -> u32;
+    fn GetCursorPos(point: *mut WinPoint) -> i32;
+    fn ScreenToClient(hwnd: *mut c_void, point: *mut WinPoint) -> i32;
+    fn GetClientRect(hwnd: *mut c_void, rect: *mut WinRect) -> i32;
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -145,13 +163,16 @@ static CANDIDATES: [CandidateSlot; MAX_CANDIDATES] = [
 static TRAMPOLINE: AtomicUsize = AtomicUsize::new(0);
 static INSTALL_RESULT: OnceLock<Result<(), String>> = OnceLock::new();
 
-// Manual-camera latch state. The selected athlete id is tracked so an F-key
-// selection change naturally hands camera positioning back to TFM2 until the user
-// deliberately pans again.
 static LAST_SELECTED_ATHLETE: AtomicUsize = AtomicUsize::new(NO_ATHLETE);
 static MANUAL_CAMERA_LATCHED: AtomicBool = AtomicBool::new(false);
 static MANUAL_CENTER_X: AtomicU32 = AtomicU32::new(0);
 static MANUAL_CENTER_Y: AtomicU32 = AtomicU32::new(0);
+static LAST_CAMERA_UPDATE_MS: AtomicU64 = AtomicU64::new(0);
+static MMB_WAS_DOWN: AtomicBool = AtomicBool::new(false);
+static LAST_MOUSE_X: AtomicI32 = AtomicI32::new(0);
+static LAST_MOUSE_Y: AtomicI32 = AtomicI32::new(0);
+static SPACE_WAS_DOWN: AtomicBool = AtomicBool::new(false);
+static SPACE_RESTORE_FREE: AtomicBool = AtomicBool::new(false);
 
 // Observed machine-level signature at the two known call sites. Only the first
 // argument matters to us; preserving the rest exactly lets the original handler
@@ -182,7 +203,7 @@ unsafe extern "system" fn camera_handler_hook(
     }
 
     capture(this);
-    apply_manual_camera(this, arg4);
+    apply_manual_camera(this);
 }
 
 unsafe fn capture(this: *mut u8) {
@@ -197,7 +218,6 @@ unsafe fn capture(this: *mut u8) {
     let extent_b = ptr::read_unaligned(this.add(EXTENT_B_OFFSET).cast::<f32>());
     let mode = ptr::read_unaligned(this.add(MODE_OFFSET).cast::<u8>());
 
-    // Do not publish clearly nonsensical values if the handler layout ever changes.
     if !zoom.is_finite()
         || !center_x.is_finite()
         || !center_y.is_finite()
@@ -245,14 +265,22 @@ unsafe fn capture(this: *mut u8) {
     slot.calls.fetch_add(1, Ordering::Release);
 }
 
+fn clear_manual_camera_state() {
+    MANUAL_CAMERA_LATCHED.store(false, Ordering::Release);
+    MANUAL_CENTER_X.store(0, Ordering::Relaxed);
+    MANUAL_CENTER_Y.store(0, Ordering::Relaxed);
+    LAST_CAMERA_UPDATE_MS.store(0, Ordering::Release);
+    MMB_WAS_DOWN.store(false, Ordering::Release);
+    LAST_MOUSE_X.store(0, Ordering::Relaxed);
+    LAST_MOUSE_Y.store(0, Ordering::Relaxed);
+    SPACE_WAS_DOWN.store(false, Ordering::Release);
+    SPACE_RESTORE_FREE.store(false, Ordering::Release);
+}
+
 fn preferred_camera_address() -> usize {
     let mut best_address = 0usize;
     let mut best_calls = 0u64;
 
-    // `snapshots()` sorts by address and the render-side code then uses
-    // `max_by_key(calls)`. On ties Rust keeps the later maximum, so reproducing
-    // (calls, address) ordering here picks the same camera object without allocating
-    // a Vec from inside the native camera hook.
     for slot in &CANDIDATES {
         let address = slot.address.load(Ordering::Acquire);
         if address == 0 {
@@ -272,22 +300,60 @@ fn direct_control_camera_active() -> bool {
     let selected = crate::control::selected_athlete().unwrap_or(NO_ATHLETE);
     let previous = LAST_SELECTED_ATHLETE.swap(selected, Ordering::AcqRel);
     if selected != previous {
-        MANUAL_CAMERA_LATCHED.store(false, Ordering::Release);
+        clear_manual_camera_state();
     }
 
-    if selected == NO_ATHLETE || !crate::pacing_probe::manual_input_enabled() {
-        MANUAL_CAMERA_LATCHED.store(false, Ordering::Release);
+    if selected == NO_ATHLETE || crate::pacing_probe::manual_control_released() {
+        clear_manual_camera_state();
         return false;
     }
 
     true
 }
 
-fn arrow_axis() -> (f32, f32) {
-    let left = unsafe { GetAsyncKeyState(VK_LEFT_CODE) < 0 };
-    let right = unsafe { GetAsyncKeyState(VK_RIGHT_CODE) < 0 };
-    let up = unsafe { GetAsyncKeyState(VK_UP_CODE) < 0 };
-    let down = unsafe { GetAsyncKeyState(VK_DOWN_CODE) < 0 };
+fn foreground_cursor() -> Option<(i32, i32, i32, i32)> {
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.is_null() {
+            return None;
+        }
+
+        let mut process_id = 0u32;
+        GetWindowThreadProcessId(hwnd, &mut process_id);
+        if process_id == 0 || process_id != GetCurrentProcessId() {
+            return None;
+        }
+
+        let mut point = WinPoint { x: 0, y: 0 };
+        if GetCursorPos(&mut point) == 0 || ScreenToClient(hwnd, &mut point) == 0 {
+            return None;
+        }
+
+        let mut rect = WinRect {
+            left: 0,
+            top: 0,
+            right: 0,
+            bottom: 0,
+        };
+        if GetClientRect(hwnd, &mut rect) == 0 {
+            return None;
+        }
+
+        let width = rect.right - rect.left;
+        let height = rect.bottom - rect.top;
+        if width <= 0 || height <= 0 {
+            return None;
+        }
+
+        Some((point.x, point.y, width, height))
+    }
+}
+
+fn edge_axis(mouse_x: i32, mouse_y: i32, width: i32, height: i32) -> (f32, f32) {
+    let left = mouse_x <= EDGE_SCROLL_MARGIN_PX;
+    let right = mouse_x >= width - EDGE_SCROLL_MARGIN_PX - 1;
+    let up = mouse_y <= EDGE_SCROLL_MARGIN_PX;
+    let down = mouse_y >= height - EDGE_SCROLL_MARGIN_PX - 1;
 
     let mut x = (right as i32 - left as i32) as f32;
     let mut y = (down as i32 - up as i32) as f32;
@@ -299,20 +365,28 @@ fn arrow_axis() -> (f32, f32) {
     (x, y)
 }
 
-unsafe fn apply_manual_camera(this: *mut u8, handler_dt: f32) {
+fn frame_dt_seconds() -> f32 {
+    let now = unsafe { GetTickCount64() };
+    let previous = LAST_CAMERA_UPDATE_MS.swap(now, Ordering::AcqRel);
+    if previous == 0 {
+        return DEFAULT_FRAME_DT_SECONDS;
+    }
+
+    (now.saturating_sub(previous) as f32 / 1000.0).clamp(0.0, MAX_FRAME_DT_SECONDS)
+}
+
+fn clamp_center(center: f32, extent: f32) -> f32 {
+    let half = (extent.abs() * 0.5).clamp(0.0, (WORLD_MAX - WORLD_MIN) * 0.5);
+    center.clamp(WORLD_MIN + half, WORLD_MAX - half)
+}
+
+unsafe fn apply_manual_camera(this: *mut u8) {
     if this.is_null() || !direct_control_camera_active() {
         return;
     }
 
     let address = this as usize;
     if address != preferred_camera_address() {
-        return;
-    }
-
-    let (axis_x, axis_y) = arrow_axis();
-    let moving = axis_x != 0.0 || axis_y != 0.0;
-    let latched = MANUAL_CAMERA_LATCHED.load(Ordering::Acquire);
-    if !moving && !latched {
         return;
     }
 
@@ -325,10 +399,38 @@ unsafe fn apply_manual_camera(this: *mut u8, handler_dt: f32) {
         || !extent_a.is_finite()
         || !extent_b.is_finite()
     {
-        MANUAL_CAMERA_LATCHED.store(false, Ordering::Release);
+        clear_manual_camera_state();
         return;
     }
 
+    let dt = frame_dt_seconds();
+    let space_down = GetAsyncKeyState(VK_SPACE_CODE) < 0;
+    let space_was_down = SPACE_WAS_DOWN.swap(space_down, Ordering::AcqRel);
+
+    if space_down {
+        if !space_was_down {
+            SPACE_RESTORE_FREE.store(
+                MANUAL_CAMERA_LATCHED.load(Ordering::Acquire),
+                Ordering::Release,
+            );
+        }
+        MANUAL_CAMERA_LATCHED.store(false, Ordering::Release);
+        MMB_WAS_DOWN.store(false, Ordering::Release);
+        return;
+    }
+
+    if space_was_down {
+        if SPACE_RESTORE_FREE.swap(false, Ordering::AcqRel) {
+            MANUAL_CENTER_X.store(native_x.to_bits(), Ordering::Release);
+            MANUAL_CENTER_Y.store(native_y.to_bits(), Ordering::Release);
+            MANUAL_CAMERA_LATCHED.store(true, Ordering::Release);
+        } else {
+            MANUAL_CAMERA_LATCHED.store(false, Ordering::Release);
+        }
+        MMB_WAS_DOWN.store(false, Ordering::Release);
+    }
+
+    let mut latched = MANUAL_CAMERA_LATCHED.load(Ordering::Acquire);
     let (mut center_x, mut center_y) = if latched {
         (
             f32::from_bits(MANUAL_CENTER_X.load(Ordering::Acquire)),
@@ -338,27 +440,71 @@ unsafe fn apply_manual_camera(this: *mut u8, handler_dt: f32) {
         (native_x, native_y)
     };
 
-    if moving {
-        let dt = if handler_dt.is_finite() && (0.001..=0.100).contains(&handler_dt) {
-            handler_dt
-        } else {
-            DEFAULT_FRAME_DT
-        };
-        center_x += axis_x * extent_a.abs().max(1.0) * CAMERA_SPEED_VIEWPORTS_PER_SECOND * dt;
-        center_y += axis_y * extent_b.abs().max(1.0) * CAMERA_SPEED_VIEWPORTS_PER_SECOND * dt;
-        center_x = center_x.clamp(WORLD_MIN, WORLD_MAX);
-        center_y = center_y.clamp(WORLD_MIN, WORLD_MAX);
+    let cursor = foreground_cursor();
+    let middle_down = GetAsyncKeyState(VK_MBUTTON_CODE) < 0;
+    let mut moved = false;
 
-        MANUAL_CENTER_X.store(center_x.to_bits(), Ordering::Release);
-        MANUAL_CENTER_Y.store(center_y.to_bits(), Ordering::Release);
-        MANUAL_CAMERA_LATCHED.store(true, Ordering::Release);
+    if middle_down {
+        if let Some((mouse_x, mouse_y, width, height)) = cursor {
+            let was_down = MMB_WAS_DOWN.swap(true, Ordering::AcqRel);
+            if !was_down {
+                LAST_MOUSE_X.store(mouse_x, Ordering::Release);
+                LAST_MOUSE_Y.store(mouse_y, Ordering::Release);
+                if !latched {
+                    latched = true;
+                    MANUAL_CAMERA_LATCHED.store(true, Ordering::Release);
+                }
+            } else {
+                let previous_x = LAST_MOUSE_X.swap(mouse_x, Ordering::AcqRel);
+                let previous_y = LAST_MOUSE_Y.swap(mouse_y, Ordering::AcqRel);
+                let dx = mouse_x - previous_x;
+                let dy = mouse_y - previous_y;
+                if dx != 0 || dy != 0 {
+                    center_x -= dx as f32 * extent_a.abs().max(1.0) / width.max(1) as f32;
+                    center_y -= dy as f32 * extent_b.abs().max(1.0) / height.max(1) as f32;
+                    moved = true;
+                }
+            }
+        } else {
+            MMB_WAS_DOWN.store(false, Ordering::Release);
+        }
+    } else {
+        MMB_WAS_DOWN.store(false, Ordering::Release);
+
+        if let Some((mouse_x, mouse_y, width, height)) = cursor {
+            let (axis_x, axis_y) = edge_axis(mouse_x, mouse_y, width, height);
+            if axis_x != 0.0 || axis_y != 0.0 {
+                if !latched {
+                    latched = true;
+                    MANUAL_CAMERA_LATCHED.store(true, Ordering::Release);
+                }
+                center_x += axis_x
+                    * extent_a.abs().max(1.0)
+                    * EDGE_SCROLL_VIEWPORTS_PER_SECOND
+                    * dt;
+                center_y += axis_y
+                    * extent_b.abs().max(1.0)
+                    * EDGE_SCROLL_VIEWPORTS_PER_SECOND
+                    * dt;
+                moved = true;
+            }
+        }
     }
 
+    if !latched {
+        return;
+    }
+
+    if moved {
+        center_x = clamp_center(center_x, extent_a);
+        center_y = clamp_center(center_y, extent_b);
+    }
+
+    MANUAL_CENTER_X.store(center_x.to_bits(), Ordering::Release);
+    MANUAL_CENTER_Y.store(center_y.to_bits(), Ordering::Release);
     ptr::write_unaligned(this.add(CENTER_X_OFFSET).cast::<f32>(), center_x);
     ptr::write_unaligned(this.add(CENTER_Y_OFFSET).cast::<f32>(), center_y);
 
-    // Keep the render-side snapshot coherent with the override immediately instead
-    // of waiting one camera-handler invocation for the next capture.
     for slot in &CANDIDATES {
         if slot.address.load(Ordering::Acquire) == address {
             slot.center_x.store(center_x.to_bits(), Ordering::Relaxed);
@@ -379,9 +525,7 @@ pub fn clear_candidates() {
         slot.clear();
     }
     LAST_SELECTED_ATHLETE.store(NO_ATHLETE, Ordering::Release);
-    MANUAL_CAMERA_LATCHED.store(false, Ordering::Release);
-    MANUAL_CENTER_X.store(0, Ordering::Relaxed);
-    MANUAL_CENTER_Y.store(0, Ordering::Relaxed);
+    clear_manual_camera_state();
 }
 
 pub fn snapshots() -> Vec<CameraSnapshot> {
@@ -452,7 +596,6 @@ unsafe fn install_inner() -> Result<(), String> {
     ptr::copy_nonoverlapping(target, trampoline, PATCH_LEN);
     write_abs_jump(trampoline.add(PATCH_LEN), target.add(PATCH_LEN) as usize);
 
-    // Publish the trampoline before the target can begin calling our hook.
     TRAMPOLINE.store(trampoline as usize, Ordering::Release);
 
     let mut old_protect = 0u32;
@@ -477,7 +620,6 @@ unsafe fn install_inner() -> Result<(), String> {
 }
 
 unsafe fn write_abs_jump(destination: *mut u8, target: usize) {
-    // mov rax, imm64 ; jmp rax
     *destination = 0x48;
     *destination.add(1) = 0xB8;
     ptr::copy_nonoverlapping(
