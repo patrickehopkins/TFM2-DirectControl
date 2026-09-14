@@ -5,11 +5,12 @@
 //! input/update handler and capture only a few verified fields from its `this`
 //! pointer.
 //!
-//! Direct Control camera movement deliberately does NOT overwrite the derived camera
-//! center. Static RE confirmed the native camera controller owns horizontal/vertical
-//! pan-input fields at +0x418/+0x41C (the game's own pan actions write +/-100 there).
-//! Edge scrolling and MMB drag inject only those inputs before the original camera
-//! handler runs; TFM2 remains authoritative for camera integration and follow state.
+//! Direct Control camera movement uses the game's verified native pan-input fields
+//! at +0x418/+0x41C so ordinary manual panning still goes through TFM2's camera
+//! controller and can disengage follow/Auto Camera normally. Edge scrolling is pure
+//! native pan input. MMB drag also supplies native pan intent, but then corrects the
+//! resulting center by the exact cursor displacement for that frame so the grabbed
+//! world point stays under the cursor instead of depending on native pan timing.
 //!
 //! Keep every version-specific RVA/offset in this module. Higher-level direct
 //! control code should consume `CameraSnapshot` and never know TFM2's private
@@ -51,12 +52,18 @@ const MEM_COMMIT: u32 = 0x1000;
 const MEM_RESERVE: u32 = 0x2000;
 const PAGE_EXECUTE_READWRITE: u32 = 0x40;
 
-const EDGE_SCROLL_MARGIN_PX: i32 = 18;
-const NATIVE_PAN_SPEED: f32 = 100.0;
-const MAX_DRAG_PAN_SPEED: f32 = 800.0;
+// Horizontal battlefield edges coincide closely with the client edges in the wide
+// layout. Vertically, TFM2 reserves a top scoreboard band and a bottom controls band,
+// so use a wider Y activation zone until camera input is moved onto live UI geometry.
+const EDGE_SCROLL_MARGIN_X_PX: i32 = 18;
+const EDGE_SCROLL_MARGIN_Y_PX: i32 = 72;
+const NATIVE_EDGE_PAN_SPEED: f32 = 200.0;
+const NATIVE_DRAG_INTENT_SPEED: f32 = 100.0;
 const GAME_DRAW_SIZE: f32 = 2048.0;
 const UI_FALLBACK_W: f32 = 1920.0;
 const UI_FALLBACK_H: f32 = 1080.0;
+const WORLD_MIN: f32 = 0.0;
+const WORLD_MAX: f32 = 960.0;
 const VK_MBUTTON_CODE: i32 = 0x04;
 const NO_ATHLETE: usize = usize::MAX;
 
@@ -79,7 +86,6 @@ extern "system" {
     fn GetModuleHandleW(module_name: *const u16) -> *mut c_void;
     fn GetCurrentProcess() -> *mut c_void;
     fn GetCurrentProcessId() -> u32;
-    fn GetTickCount64() -> u64;
     fn VirtualAlloc(
         address: *mut c_void,
         size: usize,
@@ -115,6 +121,12 @@ pub struct CameraSnapshot {
     pub extent_b: f32,
     pub mode: u8,
     pub calls: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DragCorrection {
+    center_x: f32,
+    center_y: f32,
 }
 
 struct CandidateSlot {
@@ -168,7 +180,6 @@ static PAN_WAS_ACTIVE: AtomicBool = AtomicBool::new(false);
 static MMB_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static LAST_MOUSE_X: AtomicI32 = AtomicI32::new(0);
 static LAST_MOUSE_Y: AtomicI32 = AtomicI32::new(0);
-static LAST_MOUSE_MS: AtomicU64 = AtomicU64::new(0);
 
 // Observed machine-level signature at the two known call sites. Only the first
 // argument matters to us; preserving the rest exactly lets the original handler
@@ -192,12 +203,16 @@ unsafe extern "system" fn camera_handler_hook(
     arg6: usize,
     arg7: usize,
 ) {
-    inject_native_pan(this);
+    let drag_correction = inject_native_pan(this);
 
     let trampoline = TRAMPOLINE.load(Ordering::Acquire);
     if trampoline != 0 {
         let original: CameraHandlerFn = std::mem::transmute(trampoline);
         original(this, arg2, arg3, arg4, arg5, arg6, arg7);
+    }
+
+    if let Some(correction) = drag_correction {
+        apply_drag_correction(this, correction);
     }
 
     capture(this);
@@ -218,7 +233,6 @@ fn reset_manual_pan_state() {
     MMB_WAS_DOWN.store(false, Ordering::Release);
     LAST_MOUSE_X.store(0, Ordering::Relaxed);
     LAST_MOUSE_Y.store(0, Ordering::Relaxed);
-    LAST_MOUSE_MS.store(0, Ordering::Relaxed);
 }
 
 fn foreground_cursor() -> Option<(i32, i32, i32, i32)> {
@@ -260,10 +274,10 @@ fn foreground_cursor() -> Option<(i32, i32, i32, i32)> {
 }
 
 fn edge_axis(mouse_x: i32, mouse_y: i32, width: i32, height: i32) -> (f32, f32) {
-    let left = mouse_x >= 0 && mouse_x <= EDGE_SCROLL_MARGIN_PX;
-    let right = mouse_x < width && mouse_x >= width - EDGE_SCROLL_MARGIN_PX - 1;
-    let up = mouse_y >= 0 && mouse_y <= EDGE_SCROLL_MARGIN_PX;
-    let down = mouse_y < height && mouse_y >= height - EDGE_SCROLL_MARGIN_PX - 1;
+    let left = mouse_x >= 0 && mouse_x <= EDGE_SCROLL_MARGIN_X_PX;
+    let right = mouse_x < width && mouse_x >= width - EDGE_SCROLL_MARGIN_X_PX - 1;
+    let up = mouse_y >= 0 && mouse_y <= EDGE_SCROLL_MARGIN_Y_PX;
+    let down = mouse_y < height && mouse_y >= height - EDGE_SCROLL_MARGIN_Y_PX - 1;
 
     let mut x = (right as i32 - left as i32) as f32;
     let mut y = (down as i32 - up as i32) as f32;
@@ -275,61 +289,83 @@ fn edge_axis(mouse_x: i32, mouse_y: i32, width: i32, height: i32) -> (f32, f32) 
     (x, y)
 }
 
-unsafe fn inject_native_pan(this: *mut u8) {
+unsafe fn inject_native_pan(this: *mut u8) -> Option<DragCorrection> {
     if this.is_null() || !direct_control_camera_active() {
         reset_manual_pan_state();
-        return;
+        return None;
     }
 
     let Some((mouse_x, mouse_y, width, height)) = foreground_cursor() else {
         reset_manual_pan_state();
-        return;
+        return None;
     };
 
     let extent_a = ptr::read_unaligned(this.add(EXTENT_A_OFFSET).cast::<f32>());
     let extent_b = ptr::read_unaligned(this.add(EXTENT_B_OFFSET).cast::<f32>());
-    if !extent_a.is_finite() || !extent_b.is_finite() || extent_a <= 0.0 || extent_b <= 0.0 {
-        return;
+    let center_x = ptr::read_unaligned(this.add(CENTER_X_OFFSET).cast::<f32>());
+    let center_y = ptr::read_unaligned(this.add(CENTER_Y_OFFSET).cast::<f32>());
+    if !extent_a.is_finite()
+        || !extent_b.is_finite()
+        || !center_x.is_finite()
+        || !center_y.is_finite()
+        || extent_a <= 0.0
+        || extent_b <= 0.0
+    {
+        return None;
     }
 
     let middle_down = GetAsyncKeyState(VK_MBUTTON_CODE) < 0;
-    let now_ms = GetTickCount64();
     let mut pan_x = 0.0f32;
     let mut pan_y = 0.0f32;
+    let mut correction = None;
 
     if middle_down {
         let was_down = MMB_WAS_DOWN.swap(true, Ordering::AcqRel);
         if !was_down {
             LAST_MOUSE_X.store(mouse_x, Ordering::Release);
             LAST_MOUSE_Y.store(mouse_y, Ordering::Release);
-            LAST_MOUSE_MS.store(now_ms, Ordering::Release);
         } else {
             let previous_x = LAST_MOUSE_X.swap(mouse_x, Ordering::AcqRel);
             let previous_y = LAST_MOUSE_Y.swap(mouse_y, Ordering::AcqRel);
-            let previous_ms = LAST_MOUSE_MS.swap(now_ms, Ordering::AcqRel);
             let dx = mouse_x - previous_x;
             let dy = mouse_y - previous_y;
 
             if dx != 0 || dy != 0 {
-                let elapsed_ms = now_ms.saturating_sub(previous_ms).clamp(4, 67) as f32;
-                let dt = elapsed_ms / 1000.0;
                 let ui_per_client_x = UI_FALLBACK_W / width.max(1) as f32;
                 let ui_per_client_y = UI_FALLBACK_H / height.max(1) as f32;
                 let world_dx = dx as f32 * ui_per_client_x * extent_a / GAME_DRAW_SIZE;
                 let world_dy = dy as f32 * ui_per_client_y * extent_b / GAME_DRAW_SIZE;
 
-                // Grab-and-drag semantics: dragging the mouse right moves the viewed
-                // world right under the cursor, so camera center moves left.
-                pan_x = (-world_dx / dt).clamp(-MAX_DRAG_PAN_SPEED, MAX_DRAG_PAN_SPEED);
-                pan_y = (-world_dy / dt).clamp(-MAX_DRAG_PAN_SPEED, MAX_DRAG_PAN_SPEED);
+                // Native input is still supplied so TFM2 sees an ordinary manual pan
+                // gesture and can leave follow/Auto Camera. We do not rely on the
+                // native pan integrator for distance, because its cadence is not tied
+                // exactly to mouse-event cadence and causes speed-dependent drift.
+                pan_x = if world_dx > 0.0 {
+                    -NATIVE_DRAG_INTENT_SPEED
+                } else if world_dx < 0.0 {
+                    NATIVE_DRAG_INTENT_SPEED
+                } else {
+                    0.0
+                };
+                pan_y = if world_dy > 0.0 {
+                    -NATIVE_DRAG_INTENT_SPEED
+                } else if world_dy < 0.0 {
+                    NATIVE_DRAG_INTENT_SPEED
+                } else {
+                    0.0
+                };
+
+                correction = Some(DragCorrection {
+                    center_x: (center_x - world_dx).clamp(WORLD_MIN, WORLD_MAX),
+                    center_y: (center_y - world_dy).clamp(WORLD_MIN, WORLD_MAX),
+                });
             }
         }
     } else {
         MMB_WAS_DOWN.store(false, Ordering::Release);
-        LAST_MOUSE_MS.store(now_ms, Ordering::Relaxed);
         let (axis_x, axis_y) = edge_axis(mouse_x, mouse_y, width, height);
-        pan_x = axis_x * NATIVE_PAN_SPEED;
-        pan_y = axis_y * NATIVE_PAN_SPEED;
+        pan_x = axis_x * NATIVE_EDGE_PAN_SPEED;
+        pan_y = axis_y * NATIVE_EDGE_PAN_SPEED;
     }
 
     let active = pan_x != 0.0 || pan_y != 0.0;
@@ -343,6 +379,17 @@ unsafe fn inject_native_pan(this: *mut u8) {
         ptr::write_unaligned(this.add(PAN_X_OFFSET).cast::<f32>(), 0.0);
         ptr::write_unaligned(this.add(PAN_Y_OFFSET).cast::<f32>(), 0.0);
     }
+
+    correction
+}
+
+unsafe fn apply_drag_correction(this: *mut u8, correction: DragCorrection) {
+    if this.is_null() || !correction.center_x.is_finite() || !correction.center_y.is_finite() {
+        return;
+    }
+
+    ptr::write_unaligned(this.add(CENTER_X_OFFSET).cast::<f32>(), correction.center_x);
+    ptr::write_unaligned(this.add(CENTER_Y_OFFSET).cast::<f32>(), correction.center_y);
 }
 
 unsafe fn capture(this: *mut u8) {
