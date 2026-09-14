@@ -3,7 +3,13 @@
 //! The official stable mod API deliberately does not expose the spectator camera.
 //! For the single tested 0.5.8 executable we therefore detour the game's camera
 //! input/update handler and capture only a few verified fields from its `this`
-//! pointer. No gameplay mutation happens here.
+//! pointer.
+//!
+//! Direct Control also uses the same verified center fields for a deliberately
+//! narrow camera-control feature: while a champion is manually owned, the arrow
+//! keys pan the active match camera. The first manual pan latches the camera center
+//! so TFM2's Auto Camera cannot immediately pull it back; changing/releasing the
+//! controlled champion releases that latch again.
 //!
 //! Keep every version-specific RVA/offset in this module. Higher-level direct
 //! control code should consume `CameraSnapshot` and never know TFM2's private
@@ -13,7 +19,7 @@ use std::{
     ffi::c_void,
     ptr,
     sync::{
-        atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
         OnceLock,
     },
 };
@@ -43,6 +49,20 @@ const MEM_COMMIT: u32 = 0x1000;
 const MEM_RESERVE: u32 = 0x2000;
 const PAGE_EXECUTE_READWRITE: u32 = 0x40;
 
+// TFM2's simulation map is approximately 960 x 960 world units. Camera writes are
+// clamped to that verified world-space envelope so manual panning can never run away
+// into nonsensical memory-derived coordinates.
+const WORLD_MIN: f32 = 0.0;
+const WORLD_MAX: f32 = 960.0;
+const CAMERA_SPEED_VIEWPORTS_PER_SECOND: f32 = 0.80;
+const DEFAULT_FRAME_DT: f32 = 1.0 / 60.0;
+const NO_ATHLETE: usize = usize::MAX;
+
+const VK_LEFT_CODE: i32 = 0x25;
+const VK_UP_CODE: i32 = 0x26;
+const VK_RIGHT_CODE: i32 = 0x27;
+const VK_DOWN_CODE: i32 = 0x28;
+
 #[link(name = "kernel32")]
 extern "system" {
     fn GetModuleHandleW(module_name: *const u16) -> *mut c_void;
@@ -60,6 +80,11 @@ extern "system" {
         old_protect: *mut u32,
     ) -> i32;
     fn FlushInstructionCache(process: *mut c_void, address: *const c_void, size: usize) -> i32;
+}
+
+#[link(name = "user32")]
+extern "system" {
+    fn GetAsyncKeyState(vkey: i32) -> i16;
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -120,6 +145,14 @@ static CANDIDATES: [CandidateSlot; MAX_CANDIDATES] = [
 static TRAMPOLINE: AtomicUsize = AtomicUsize::new(0);
 static INSTALL_RESULT: OnceLock<Result<(), String>> = OnceLock::new();
 
+// Manual-camera latch state. The selected athlete id is tracked so an F-key
+// selection change naturally hands camera positioning back to TFM2 until the user
+// deliberately pans again.
+static LAST_SELECTED_ATHLETE: AtomicUsize = AtomicUsize::new(NO_ATHLETE);
+static MANUAL_CAMERA_LATCHED: AtomicBool = AtomicBool::new(false);
+static MANUAL_CENTER_X: AtomicU32 = AtomicU32::new(0);
+static MANUAL_CENTER_Y: AtomicU32 = AtomicU32::new(0);
+
 // Observed machine-level signature at the two known call sites. Only the first
 // argument matters to us; preserving the rest exactly lets the original handler
 // continue normally through the trampoline.
@@ -149,6 +182,7 @@ unsafe extern "system" fn camera_handler_hook(
     }
 
     capture(this);
+    apply_manual_camera(this, arg4);
 }
 
 unsafe fn capture(this: *mut u8) {
@@ -211,6 +245,129 @@ unsafe fn capture(this: *mut u8) {
     slot.calls.fetch_add(1, Ordering::Release);
 }
 
+fn preferred_camera_address() -> usize {
+    let mut best_address = 0usize;
+    let mut best_calls = 0u64;
+
+    // `snapshots()` sorts by address and the render-side code then uses
+    // `max_by_key(calls)`. On ties Rust keeps the later maximum, so reproducing
+    // (calls, address) ordering here picks the same camera object without allocating
+    // a Vec from inside the native camera hook.
+    for slot in &CANDIDATES {
+        let address = slot.address.load(Ordering::Acquire);
+        if address == 0 {
+            continue;
+        }
+        let calls = slot.calls.load(Ordering::Acquire);
+        if calls > best_calls || (calls == best_calls && address > best_address) {
+            best_calls = calls;
+            best_address = address;
+        }
+    }
+
+    best_address
+}
+
+fn direct_control_camera_active() -> bool {
+    let selected = crate::control::selected_athlete().unwrap_or(NO_ATHLETE);
+    let previous = LAST_SELECTED_ATHLETE.swap(selected, Ordering::AcqRel);
+    if selected != previous {
+        MANUAL_CAMERA_LATCHED.store(false, Ordering::Release);
+    }
+
+    if selected == NO_ATHLETE || !crate::pacing_probe::manual_input_enabled() {
+        MANUAL_CAMERA_LATCHED.store(false, Ordering::Release);
+        return false;
+    }
+
+    true
+}
+
+fn arrow_axis() -> (f32, f32) {
+    let left = unsafe { GetAsyncKeyState(VK_LEFT_CODE) < 0 };
+    let right = unsafe { GetAsyncKeyState(VK_RIGHT_CODE) < 0 };
+    let up = unsafe { GetAsyncKeyState(VK_UP_CODE) < 0 };
+    let down = unsafe { GetAsyncKeyState(VK_DOWN_CODE) < 0 };
+
+    let mut x = (right as i32 - left as i32) as f32;
+    let mut y = (down as i32 - up as i32) as f32;
+    if x != 0.0 && y != 0.0 {
+        const INV_SQRT_2: f32 = 0.707_106_77;
+        x *= INV_SQRT_2;
+        y *= INV_SQRT_2;
+    }
+    (x, y)
+}
+
+unsafe fn apply_manual_camera(this: *mut u8, handler_dt: f32) {
+    if this.is_null() || !direct_control_camera_active() {
+        return;
+    }
+
+    let address = this as usize;
+    if address != preferred_camera_address() {
+        return;
+    }
+
+    let (axis_x, axis_y) = arrow_axis();
+    let moving = axis_x != 0.0 || axis_y != 0.0;
+    let latched = MANUAL_CAMERA_LATCHED.load(Ordering::Acquire);
+    if !moving && !latched {
+        return;
+    }
+
+    let native_x = ptr::read_unaligned(this.add(CENTER_X_OFFSET).cast::<f32>());
+    let native_y = ptr::read_unaligned(this.add(CENTER_Y_OFFSET).cast::<f32>());
+    let extent_a = ptr::read_unaligned(this.add(EXTENT_A_OFFSET).cast::<f32>());
+    let extent_b = ptr::read_unaligned(this.add(EXTENT_B_OFFSET).cast::<f32>());
+    if !native_x.is_finite()
+        || !native_y.is_finite()
+        || !extent_a.is_finite()
+        || !extent_b.is_finite()
+    {
+        MANUAL_CAMERA_LATCHED.store(false, Ordering::Release);
+        return;
+    }
+
+    let (mut center_x, mut center_y) = if latched {
+        (
+            f32::from_bits(MANUAL_CENTER_X.load(Ordering::Acquire)),
+            f32::from_bits(MANUAL_CENTER_Y.load(Ordering::Acquire)),
+        )
+    } else {
+        (native_x, native_y)
+    };
+
+    if moving {
+        let dt = if handler_dt.is_finite() && (0.001..=0.100).contains(&handler_dt) {
+            handler_dt
+        } else {
+            DEFAULT_FRAME_DT
+        };
+        center_x += axis_x * extent_a.abs().max(1.0) * CAMERA_SPEED_VIEWPORTS_PER_SECOND * dt;
+        center_y += axis_y * extent_b.abs().max(1.0) * CAMERA_SPEED_VIEWPORTS_PER_SECOND * dt;
+        center_x = center_x.clamp(WORLD_MIN, WORLD_MAX);
+        center_y = center_y.clamp(WORLD_MIN, WORLD_MAX);
+
+        MANUAL_CENTER_X.store(center_x.to_bits(), Ordering::Release);
+        MANUAL_CENTER_Y.store(center_y.to_bits(), Ordering::Release);
+        MANUAL_CAMERA_LATCHED.store(true, Ordering::Release);
+    }
+
+    ptr::write_unaligned(this.add(CENTER_X_OFFSET).cast::<f32>(), center_x);
+    ptr::write_unaligned(this.add(CENTER_Y_OFFSET).cast::<f32>(), center_y);
+
+    // Keep the render-side snapshot coherent with the override immediately instead
+    // of waiting one camera-handler invocation for the next capture.
+    for slot in &CANDIDATES {
+        if slot.address.load(Ordering::Acquire) == address {
+            slot.center_x.store(center_x.to_bits(), Ordering::Relaxed);
+            slot.center_y.store(center_y.to_bits(), Ordering::Relaxed);
+            break;
+        }
+    }
+}
+
 pub fn ensure_installed() -> Result<(), String> {
     INSTALL_RESULT
         .get_or_init(|| unsafe { install_inner() })
@@ -221,6 +378,10 @@ pub fn clear_candidates() {
     for slot in &CANDIDATES {
         slot.clear();
     }
+    LAST_SELECTED_ATHLETE.store(NO_ATHLETE, Ordering::Release);
+    MANUAL_CAMERA_LATCHED.store(false, Ordering::Release);
+    MANUAL_CENTER_X.store(0, Ordering::Relaxed);
+    MANUAL_CENTER_Y.store(0, Ordering::Relaxed);
 }
 
 pub fn snapshots() -> Vec<CameraSnapshot> {
