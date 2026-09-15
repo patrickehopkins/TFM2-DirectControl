@@ -15,7 +15,7 @@ The configurable shortcut work should catalogue every player-facing action injec
 - **Select player-team role 1-5** — currently F1-F5; exact native role ordering must be verified before the F-key mapping hardening pass.
 - **Select opponent-team role 1-5** — currently F6-F10; same verified role order as the player team.
 - **Contextual Move / Attack** — currently RMB on battlefield; ground = MoveTo, hostile entity = exact-target Attack.
-- **Minimap Move** — currently RMB on minimap; should remain move-only once the minimap path is finalized.
+- **Minimap Move / Attack** — currently contextual RMB on minimap; ground = MoveTo, hostile marker = exact-target Attack.
 - **Attack-Move** — currently `A` arms, LMB confirms destination.
 - **Hold / Stop** — currently `H`.
 - **Return Home** — currently `B`.
@@ -27,7 +27,8 @@ The configurable shortcut work should catalogue every player-facing action injec
 - **Temporary release to AI / spectator** — currently `End`.
 - **Start live paced simulation** — currently `Ctrl+Home`.
 - **Emergency/global release** — currently `Ctrl+End`.
-- **Camera movement bindings** — once the pre-release camera-control item is implemented, any keyboard camera-pan actions added there must be included in the same configurable Direct Control category.
+- **Camera movement** — mouse-edge scroll and middle-mouse drag are required Direct Control camera gestures; any later dedicated follow/lock binding belongs in this category as well.
+- **Synchronized match speed** — Direct Control should retain useful native speed choices while keeping live simulation pacing and presentation speed locked together.
 
 Automatic behaviors such as team fog-of-war switching are not bindings and should not appear as shortcut entries unless a later explicit toggle is added.
 
@@ -46,19 +47,44 @@ This allows optimal MOBA-like defaults such as `A`, `Q`, and `R` without requiri
 
 While Direct Control mode is active, native playback/navigation commands that can move the presentation away from the live paced simulation must be suppressed even if the player has rebound them to non-conflicting keys. This is a semantic gate, not merely a default-key conflict fix.
 
-At minimum, gate the native commands that alter playback position or playback rate/state:
+Commands that **seek or decouple presentation time** remain blocked during Direct Control, including:
 
 - Back 10 Seconds;
 - Forward 10 Seconds;
 - Previous Highlight;
 - Next Highlight;
-- Pause Match;
-- playback speed controls (0.5x / 1x / 1.5x / 2x / 3x);
-- Highlight Mode or any equivalent playback mode that can jump/decouple presentation from the live point.
+- Pause Match, unless a later Direct Control-aware pause implementation deliberately pauses both live simulation and presentation together;
+- Highlight Mode or any equivalent playback mode that jumps/decouples presentation from the live point.
 
-Reason: rewinding while Direct Control is live leaves the presentation behind the still-advancing simulation; the only practical recovery is fast-forwarding until the display catches up. Direct Control should prevent entering that desynchronized state in the first place.
+Ordinary match-speed selection is an explicit exception. Direct Control should allow useful playback-speed choices only when Harbinger changes the live Candidate-A simulation pacer and the presentation rate together so they remain synchronized. The requested rates are:
 
-Native spectator-only functions that do not alter playback position/rate can remain available unless they conflict with an active Direct Control binding or another pre-release system. F1-F10 native Follow Own/Enemy actions are naturally replaced by manual champion selection while Direct Control mode is active and return to normal when control is released.
+- `0.5x` -> approximately `30` simulation ticks per wall-clock second;
+- `1x` -> approximately `60` ticks/s;
+- `1.5x` -> approximately `90` ticks/s if the native 1.5x option remains exposed;
+- `2x` -> approximately `120` ticks/s;
+- `3x` -> approximately `180` ticks/s.
+
+Changing speed must re-anchor the pacer immediately. Time accumulated at the prior rate must never become catch-up or slowdown budget. Presentation and simulation must transition together; if either side fails to accept the requested rate, fail safely rather than knowingly allowing them to diverge.
+
+Reason: rewinding while Direct Control is live leaves the presentation behind the still-advancing simulation. Speed variation does not inherently create that problem if both clocks remain locked together, so it should remain available as useful gameplay QoL rather than being prohibited categorically.
+
+Native spectator-only functions that do not alter playback position can remain available unless they conflict with an active Direct Control binding or another pre-release system. F1-F10 native Follow Own/Enemy actions are naturally replaced by manual champion selection while Direct Control mode is active and return to normal when control is released.
+
+## Death-timer fast-forward / Highlight replacement
+
+Native Highlight Mode is not useful as a Direct Control playback mode because it is designed to alter replay/presentation behavior rather than preserve continuous manual control.
+
+A preferred replacement for that Direct Control shortcut/UI slot is a **temporary death fast-forward** action:
+
+- available only while the currently controlled champion is dead / awaiting respawn;
+- temporarily switch both live simulation pacing and presentation to a deliberately fast synchronized rate;
+- if the game's native Highlight speed multiplier can be identified and behaves as a fixed usable rate, it may be reused; otherwise choose an explicit safe fast rate rather than guessing;
+- remember the player's previous ordinary match-speed selection before entering death fast-forward;
+- immediately restore that previous speed when the controlled champion respawns;
+- also restore the previous speed if Direct Control is released, a different living champion is selected, or the fast-forward mode is otherwise cancelled;
+- never use Highlight-style seeking, skipping, or selective-event playback. This feature is only a temporary synchronized speed multiplier over the continuous live match.
+
+This is QoL for spending less wall-clock time watching a death timer, not permission to desynchronize presentation from the controlled simulation.
 
 ## Snap-to-live desync watchdog — required
 
@@ -69,7 +95,7 @@ Required behavior:
 - compare the current presentation/playback position against the live paced simulation position while Direct Control owns a champion;
 - tolerate only a small expected lead/lag window needed by the normal presentation path;
 - if the presentation is detectably rewound, advanced, paused, or otherwise decoupled from the live controlled state, **snap the presentation directly back to the live point**;
-- restore the normal live playback state/rate as part of the correction when needed;
+- restore the currently selected synchronized Direct Control playback speed as part of the correction when needed;
 - do **not** recover by accelerating playback until it catches up. Catch-up playback still leaves the user controlling one simulation state while watching another, which is unacceptable during Direct Control;
 - prefer event-driven detection if the native playback controller exposes a seek/rate/state change hook or comparable signal;
 - if no clean event is available, use a lightweight periodic comparison rather than an expensive per-frame repair loop;
