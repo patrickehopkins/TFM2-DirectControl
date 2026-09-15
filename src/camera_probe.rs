@@ -9,6 +9,13 @@
 //!
 //! These camera gestures are match-view QoL, not manual-control ownership. MMB drag
 //! and edge scroll remain available while spectating after `End` releases a champion.
+//!
+//! TFM2's UI pointer routing can otherwise stall camera integration while the cursor
+//! crosses interactive widgets. During MMB drag, a narrow window-procedure shim hides
+//! the real pointer from native UI hit testing while Harbinger continues reading the
+//! true Win32 cursor for camera motion and gameplay clicks. Edge scroll periodically
+//! posts a harmless battlefield mouse-move pulse so a stationary physical edge hover
+//! follows the same smooth native update path as a moving cursor.
 
 #[path = "camera_probe/base.rs"]
 mod base;
@@ -18,7 +25,10 @@ pub use base::CameraSnapshot;
 use std::{
     ffi::c_void,
     ptr,
-    sync::{Mutex, OnceLock},
+    sync::{
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        Mutex, OnceLock,
+    },
     thread,
     time::Duration,
 };
@@ -34,6 +44,7 @@ const WORLD_MAX: f32 = 960.0;
 const EDGE_SCROLL_MARGIN_X_PX: i32 = 18;
 const EDGE_SCROLL_MARGIN_Y_PX: i32 = 84;
 const NATIVE_EDGE_PAN_SPEED: f32 = 200.0;
+const EDGE_WAKE_INTERVAL_MS: u64 = 8;
 
 // MMB is position-driven rather than velocity-driven. The cursor defines an exact
 // desired camera center. A proportional native-pan command continuously closes the
@@ -43,6 +54,21 @@ const NATIVE_EDGE_PAN_SPEED: f32 = 200.0;
 const DRAG_POSITION_GAIN: f32 = 60.0;
 const CAMERA_CONTROL_POLL_MS: u64 = 2;
 const VK_MBUTTON_CODE: i32 = 0x04;
+
+const GWLP_WNDPROC: i32 = -4;
+const WM_MOUSEMOVE: u32 = 0x0200;
+const WM_LBUTTONDOWN: u32 = 0x0201;
+const WM_LBUTTONUP: u32 = 0x0202;
+const WM_LBUTTONDBLCLK: u32 = 0x0203;
+const WM_RBUTTONDOWN: u32 = 0x0204;
+const WM_RBUTTONUP: u32 = 0x0205;
+const WM_RBUTTONDBLCLK: u32 = 0x0206;
+const WM_MBUTTONDOWN: u32 = 0x0207;
+const WM_MBUTTONUP: u32 = 0x0208;
+const WM_MBUTTONDBLCLK: u32 = 0x0209;
+const MK_LBUTTON: usize = 0x0001;
+const MK_RBUTTON: usize = 0x0002;
+const MK_MBUTTON: usize = 0x0010;
 
 #[repr(C)]
 struct WinPoint {
@@ -61,6 +87,7 @@ struct WinRect {
 #[link(name = "kernel32")]
 extern "system" {
     fn GetCurrentProcessId() -> u32;
+    fn GetTickCount64() -> u64;
 }
 
 #[link(name = "user32")]
@@ -71,6 +98,16 @@ extern "system" {
     fn GetCursorPos(point: *mut WinPoint) -> i32;
     fn ScreenToClient(hwnd: *mut c_void, point: *mut WinPoint) -> i32;
     fn GetClientRect(hwnd: *mut c_void, rect: *mut WinRect) -> i32;
+    fn SetWindowLongPtrW(hwnd: *mut c_void, index: i32, new_long: isize) -> isize;
+    fn CallWindowProcW(
+        previous: isize,
+        hwnd: *mut c_void,
+        message: u32,
+        wparam: usize,
+        lparam: isize,
+    ) -> isize;
+    fn DefWindowProcW(hwnd: *mut c_void, message: u32, wparam: usize, lparam: isize) -> isize;
+    fn PostMessageW(hwnd: *mut c_void, message: u32, wparam: usize, lparam: isize) -> i32;
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -86,6 +123,8 @@ struct CameraControlState {
     drag_start_extent_y: f32,
     drag_start_client_w: i32,
     drag_start_client_h: i32,
+    last_edge_wake_ms: u64,
+    edge_wake_flip: bool,
 }
 
 impl Default for CameraControlState {
@@ -102,12 +141,24 @@ impl Default for CameraControlState {
             drag_start_extent_y: 0.0,
             drag_start_client_w: 1,
             drag_start_client_h: 1,
+            last_edge_wake_ms: 0,
+            edge_wake_flip: false,
         }
     }
 }
 
 static DRIVER_STARTED: OnceLock<()> = OnceLock::new();
 static DRIVER_STATE: OnceLock<Mutex<CameraControlState>> = OnceLock::new();
+
+// UI-pointer shim state. The shim exists only while an interactive match is active.
+// It does not move the OS cursor. Harbinger's gameplay input continues to use
+// GetCursorPos/GetAsyncKeyState directly, so hiding MMB from TFM2's UI does not hide
+// ground/champion clicks from Direct Control.
+static SHIM_HWND: AtomicUsize = AtomicUsize::new(0);
+static ORIGINAL_WNDPROC: AtomicUsize = AtomicUsize::new(0);
+static MMB_UI_LOCK_ACTIVE: AtomicBool = AtomicBool::new(false);
+static SWALLOWED_LBUTTON: AtomicBool = AtomicBool::new(false);
+static SWALLOWED_RBUTTON: AtomicBool = AtomicBool::new(false);
 
 fn driver_state() -> &'static Mutex<CameraControlState> {
     DRIVER_STATE.get_or_init(|| Mutex::new(CameraControlState::default()))
@@ -119,7 +170,128 @@ fn preferred_snapshot() -> Option<CameraSnapshot> {
         .max_by_key(|candidate| candidate.calls)
 }
 
-fn foreground_cursor() -> Option<(i32, i32, i32, i32)> {
+fn pack_client_point(x: i32, y: i32) -> isize {
+    let packed_x = x as i16 as u16 as u32;
+    let packed_y = y as i16 as u16 as u32;
+    (packed_x | (packed_y << 16)) as isize
+}
+
+unsafe fn safe_pointer_lparam(hwnd: *mut c_void, flip: bool) -> Option<isize> {
+    let mut rect = WinRect {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    if GetClientRect(hwnd, &mut rect) == 0 {
+        return None;
+    }
+    let width = rect.right - rect.left;
+    let height = rect.bottom - rect.top;
+    if width <= 0 || height <= 0 {
+        return None;
+    }
+
+    // Quarter-width is safely inside the battlefield in both the full and split/info
+    // layouts. Alternate by one pixel for synthetic edge wakes so frameworks that
+    // collapse identical mouse-move coordinates still observe motion.
+    let base_x = (width / 4).clamp(1, width - 2);
+    let x = (base_x + if flip { 1 } else { 0 }).clamp(1, width - 2);
+    let y = (height / 2).clamp(1, height - 2);
+    Some(pack_client_point(x, y))
+}
+
+unsafe extern "system" fn camera_pointer_wndproc(
+    hwnd: *mut c_void,
+    message: u32,
+    wparam: usize,
+    lparam: isize,
+) -> isize {
+    let original = ORIGINAL_WNDPROC.load(Ordering::Acquire) as isize;
+    if original == 0 {
+        return DefWindowProcW(hwnd, message, wparam, lparam);
+    }
+
+    match message {
+        WM_MBUTTONDOWN | WM_MBUTTONDBLCLK => {
+            MMB_UI_LOCK_ACTIVE.store(true, Ordering::Release);
+            if let Some(safe) = safe_pointer_lparam(hwnd, false) {
+                let clean_wparam = wparam & !(MK_LBUTTON | MK_RBUTTON | MK_MBUTTON);
+                let _ = CallWindowProcW(original, hwnd, WM_MOUSEMOVE, clean_wparam, safe);
+            }
+            // MMB belongs exclusively to camera drag. Do not let a minimap/card/panel
+            // capture it or alter the UI pointer state.
+            return 0;
+        }
+        WM_MBUTTONUP => {
+            MMB_UI_LOCK_ACTIVE.store(false, Ordering::Release);
+            // Restore native hover at the real release point immediately after the
+            // camera gesture ends. The actual release coordinates are already in lparam.
+            let clean_wparam = wparam & !(MK_LBUTTON | MK_RBUTTON | MK_MBUTTON);
+            let _ = CallWindowProcW(original, hwnd, WM_MOUSEMOVE, clean_wparam, lparam);
+            return 0;
+        }
+        WM_LBUTTONDOWN | WM_LBUTTONDBLCLK if MMB_UI_LOCK_ACTIVE.load(Ordering::Acquire) => {
+            SWALLOWED_LBUTTON.store(true, Ordering::Release);
+            return 0;
+        }
+        WM_LBUTTONUP if SWALLOWED_LBUTTON.swap(false, Ordering::AcqRel) => {
+            return 0;
+        }
+        WM_RBUTTONDOWN | WM_RBUTTONDBLCLK if MMB_UI_LOCK_ACTIVE.load(Ordering::Acquire) => {
+            SWALLOWED_RBUTTON.store(true, Ordering::Release);
+            return 0;
+        }
+        WM_RBUTTONUP if SWALLOWED_RBUTTON.swap(false, Ordering::AcqRel) => {
+            return 0;
+        }
+        WM_MOUSEMOVE if MMB_UI_LOCK_ACTIVE.load(Ordering::Acquire) => {
+            if let Some(safe) = safe_pointer_lparam(hwnd, false) {
+                let clean_wparam = wparam & !(MK_LBUTTON | MK_RBUTTON | MK_MBUTTON);
+                return CallWindowProcW(original, hwnd, message, clean_wparam, safe);
+            }
+        }
+        _ => {}
+    }
+
+    CallWindowProcW(original, hwnd, message, wparam, lparam)
+}
+
+fn ensure_pointer_shim(hwnd: usize) {
+    if hwnd == 0 || SHIM_HWND.load(Ordering::Acquire) == hwnd {
+        return;
+    }
+
+    release_pointer_shim();
+
+    unsafe {
+        let previous = SetWindowLongPtrW(
+            hwnd as *mut c_void,
+            GWLP_WNDPROC,
+            camera_pointer_wndproc as usize as isize,
+        );
+        if previous != 0 {
+            ORIGINAL_WNDPROC.store(previous as usize, Ordering::Release);
+            SHIM_HWND.store(hwnd, Ordering::Release);
+        }
+    }
+}
+
+fn release_pointer_shim() {
+    let hwnd = SHIM_HWND.swap(0, Ordering::AcqRel);
+    let original = ORIGINAL_WNDPROC.swap(0, Ordering::AcqRel);
+    MMB_UI_LOCK_ACTIVE.store(false, Ordering::Release);
+    SWALLOWED_LBUTTON.store(false, Ordering::Release);
+    SWALLOWED_RBUTTON.store(false, Ordering::Release);
+
+    if hwnd != 0 && original != 0 {
+        unsafe {
+            let _ = SetWindowLongPtrW(hwnd as *mut c_void, GWLP_WNDPROC, original as isize);
+        }
+    }
+}
+
+fn foreground_cursor() -> Option<(usize, i32, i32, i32, i32)> {
     unsafe {
         let hwnd = GetForegroundWindow();
         if hwnd.is_null() {
@@ -156,7 +328,7 @@ fn foreground_cursor() -> Option<(i32, i32, i32, i32)> {
             return None;
         }
 
-        Some((point.x, point.y, width, height))
+        Some((hwnd as usize, point.x, point.y, width, height))
     }
 }
 
@@ -200,10 +372,28 @@ fn clear_pan(state: &mut CameraControlState) {
 fn reset_gesture(state: &mut CameraControlState) {
     clear_pan(state);
     state.middle_down = false;
+    state.last_edge_wake_ms = 0;
 }
 
 fn camera_match_active() -> bool {
     crate::pacing_probe::snapshot().interactive_match
+}
+
+fn post_edge_wake(state: &mut CameraControlState, hwnd: usize) {
+    let now_ms = unsafe { GetTickCount64() };
+    if state.last_edge_wake_ms != 0
+        && now_ms.saturating_sub(state.last_edge_wake_ms) < EDGE_WAKE_INTERVAL_MS
+    {
+        return;
+    }
+
+    state.last_edge_wake_ms = now_ms;
+    state.edge_wake_flip = !state.edge_wake_flip;
+    unsafe {
+        if let Some(safe) = safe_pointer_lparam(hwnd as *mut c_void, state.edge_wake_flip) {
+            let _ = PostMessageW(hwnd as *mut c_void, WM_MOUSEMOVE, 0, safe);
+        }
+    }
 }
 
 fn camera_control_step(state: &mut CameraControlState) {
@@ -212,6 +402,7 @@ fn camera_control_step(state: &mut CameraControlState) {
     // therefore returns combat to spectator/AI control without sacrificing MMB/edge QoL.
     if !camera_match_active() {
         reset_gesture(state);
+        release_pointer_shim();
         return;
     }
 
@@ -231,13 +422,17 @@ fn camera_control_step(state: &mut CameraControlState) {
         return;
     }
 
-    let Some((mouse_x, mouse_y, width, height)) = foreground_cursor() else {
+    let Some((hwnd, mouse_x, mouse_y, width, height)) = foreground_cursor() else {
         reset_gesture(state);
         return;
     };
+    ensure_pointer_shim(hwnd);
 
     let middle_down = unsafe { GetAsyncKeyState(VK_MBUTTON_CODE) < 0 };
+    MMB_UI_LOCK_ACTIVE.store(middle_down, Ordering::Release);
+
     let (pan_x, pan_y) = if middle_down {
+        state.last_edge_wake_ms = 0;
         if !state.middle_down {
             state.middle_down = true;
             state.drag_start_mouse_x = mouse_x;
@@ -266,6 +461,15 @@ fn camera_control_step(state: &mut CameraControlState) {
     } else {
         state.middle_down = false;
         let (axis_x, axis_y) = edge_axis(mouse_x, mouse_y, width, height);
+        if axis_x != 0.0 || axis_y != 0.0 {
+            // The native camera consumes our pan fields smoothly when mouse movement
+            // causes the game to run its pointer/update path. Generate that cadence
+            // ourselves while the physical cursor is stationary at an edge, using a
+            // safe battlefield coordinate so top/bottom UI bars cannot suppress it.
+            post_edge_wake(state, hwnd);
+        } else {
+            state.last_edge_wake_ms = 0;
+        }
         (
             axis_x * NATIVE_EDGE_PAN_SPEED,
             axis_y * NATIVE_EDGE_PAN_SPEED,
@@ -311,6 +515,7 @@ pub fn clear_candidates() {
     if let Ok(mut state) = driver_state().lock() {
         reset_gesture(&mut state);
     }
+    release_pointer_shim();
     base::clear_candidates();
 }
 
