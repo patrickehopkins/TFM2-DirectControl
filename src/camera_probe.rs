@@ -8,9 +8,9 @@
 //! Direct Control camera movement uses the game's verified native pan-input fields
 //! at +0x418/+0x41C so ordinary manual panning still goes through TFM2's camera
 //! controller and can disengage follow/Auto Camera normally. Edge scrolling is pure
-//! native pan input. MMB drag also supplies native pan intent, but then corrects the
-//! resulting center by the exact cursor displacement for that frame so the grabbed
-//! world point stays under the cursor instead of depending on native pan timing.
+//! native pan input. MMB drag is cursor-anchored: the camera center is derived from
+//! the total cursor displacement from the original press point, so a grabbed world
+//! point follows the mouse 1:1 regardless of mouse speed or camera-handler cadence.
 //!
 //! Keep every version-specific RVA/offset in this module. Higher-level direct
 //! control code should consume `CameraSnapshot` and never know TFM2's private
@@ -178,8 +178,16 @@ static INSTALL_RESULT: OnceLock<Result<(), String>> = OnceLock::new();
 static LAST_SELECTED_ATHLETE: AtomicUsize = AtomicUsize::new(NO_ATHLETE);
 static PAN_WAS_ACTIVE: AtomicBool = AtomicBool::new(false);
 static MMB_WAS_DOWN: AtomicBool = AtomicBool::new(false);
-static LAST_MOUSE_X: AtomicI32 = AtomicI32::new(0);
-static LAST_MOUSE_Y: AtomicI32 = AtomicI32::new(0);
+static DRAG_START_MOUSE_X: AtomicI32 = AtomicI32::new(0);
+static DRAG_START_MOUSE_Y: AtomicI32 = AtomicI32::new(0);
+static DRAG_LAST_MOUSE_X: AtomicI32 = AtomicI32::new(0);
+static DRAG_LAST_MOUSE_Y: AtomicI32 = AtomicI32::new(0);
+static DRAG_START_CENTER_X: AtomicU32 = AtomicU32::new(0);
+static DRAG_START_CENTER_Y: AtomicU32 = AtomicU32::new(0);
+static DRAG_START_EXTENT_X: AtomicU32 = AtomicU32::new(0);
+static DRAG_START_EXTENT_Y: AtomicU32 = AtomicU32::new(0);
+static DRAG_START_CLIENT_W: AtomicI32 = AtomicI32::new(0);
+static DRAG_START_CLIENT_H: AtomicI32 = AtomicI32::new(0);
 
 // Observed machine-level signature at the two known call sites. Only the first
 // argument matters to us; preserving the rest exactly lets the original handler
@@ -211,6 +219,14 @@ unsafe extern "system" fn camera_handler_hook(
         original(this, arg2, arg3, arg4, arg5, arg6, arg7);
     }
 
+    // MMB native pan is only an intent pulse to make the base controller see a
+    // manual gesture. Do not leave a fixed velocity sitting in the camera object.
+    if MMB_WAS_DOWN.load(Ordering::Acquire) {
+        ptr::write_unaligned(this.add(PAN_X_OFFSET).cast::<f32>(), 0.0);
+        ptr::write_unaligned(this.add(PAN_Y_OFFSET).cast::<f32>(), 0.0);
+        PAN_WAS_ACTIVE.store(false, Ordering::Release);
+    }
+
     if let Some(correction) = drag_correction {
         apply_drag_correction(this, correction);
     }
@@ -231,8 +247,16 @@ fn direct_control_camera_active() -> bool {
 fn reset_manual_pan_state() {
     PAN_WAS_ACTIVE.store(false, Ordering::Release);
     MMB_WAS_DOWN.store(false, Ordering::Release);
-    LAST_MOUSE_X.store(0, Ordering::Relaxed);
-    LAST_MOUSE_Y.store(0, Ordering::Relaxed);
+    DRAG_START_MOUSE_X.store(0, Ordering::Relaxed);
+    DRAG_START_MOUSE_Y.store(0, Ordering::Relaxed);
+    DRAG_LAST_MOUSE_X.store(0, Ordering::Relaxed);
+    DRAG_LAST_MOUSE_Y.store(0, Ordering::Relaxed);
+    DRAG_START_CENTER_X.store(0, Ordering::Relaxed);
+    DRAG_START_CENTER_Y.store(0, Ordering::Relaxed);
+    DRAG_START_EXTENT_X.store(0, Ordering::Relaxed);
+    DRAG_START_EXTENT_Y.store(0, Ordering::Relaxed);
+    DRAG_START_CLIENT_W.store(0, Ordering::Relaxed);
+    DRAG_START_CLIENT_H.store(0, Ordering::Relaxed);
 }
 
 fn foreground_cursor() -> Option<(i32, i32, i32, i32)> {
@@ -322,44 +346,68 @@ unsafe fn inject_native_pan(this: *mut u8) -> Option<DragCorrection> {
     if middle_down {
         let was_down = MMB_WAS_DOWN.swap(true, Ordering::AcqRel);
         if !was_down {
-            LAST_MOUSE_X.store(mouse_x, Ordering::Release);
-            LAST_MOUSE_Y.store(mouse_y, Ordering::Release);
+            DRAG_START_MOUSE_X.store(mouse_x, Ordering::Release);
+            DRAG_START_MOUSE_Y.store(mouse_y, Ordering::Release);
+            DRAG_LAST_MOUSE_X.store(mouse_x, Ordering::Release);
+            DRAG_LAST_MOUSE_Y.store(mouse_y, Ordering::Release);
+            DRAG_START_CENTER_X.store(center_x.to_bits(), Ordering::Release);
+            DRAG_START_CENTER_Y.store(center_y.to_bits(), Ordering::Release);
+            DRAG_START_EXTENT_X.store(extent_a.to_bits(), Ordering::Release);
+            DRAG_START_EXTENT_Y.store(extent_b.to_bits(), Ordering::Release);
+            DRAG_START_CLIENT_W.store(width, Ordering::Release);
+            DRAG_START_CLIENT_H.store(height, Ordering::Release);
         } else {
-            let previous_x = LAST_MOUSE_X.swap(mouse_x, Ordering::AcqRel);
-            let previous_y = LAST_MOUSE_Y.swap(mouse_y, Ordering::AcqRel);
-            let dx = mouse_x - previous_x;
-            let dy = mouse_y - previous_y;
+            let previous_x = DRAG_LAST_MOUSE_X.swap(mouse_x, Ordering::AcqRel);
+            let previous_y = DRAG_LAST_MOUSE_Y.swap(mouse_y, Ordering::AcqRel);
+            let sample_dx = mouse_x - previous_x;
+            let sample_dy = mouse_y - previous_y;
 
-            if dx != 0 || dy != 0 {
-                let ui_per_client_x = UI_FALLBACK_W / width.max(1) as f32;
-                let ui_per_client_y = UI_FALLBACK_H / height.max(1) as f32;
-                let world_dx = dx as f32 * ui_per_client_x * extent_a / GAME_DRAW_SIZE;
-                let world_dy = dy as f32 * ui_per_client_y * extent_b / GAME_DRAW_SIZE;
+            let start_x = DRAG_START_MOUSE_X.load(Ordering::Acquire);
+            let start_y = DRAG_START_MOUSE_Y.load(Ordering::Acquire);
+            let total_dx = mouse_x - start_x;
+            let total_dy = mouse_y - start_y;
+            let start_center_x = f32::from_bits(DRAG_START_CENTER_X.load(Ordering::Acquire));
+            let start_center_y = f32::from_bits(DRAG_START_CENTER_Y.load(Ordering::Acquire));
+            let start_extent_x = f32::from_bits(DRAG_START_EXTENT_X.load(Ordering::Acquire));
+            let start_extent_y = f32::from_bits(DRAG_START_EXTENT_Y.load(Ordering::Acquire));
+            let start_width = DRAG_START_CLIENT_W.load(Ordering::Acquire).max(1) as f32;
+            let start_height = DRAG_START_CLIENT_H.load(Ordering::Acquire).max(1) as f32;
 
-                // Native input is still supplied so TFM2 sees an ordinary manual pan
-                // gesture and can leave follow/Auto Camera. We do not rely on the
-                // native pan integrator for distance, because its cadence is not tied
-                // exactly to mouse-event cadence and causes speed-dependent drift.
-                pan_x = if world_dx > 0.0 {
-                    -NATIVE_DRAG_INTENT_SPEED
-                } else if world_dx < 0.0 {
-                    NATIVE_DRAG_INTENT_SPEED
-                } else {
-                    0.0
-                };
-                pan_y = if world_dy > 0.0 {
-                    -NATIVE_DRAG_INTENT_SPEED
-                } else if world_dy < 0.0 {
-                    NATIVE_DRAG_INTENT_SPEED
-                } else {
-                    0.0
-                };
+            if start_center_x.is_finite()
+                && start_center_y.is_finite()
+                && start_extent_x.is_finite()
+                && start_extent_y.is_finite()
+                && start_extent_x > 0.0
+                && start_extent_y > 0.0
+            {
+                let ui_per_client_x = UI_FALLBACK_W / start_width;
+                let ui_per_client_y = UI_FALLBACK_H / start_height;
+                let world_dx = total_dx as f32 * ui_per_client_x * start_extent_x / GAME_DRAW_SIZE;
+                let world_dy = total_dy as f32 * ui_per_client_y * start_extent_y / GAME_DRAW_SIZE;
 
                 correction = Some(DragCorrection {
-                    center_x: (center_x - world_dx).clamp(WORLD_MIN, WORLD_MAX),
-                    center_y: (center_y - world_dy).clamp(WORLD_MIN, WORLD_MAX),
+                    center_x: (start_center_x - world_dx).clamp(WORLD_MIN, WORLD_MAX),
+                    center_y: (start_center_y - world_dy).clamp(WORLD_MIN, WORLD_MAX),
                 });
             }
+
+            // Give TFM2 a native manual-pan signal only while the mouse actually moves.
+            // Distance never comes from this fixed input; the absolute correction above
+            // is derived from total cursor displacement since the original hold point.
+            pan_x = if sample_dx > 0 {
+                -NATIVE_DRAG_INTENT_SPEED
+            } else if sample_dx < 0 {
+                NATIVE_DRAG_INTENT_SPEED
+            } else {
+                0.0
+            };
+            pan_y = if sample_dy > 0 {
+                -NATIVE_DRAG_INTENT_SPEED
+            } else if sample_dy < 0 {
+                NATIVE_DRAG_INTENT_SPEED
+            } else {
+                0.0
+            };
         }
     } else {
         MMB_WAS_DOWN.store(false, Ordering::Release);
