@@ -8,9 +8,11 @@
 //!
 //! MMB is an anchored grab: camera center is derived from total cursor displacement
 //! from the original press point. Edge scroll integrates continuously from wall-clock
-//! time. A tiny native pan pulse is used only to tell TFM2 that a manual camera gesture
-//! occurred so native follow/Auto Camera can disengage; native pan velocity does not
-//! determine our gesture distance.
+//! time. Once Direct Control manually moves the camera, Harbinger latches the chosen
+//! center and reapplies it synchronously after TFM2's native camera update. This is
+//! important: writing the visible center only from the background gesture thread lets
+//! the native controller restore its old center between writes, producing rapid
+//! flicker and a snap-back when the gesture ends.
 
 use std::{
     ffi::c_void,
@@ -33,8 +35,6 @@ const CENTER_Y_OFFSET: usize = 0xE8;
 const EXTENT_A_OFFSET: usize = 0xEC;
 const EXTENT_B_OFFSET: usize = 0xF0;
 const MODE_OFFSET: usize = 0xF4;
-const PAN_X_OFFSET: usize = 0x418;
-const PAN_Y_OFFSET: usize = 0x41C;
 
 const PATCH_LEN: usize = 12;
 const EXPECTED_PROLOGUE: [u8; PATCH_LEN] = [
@@ -59,11 +59,6 @@ const EDGE_SCROLL_MARGIN_Y_PX: i32 = 84;
 const EDGE_SCROLL_VIEWPORTS_PER_SECOND: f32 = 1.35;
 const MAX_CONTROL_DT_SECONDS: f32 = 0.050;
 const CAMERA_CONTROL_POLL_MS: u64 = 2;
-
-// Native pan actions write +/-100. Use the same magnitude for a one-shot manual-pan
-// intent so follow/Auto Camera sees a genuine native-sized input, but clear it as soon
-// as the camera handler consumes it.
-const NATIVE_MANUAL_INTENT_SPEED: f32 = 100.0;
 const VK_MBUTTON_CODE: i32 = 0x04;
 const NO_ATHLETE: usize = usize::MAX;
 
@@ -169,7 +164,15 @@ static CANDIDATES: [CandidateSlot; MAX_CANDIDATES] = [
 ];
 static TRAMPOLINE: AtomicUsize = AtomicUsize::new(0);
 static INSTALL_RESULT: OnceLock<Result<(), String>> = OnceLock::new();
-static NATIVE_INTENT_PENDING: AtomicBool = AtomicBool::new(false);
+
+// Manual-center publication is a tiny seqlock. The gesture thread can update X/Y
+// every couple of milliseconds while the native camera hook reads the pair. The
+// sequence keeps the hook from ever combining X from one sample with Y from another.
+static MANUAL_CENTER_ACTIVE: AtomicBool = AtomicBool::new(false);
+static MANUAL_CENTER_ADDRESS: AtomicUsize = AtomicUsize::new(0);
+static MANUAL_CENTER_X: AtomicU32 = AtomicU32::new(0);
+static MANUAL_CENTER_Y: AtomicU32 = AtomicU32::new(0);
+static MANUAL_CENTER_SEQ: AtomicU64 = AtomicU64::new(0);
 
 type CameraHandlerFn = unsafe extern "system" fn(
     *mut u8,
@@ -180,6 +183,58 @@ type CameraHandlerFn = unsafe extern "system" fn(
     usize,
     usize,
 );
+
+fn manual_center_for(address: usize) -> Option<(f32, f32)> {
+    if !MANUAL_CENTER_ACTIVE.load(Ordering::Acquire) {
+        return None;
+    }
+
+    // The writer's critical section is only a few atomic stores. A short spin here
+    // is preferable to letting one native camera update visibly restore the old
+    // center for a frame.
+    for _ in 0..64 {
+        let before = MANUAL_CENTER_SEQ.load(Ordering::Acquire);
+        if before & 1 != 0 {
+            std::hint::spin_loop();
+            continue;
+        }
+
+        let published_address = MANUAL_CENTER_ADDRESS.load(Ordering::Acquire);
+        let x = f32::from_bits(MANUAL_CENTER_X.load(Ordering::Acquire));
+        let y = f32::from_bits(MANUAL_CENTER_Y.load(Ordering::Acquire));
+        let after = MANUAL_CENTER_SEQ.load(Ordering::Acquire);
+
+        if before == after && after & 1 == 0 {
+            if published_address == address && x.is_finite() && y.is_finite() {
+                return Some((x, y));
+            }
+            return None;
+        }
+    }
+
+    None
+}
+
+fn publish_manual_center(address: usize, center_x: f32, center_y: f32) {
+    if address == 0 || !center_x.is_finite() || !center_y.is_finite() {
+        return;
+    }
+
+    MANUAL_CENTER_SEQ.fetch_add(1, Ordering::AcqRel);
+    MANUAL_CENTER_ADDRESS.store(address, Ordering::Relaxed);
+    MANUAL_CENTER_X.store(center_x.to_bits(), Ordering::Relaxed);
+    MANUAL_CENTER_Y.store(center_y.to_bits(), Ordering::Relaxed);
+    MANUAL_CENTER_SEQ.fetch_add(1, Ordering::Release);
+    MANUAL_CENTER_ACTIVE.store(true, Ordering::Release);
+}
+
+/// Return camera ownership to TFM2. This is intentionally public so native camera
+/// actions (F-key follow, minimap camera jump, later Space follow) can explicitly
+/// drop the Direct Control free-camera latch when those integrations are wired in.
+pub fn release_manual_camera() {
+    MANUAL_CENTER_ACTIVE.store(false, Ordering::Release);
+    MANUAL_CENTER_ADDRESS.store(0, Ordering::Release);
+}
 
 unsafe extern "system" fn camera_handler_hook(
     this: *mut u8,
@@ -196,9 +251,13 @@ unsafe extern "system" fn camera_handler_hook(
         original(this, arg2, arg3, arg4, arg5, arg6, arg7);
     }
 
-    if NATIVE_INTENT_PENDING.swap(false, Ordering::AcqRel) {
-        ptr::write_unaligned(this.add(PAN_X_OFFSET).cast::<f32>(), 0.0);
-        ptr::write_unaligned(this.add(PAN_Y_OFFSET).cast::<f32>(), 0.0);
+    // TFM2 may have restored its own target/follow center during the native update.
+    // Reapply Harbinger's latched manual center *inside the same camera update* so
+    // render never sees the transient native center. This is the synchronization
+    // missing from the previous build and is what prevents flicker/snap-back.
+    if let Some((center_x, center_y)) = manual_center_for(this as usize) {
+        ptr::write_unaligned(this.add(CENTER_X_OFFSET).cast::<f32>(), center_x);
+        ptr::write_unaligned(this.add(CENTER_Y_OFFSET).cast::<f32>(), center_y);
     }
 
     capture(this);
@@ -208,7 +267,6 @@ unsafe extern "system" fn camera_handler_hook(
 struct CameraControlState {
     selected_athlete: usize,
     middle_down: bool,
-    drag_moved: bool,
     drag_start_mouse_x: i32,
     drag_start_mouse_y: i32,
     drag_start_center_x: f32,
@@ -228,7 +286,6 @@ impl Default for CameraControlState {
         Self {
             selected_athlete: NO_ATHLETE,
             middle_down: false,
-            drag_moved: false,
             drag_start_mouse_x: 0,
             drag_start_mouse_y: 0,
             drag_start_center_x: 0.0,
@@ -248,7 +305,6 @@ impl Default for CameraControlState {
 impl CameraControlState {
     fn reset_gesture(&mut self) {
         self.middle_down = false;
-        self.drag_moved = false;
         self.edge_active = false;
         self.last_step_ms = 0;
     }
@@ -259,10 +315,12 @@ fn direct_control_camera_active(state: &mut CameraControlState) -> bool {
     if selected != state.selected_athlete {
         state.selected_athlete = selected;
         state.reset_gesture();
+        release_manual_camera();
     }
 
     if selected == NO_ATHLETE || !crate::pacing_probe::manual_input_enabled() {
         state.reset_gesture();
+        release_manual_camera();
         return false;
     }
 
@@ -327,10 +385,9 @@ fn edge_axis(mouse_x: i32, mouse_y: i32, width: i32, height: i32) -> (f32, f32) 
     (x, y)
 }
 
-// Do not clamp using half the camera extent. TFM2 legitimately allows camera extents
-// larger than the 960x960 logical map at lower zoom levels. Extent-based clamping
-// collapses the legal interval to exactly 480 and caused the previous experimental
-// poller to snap the camera straight to map center on any gesture.
+// TFM2 legitimately permits camera extents larger than the 960x960 logical map at
+// low zoom. Extent-based clamping therefore collapses to center; clamp only the
+// logical camera center itself.
 fn clamp_center(center: f32) -> f32 {
     center.clamp(WORLD_MIN, WORLD_MAX)
 }
@@ -361,46 +418,21 @@ fn preferred_snapshot() -> Option<CameraSnapshot> {
     best
 }
 
-unsafe fn issue_native_manual_intent(address: usize, axis_x: f32, axis_y: f32) {
-    if address == 0 || (axis_x == 0.0 && axis_y == 0.0) {
-        return;
-    }
-
-    let this = address as *mut u8;
-    ptr::write_unaligned(
-        this.add(PAN_X_OFFSET).cast::<f32>(),
-        axis_x.signum() * NATIVE_MANUAL_INTENT_SPEED,
-    );
-    ptr::write_unaligned(
-        this.add(PAN_Y_OFFSET).cast::<f32>(),
-        axis_y.signum() * NATIVE_MANUAL_INTENT_SPEED,
-    );
-    NATIVE_INTENT_PENDING.store(true, Ordering::Release);
-}
-
-unsafe fn clear_stale_native_intent(address: usize) {
-    if address == 0 || !NATIVE_INTENT_PENDING.swap(false, Ordering::AcqRel) {
-        return;
-    }
-
-    let this = address as *mut u8;
-    ptr::write_unaligned(this.add(PAN_X_OFFSET).cast::<f32>(), 0.0);
-    ptr::write_unaligned(this.add(PAN_Y_OFFSET).cast::<f32>(), 0.0);
-}
-
 unsafe fn write_camera_center(snapshot: CameraSnapshot, center_x: f32, center_y: f32) {
     if snapshot.address == 0 || !center_x.is_finite() || !center_y.is_finite() {
         return;
     }
 
-    // Abort rather than dereferencing an address that has already been retired from
-    // the captured candidate set during a scene transition.
     if !CANDIDATES
         .iter()
         .any(|slot| slot.address.load(Ordering::Acquire) == snapshot.address)
     {
         return;
     }
+
+    // Publish first so a native camera update racing this thread already knows the
+    // authoritative Direct Control center it must restore before returning.
+    publish_manual_center(snapshot.address, center_x, center_y);
 
     let this = snapshot.address as *mut u8;
     ptr::write_unaligned(this.add(CENTER_X_OFFSET).cast::<f32>(), center_x);
@@ -436,7 +468,6 @@ fn camera_control_step(state: &mut CameraControlState) {
     }
 
     let Some((mouse_x, mouse_y, width, height)) = foreground_cursor() else {
-        unsafe { clear_stale_native_intent(snapshot.address) };
         state.reset_gesture();
         return;
     };
@@ -456,7 +487,6 @@ fn camera_control_step(state: &mut CameraControlState) {
 
         if !state.middle_down {
             state.middle_down = true;
-            state.drag_moved = false;
             state.drag_start_mouse_x = mouse_x;
             state.drag_start_mouse_y = mouse_y;
             state.drag_start_center_x = snapshot.center_x;
@@ -470,12 +500,6 @@ fn camera_control_step(state: &mut CameraControlState) {
 
         let dx = mouse_x - state.drag_start_mouse_x;
         let dy = mouse_y - state.drag_start_mouse_y;
-
-        if !state.drag_moved && (dx != 0 || dy != 0) {
-            unsafe { issue_native_manual_intent(snapshot.address, -(dx as f32), -(dy as f32)) };
-            state.drag_moved = true;
-        }
-
         let ui_per_client_x = UI_FALLBACK_W / state.drag_start_client_w.max(1) as f32;
         let ui_per_client_y = UI_FALLBACK_H / state.drag_start_client_h.max(1) as f32;
         let world_dx =
@@ -491,14 +515,12 @@ fn camera_control_step(state: &mut CameraControlState) {
 
     if state.middle_down {
         state.middle_down = false;
-        state.drag_moved = false;
     }
 
     let (axis_x, axis_y) = edge_axis(mouse_x, mouse_y, width, height);
     let edge_active = axis_x != 0.0 || axis_y != 0.0;
     if !edge_active {
         state.edge_active = false;
-        unsafe { clear_stale_native_intent(snapshot.address) };
         return;
     }
 
@@ -506,7 +528,6 @@ fn camera_control_step(state: &mut CameraControlState) {
         state.edge_active = true;
         state.edge_center_x = snapshot.center_x;
         state.edge_center_y = snapshot.center_y;
-        unsafe { issue_native_manual_intent(snapshot.address, axis_x, axis_y) };
     }
 
     if dt <= 0.0 {
@@ -596,10 +617,10 @@ pub fn ensure_installed() -> Result<(), String> {
 }
 
 pub fn clear_candidates() {
+    release_manual_camera();
     for slot in &CANDIDATES {
         slot.clear();
     }
-    NATIVE_INTENT_PENDING.store(false, Ordering::Release);
 }
 
 pub fn snapshots() -> Vec<CameraSnapshot> {
