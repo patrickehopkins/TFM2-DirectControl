@@ -27,7 +27,7 @@ The configurable shortcut work should catalogue every player-facing action injec
 - **Temporary release to AI / spectator** — currently `End`.
 - **Start live paced simulation** — currently `Ctrl+Home`.
 - **Emergency/global release** — currently `Ctrl+End`.
-- **Camera movement** — mouse-edge scroll and middle-mouse drag are required Direct Control camera gestures; any later dedicated follow/lock binding belongs in this category as well.
+- **Camera movement** — middle-mouse drag and mouse-edge scroll are match-wide QoL gestures, not manual-control-only actions. They should remain available after `End` while the user is spectating. A later dedicated follow/lock/recenter binding may still be exposed in shortcut settings.
 - **Synchronized match speed** — Direct Control should retain useful native speed choices while keeping live simulation pacing and presentation speed locked together.
 
 Automatic behaviors such as team fog-of-war switching are not bindings and should not appear as shortcut entries unless a later explicit toggle is added.
@@ -39,7 +39,8 @@ Direct Control shortcut mode should be active only while manual champion ownersh
 - spectator mode: native Teamfight Manager 2 shortcut behavior;
 - Direct Control mode: Direct Control combat/movement bindings take priority;
 - `End`: leave Direct Control mode and restore native spectator shortcuts immediately;
-- `Ctrl+End`: global/emergency release remains available regardless of the active scheme.
+- `Ctrl+End`: global/emergency release remains available regardless of the active scheme;
+- camera MMB-drag / edge-scroll remain available in either mode because they are general match-view QoL rather than champion-control commands.
 
 This allows optimal MOBA-like defaults such as `A`, `Q`, and `R` without requiring the player to permanently sacrifice the game's spectator controls.
 
@@ -55,6 +56,11 @@ Commands that **seek or decouple presentation time** remain blocked during Direc
 - Next Highlight;
 - Pause Match, unless a later Direct Control-aware pause implementation deliberately pauses both live simulation and presentation together;
 - Highlight Mode or any equivalent playback mode that jumps/decouples presentation from the live point.
+
+Two native UI paths require explicit pre-release review even if they are not ordinary shortcut bindings:
+
+- **Pause/menu behavior:** verify that every pause/menu state actually holds the paced Candidate-A simulation rather than only pausing presentation. A long pause must never let the live simulation silently run ahead or fall back into ordinary unpaced pre-simulation. Resume must re-anchor pacing so paused wall time cannot become catch-up budget.
+- **View Match Results Immediately:** determine exactly what this button does while simulation is still in progress. If it seeks presentation, forces the remaining simulation to complete, or otherwise bypasses the live-control pacing contract, suppress or safely coordinate it while Direct Control is active. It must never leave the user watching or controlling a stale point in time.
 
 Ordinary match-speed selection is an explicit exception. Direct Control should allow useful playback-speed choices only when Harbinger changes the live Candidate-A simulation pacer and the presentation rate together so they remain synchronized. The requested rates are:
 
@@ -110,7 +116,8 @@ Preferred UI:
 
 - add a **Direct Control** category to the game's Shortcuts Settings menu;
 - show the Direct Control actions there with configurable bindings and the current bindings as defaults;
-- make it clear that these bindings are active only during manual champion control where applicable;
+- make it clear that combat/control bindings are active only during manual champion control where applicable;
+- keep match-wide camera gestures available during both manual control and ordinary spectating;
 - preserve the user's native spectator bindings unchanged.
 
 Fallback UI if a separate mode/category proves disproportionately invasive:
