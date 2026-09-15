@@ -16,21 +16,23 @@ This file records the current functionality-first scope and implementation prior
    - clears retained manual move/attack/return/skill-targeting state;
    - does **not** release, skip, or accelerate pre-simulation/pacing;
    - `Ctrl+End` remains the stronger/global release.
-4. **`A` — attack-move** — **validated.**
+4. **`A` — attack-move** — **validated generically; Gunfighter compatibility remains pre-release polish.**
    - `A` arms attack-move and LMB confirms the destination;
    - move toward that point until a visible hostile becomes a legal basic-attack target;
    - acquire the nearest currently legal target to the controlled champion, then retain it through the normal exact-target attack/chase timing;
    - after the acquired target dies, becomes untargetable, or leaves vision, resume the original attack-move destination and allow a new legal target to be acquired;
    - do not auto-hunt distant visible enemies before they enter legal basic-attack range;
-   - physical testing completed without complications;
+   - generic physical testing completed without complications;
+   - Gunfighter currently exposes a move-while-attacking exception that needs a generic `can_use_with_move`-style solution if possible;
    - native TFM2 `A = Back 10 Seconds` must be remapped during development unless/until shortcut integration can prevent the conflict.
-5. **Single-target skill chase + follow-up attack** — **validated.**
+5. **Single-target skill chase + follow-up attack** — **validated generically; Gambler Skill 1 remains a compatibility exception.**
    - a confirmed hostile Target skill that is currently out of range retains the exact clicked entity and moves toward it until the skill becomes legal;
    - runtime validator evidence is used conservatively to distinguish hostile Target skills from Direction/Position/Self actions rather than treating every failed entity click as a chase request;
    - cast the skill immediately once the exact Target input becomes legal;
    - after a successful hostile single-target cast, transition that same entity into the existing exact-target auto-attack/chase behavior without requiring another click;
    - if the target dies, becomes untargetable, changes relation, or leaves legal vision before the cast, drop the pending chase rather than tracking through fog;
-   - locked-slot validation remains ahead of all skill probing.
+   - locked-slot validation remains ahead of all skill probing;
+   - Gambler Skill 1 currently fails completely under Direct Control and must be investigated through a universal action-family path first, with a champion-specific adapter only if its native behavior is genuinely unique.
 6. **Minimap movement** — **validated in both live UI layouts.**
    - recognize only the minimap belonging to the currently active match layout rather than leaving both calibrated minimap hitboxes live simultaneously;
    - contextual RMB behavior is intentionally preserved: ground issues MoveTo and hostile markers issue exact-target Attack;
@@ -42,13 +44,15 @@ This file records the current functionality-first scope and implementation prior
    - do not queue or begin single-target chase for a cooldown skill;
    - do not queue a delayed cast;
    - later cooldown UI should provide explicit red feedback/readability (for example `Q ON COOLDOWN`) without changing the no-response gameplay rule.
-8. **MOBA-style camera movement** — **active polish / physical testing.**
-   - essential gestures are mouse-edge scrolling and middle-mouse click-drag;
-   - MMB/native-pan implementation is currently being calibrated for exact cursor anchoring at both slow and fast drag speeds;
-   - edge scrolling needs reliable all-four-edge activation and useful speed;
+8. **MOBA-style camera movement** — **current polish / physical testing.**
+   - MMB grab-and-drag is **physically validated** and matches the desired 1:1 cursor-driven behavior;
+   - MMB and edge scrolling are match-wide QoL and remain active after `End` returns the champion to AI/spectator mode;
+   - finish the current MMB/UI integration rule: while MMB is held, native UI pointer capture/hover must not stall the camera, while Harbinger's own battlefield LMB/RMB gameplay clicks continue using the true OS cursor;
+   - edge scrolling remains part of this milestone and is **not deferred**: stationary hover must glide smoothly on all four edges, including top/bottom edges occupied by UI and both full/Info layouts;
+   - current edge fix should preserve native camera authority and stimulate the same native update path that already behaves smoothly when the physical mouse is moving;
    - arrow-key camera panning was physically rejected and removed;
-   - add hold-Space recenter/follow after the two core camera gestures are stable; persistent follow/lock can later be exposed through the Direct Control shortcut scheme;
-   - do not disturb the already-useful minimap LMB camera relocation + RMB command workflow.
+   - add hold-Space recenter/follow after MMB + edge scrolling are both stable; persistent follow/lock can later be exposed through the Direct Control shortcut scheme;
+   - do not disturb the already-useful minimap LMB camera relocation + RMB command workflow when MMB is not held.
 9. **Clicks beyond the playable map edge** — battlefield clicks just outside the legal map should still express the intended direction. Clamp/project the request onto a legal/pathable map-edge destination so pathfinding moves the champion toward that edge rather than silently eating the order. Never allow movement off-map.
 10. **Skill cooldown UI** — expose direct-control-friendly Q/W/R cooldown/readiness information with high visibility so the player does not have to infer cooldowns from the normal spectator presentation. Include explicit red feedback for attempted use while unavailable.
 11. **Click-target hitbox polish**
@@ -93,15 +97,23 @@ This file records the current functionality-first scope and implementation prior
    - preferred replacement for the Highlight slot is a **death-timer fast-forward**: while the controlled champion is dead, temporarily run live simulation and presentation together at a deliberately fast rate, then automatically restore the player's previous ordinary speed on respawn;
    - if the native Highlight speed multiplier can be identified as a fixed safe rate, it may be reused for death fast-forward; otherwise choose an explicit rate rather than guessing;
    - cancel/restore the prior speed if control is released or switched to a living champion before respawn.
-18. **Pregame / pre-simulation start handling** — final pre-release polish/fallback before Pings.
+18. **Champion-specific compatibility audit/fixes** — pre-release.
+   - Gambler Skill 1 is confirmed nonfunctional under Direct Control. Prefer a universal action-family/targeting solution; isolate a Gambler adapter only if the native skill is genuinely exceptional.
+   - Gunfighter's attack-move is confirmed wrong: he currently either attacks or walks rather than composing movement with attacks. Prefer a generic move-compatible action path (`can_use_with_move` or equivalent) so other compatible champions benefit too.
+19. **Pause / unfinished-match playback safety audit** — pre-release.
+   - reproduce long pause-menu holds and verify Candidate-A simulation actually remains blocked rather than presentation merely pausing while the live simulation escapes ahead;
+   - resume must re-anchor pacing so paused wall time never becomes catch-up budget;
+   - review scene/transition gaps where pause state might stop being published while the simulation worker continues;
+   - inspect **View Match Results Immediately** while simulation is unfinished. Determine whether it forces completion, seeks presentation, or bypasses pacing, and gate/coordinate it during Direct Control if necessary.
+20. **Pregame / pre-simulation start handling** — final pre-release polish/fallback before Pings.
    - preferred route: reuse any clean solution discovered by the Flame Simulator pre-game pre-simulation probe so the player can enter the map before meaningful match simulation gets ahead of them;
    - if no clean start-gate/pause solution is found, apply a flat **+60 second offset** to the normal opening schedule rather than allowing the vanilla timings to occur before the player can meaningfully participate;
    - the fallback offset must preserve all normal relative timing: character AI activation, lane creep spawns/waves, jungle spawns, Serpen and Morgar spawns, and other scheduled opening events each occur one minute later than they normally would; do **not** bunch all of those events together at the 1:00 mark;
    - treat this as a match-start schedule offset, not a blanket modification to ordinary combat cooldowns/action durations;
    - the first minute can function as a League-like pregame roam/setup window before normal match activity begins;
    - optionally add a temporary spawn-area collision wall/barrier only if testing shows unrestricted first-minute roaming creates undesirable exploits. Prefer free roaming if it behaves well.
-19. **Pings/team commands** — **post-release work / release boundary.** Potentially large subsystem; do not hold the first public release for this unless explicitly reconsidered.
-20. **Shop control** — post-release/manual-shopping work. Default auto-shop remains an explicit supported mode; when auto-shop is selected, expose the native next intended item/upgrade and the additional gold needed to afford it beside current gold where practical. See `docs/economy-ui-plan.md`.
+21. **Pings/team commands** — **post-release work / release boundary.** Potentially large subsystem; do not hold the first public release for this unless explicitly reconsidered.
+22. **Shop control** — post-release/manual-shopping work. Default auto-shop remains an explicit supported mode; when auto-shop is selected, expose the native next intended item/upgrade and the additional gold needed to afford it beside current gold where practical. See `docs/economy-ui-plan.md`.
 
 ## Must iron out before release
 
@@ -131,6 +143,5 @@ Do not silently copy or bundle that mod's implementation. For the eventual Works
 ## Deferred / later polish
 
 - **Friendly champion selection cleanup:** do not redesign the visible selection UI here. F1-F10 is sufficient for functionality; only harden how those fixed role slots resolve to athlete ids.
-- **Gunfighter move-while-attacking composition:** character-specific follow-up after generic controls are stable; attack-move is particularly important to this character.
 - **Idle retaliation:** possible later behavior where an otherwise-idle selected champion that is attacked by an enemy already in legal basic-attack range returns fire.
 - **Morgard/ping override investigation:** revisit only if explicit manual orders are still observably overridden after the core command path is stable.
