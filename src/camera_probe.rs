@@ -5,19 +5,12 @@
 //! input/update handler and capture only a few verified fields from its `this`
 //! pointer.
 //!
-//! Direct Control camera gestures deliberately do not use the native camera-input
-//! handler as their clock. Physical testing showed that handler is input/event
-//! cadenced: stationary edge-scroll advances in little ticks, while moving the mouse
-//! causes much smoother pan updates, and fast MMB drags can skip between sparse
-//! samples. A tiny dedicated camera-control poller therefore samples the real cursor
-//! independently of that handler and writes the requested camera center directly.
-//!
-//! MMB is an anchored grab: camera center is derived from total cursor displacement
-//! from the original press point, so there is no drag velocity, speed cap, or
-//! accumulated per-sample drift. Edge scrolling integrates continuously from
-//! wall-clock time. The verified native pan fields at +0x418/+0x41C are used only for
-//! a tiny one-shot "manual camera moved" intent pulse so TFM2 can disengage native
-//! follow/Auto Camera; they never determine Direct Control camera distance.
+//! Direct Control camera movement uses the game's verified native pan-input fields
+//! at +0x418/+0x41C so ordinary manual panning still goes through TFM2's camera
+//! controller and can disengage follow/Auto Camera normally. Edge scrolling is pure
+//! native pan input. MMB drag is cursor-anchored: the camera center is derived from
+//! the total cursor displacement from the original press point, so a grabbed world
+//! point follows the mouse 1:1 regardless of mouse speed or camera-handler cadence.
 //!
 //! Keep every version-specific RVA/offset in this module. Higher-level direct
 //! control code should consume `CameraSnapshot` and never know TFM2's private
@@ -27,11 +20,9 @@ use std::{
     ffi::c_void,
     ptr,
     sync::{
-        atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering},
         OnceLock,
     },
-    thread,
-    time::Duration,
 };
 
 const HANDLER_RVA: usize = 0x009E_6750;
@@ -61,17 +52,18 @@ const MEM_COMMIT: u32 = 0x1000;
 const MEM_RESERVE: u32 = 0x2000;
 const PAGE_EXECUTE_READWRITE: u32 = 0x40;
 
+// Horizontal battlefield edges coincide closely with the client edges in the wide
+// layout. Vertically, TFM2 reserves a top scoreboard band and a bottom controls band,
+// so use a wider Y activation zone until camera input is moved onto live UI geometry.
+const EDGE_SCROLL_MARGIN_X_PX: i32 = 18;
+const EDGE_SCROLL_MARGIN_Y_PX: i32 = 72;
+const NATIVE_EDGE_PAN_SPEED: f32 = 200.0;
+const NATIVE_DRAG_INTENT_SPEED: f32 = 100.0;
 const GAME_DRAW_SIZE: f32 = 2048.0;
 const UI_FALLBACK_W: f32 = 1920.0;
 const UI_FALLBACK_H: f32 = 1080.0;
 const WORLD_MIN: f32 = 0.0;
 const WORLD_MAX: f32 = 960.0;
-const EDGE_SCROLL_MARGIN_X_PX: i32 = 18;
-const EDGE_SCROLL_MARGIN_Y_PX: i32 = 84;
-const EDGE_SCROLL_VIEWPORTS_PER_SECOND: f32 = 1.35;
-const MAX_CONTROL_DT_SECONDS: f32 = 0.050;
-const NATIVE_MANUAL_INTENT_SPEED: f32 = 1.0;
-const CAMERA_CONTROL_POLL_MS: u64 = 2;
 const VK_MBUTTON_CODE: i32 = 0x04;
 const NO_ATHLETE: usize = usize::MAX;
 
@@ -94,7 +86,6 @@ extern "system" {
     fn GetModuleHandleW(module_name: *const u16) -> *mut c_void;
     fn GetCurrentProcess() -> *mut c_void;
     fn GetCurrentProcessId() -> u32;
-    fn GetTickCount64() -> u64;
     fn VirtualAlloc(
         address: *mut c_void,
         size: usize,
@@ -130,6 +121,12 @@ pub struct CameraSnapshot {
     pub extent_b: f32,
     pub mode: u8,
     pub calls: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DragCorrection {
+    center_x: f32,
+    center_y: f32,
 }
 
 struct CandidateSlot {
@@ -177,7 +174,20 @@ static CANDIDATES: [CandidateSlot; MAX_CANDIDATES] = [
 ];
 static TRAMPOLINE: AtomicUsize = AtomicUsize::new(0);
 static INSTALL_RESULT: OnceLock<Result<(), String>> = OnceLock::new();
-static NATIVE_INTENT_PENDING: AtomicBool = AtomicBool::new(false);
+
+static LAST_SELECTED_ATHLETE: AtomicUsize = AtomicUsize::new(NO_ATHLETE);
+static PAN_WAS_ACTIVE: AtomicBool = AtomicBool::new(false);
+static MMB_WAS_DOWN: AtomicBool = AtomicBool::new(false);
+static DRAG_START_MOUSE_X: AtomicI32 = AtomicI32::new(0);
+static DRAG_START_MOUSE_Y: AtomicI32 = AtomicI32::new(0);
+static DRAG_LAST_MOUSE_X: AtomicI32 = AtomicI32::new(0);
+static DRAG_LAST_MOUSE_Y: AtomicI32 = AtomicI32::new(0);
+static DRAG_START_CENTER_X: AtomicU32 = AtomicU32::new(0);
+static DRAG_START_CENTER_Y: AtomicU32 = AtomicU32::new(0);
+static DRAG_START_EXTENT_X: AtomicU32 = AtomicU32::new(0);
+static DRAG_START_EXTENT_Y: AtomicU32 = AtomicU32::new(0);
+static DRAG_START_CLIENT_W: AtomicI32 = AtomicI32::new(0);
+static DRAG_START_CLIENT_H: AtomicI32 = AtomicI32::new(0);
 
 // Observed machine-level signature at the two known call sites. Only the first
 // argument matters to us; preserving the rest exactly lets the original handler
@@ -201,85 +211,52 @@ unsafe extern "system" fn camera_handler_hook(
     arg6: usize,
     arg7: usize,
 ) {
+    let drag_correction = inject_native_pan(this);
+
     let trampoline = TRAMPOLINE.load(Ordering::Acquire);
     if trampoline != 0 {
         let original: CameraHandlerFn = std::mem::transmute(trampoline);
         original(this, arg2, arg3, arg4, arg5, arg6, arg7);
     }
 
-    // The control thread can leave a tiny native-pan intent pulse for this handler.
-    // Let the base controller observe it exactly once, then clear it before capture.
-    if NATIVE_INTENT_PENDING.swap(false, Ordering::AcqRel) {
+    // MMB native pan is only an intent pulse to make the base controller see a
+    // manual gesture. Do not leave a fixed velocity sitting in the camera object.
+    if MMB_WAS_DOWN.load(Ordering::Acquire) {
         ptr::write_unaligned(this.add(PAN_X_OFFSET).cast::<f32>(), 0.0);
         ptr::write_unaligned(this.add(PAN_Y_OFFSET).cast::<f32>(), 0.0);
+        PAN_WAS_ACTIVE.store(false, Ordering::Release);
+    }
+
+    if let Some(correction) = drag_correction {
+        apply_drag_correction(this, correction);
     }
 
     capture(this);
 }
 
-#[derive(Debug, Clone, Copy)]
-struct CameraControlState {
-    selected_athlete: usize,
-    middle_down: bool,
-    drag_moved: bool,
-    drag_start_mouse_x: i32,
-    drag_start_mouse_y: i32,
-    drag_start_center_x: f32,
-    drag_start_center_y: f32,
-    drag_start_extent_x: f32,
-    drag_start_extent_y: f32,
-    drag_start_client_w: i32,
-    drag_start_client_h: i32,
-    edge_active: bool,
-    edge_center_x: f32,
-    edge_center_y: f32,
-    last_step_ms: u64,
-}
-
-impl Default for CameraControlState {
-    fn default() -> Self {
-        Self {
-            selected_athlete: NO_ATHLETE,
-            middle_down: false,
-            drag_moved: false,
-            drag_start_mouse_x: 0,
-            drag_start_mouse_y: 0,
-            drag_start_center_x: 0.0,
-            drag_start_center_y: 0.0,
-            drag_start_extent_x: 0.0,
-            drag_start_extent_y: 0.0,
-            drag_start_client_w: 0,
-            drag_start_client_h: 0,
-            edge_active: false,
-            edge_center_x: 0.0,
-            edge_center_y: 0.0,
-            last_step_ms: 0,
-        }
-    }
-}
-
-impl CameraControlState {
-    fn reset_gesture(&mut self) {
-        self.middle_down = false;
-        self.drag_moved = false;
-        self.edge_active = false;
-        self.last_step_ms = 0;
-    }
-}
-
-fn direct_control_camera_active(state: &mut CameraControlState) -> bool {
+fn direct_control_camera_active() -> bool {
     let selected = crate::control::selected_athlete().unwrap_or(NO_ATHLETE);
-    if selected != state.selected_athlete {
-        state.selected_athlete = selected;
-        state.reset_gesture();
+    let previous = LAST_SELECTED_ATHLETE.swap(selected, Ordering::AcqRel);
+    if selected != previous {
+        reset_manual_pan_state();
     }
 
-    if selected == NO_ATHLETE || !crate::pacing_probe::manual_input_enabled() {
-        state.reset_gesture();
-        return false;
-    }
+    selected != NO_ATHLETE && crate::pacing_probe::manual_input_enabled()
+}
 
-    true
+fn reset_manual_pan_state() {
+    PAN_WAS_ACTIVE.store(false, Ordering::Release);
+    MMB_WAS_DOWN.store(false, Ordering::Release);
+    DRAG_START_MOUSE_X.store(0, Ordering::Relaxed);
+    DRAG_START_MOUSE_Y.store(0, Ordering::Relaxed);
+    DRAG_LAST_MOUSE_X.store(0, Ordering::Relaxed);
+    DRAG_LAST_MOUSE_Y.store(0, Ordering::Relaxed);
+    DRAG_START_CENTER_X.store(0, Ordering::Relaxed);
+    DRAG_START_CENTER_Y.store(0, Ordering::Relaxed);
+    DRAG_START_EXTENT_X.store(0, Ordering::Relaxed);
+    DRAG_START_EXTENT_Y.store(0, Ordering::Relaxed);
+    DRAG_START_CLIENT_W.store(0, Ordering::Relaxed);
+    DRAG_START_CLIENT_H.store(0, Ordering::Relaxed);
 }
 
 fn foreground_cursor() -> Option<(i32, i32, i32, i32)> {
@@ -321,10 +298,6 @@ fn foreground_cursor() -> Option<(i32, i32, i32, i32)> {
 }
 
 fn edge_axis(mouse_x: i32, mouse_y: i32, width: i32, height: i32) -> (f32, f32) {
-    // Use physical client edges here deliberately. The poller runs outside the base
-    // camera-input event path, so scoreboard/buttons no longer create a dead zone.
-    // The larger vertical band spans TFM2's top stats and bottom controls strips in
-    // both wide and split/Info layouts.
     let left = mouse_x >= 0 && mouse_x <= EDGE_SCROLL_MARGIN_X_PX;
     let right = mouse_x < width && mouse_x >= width - EDGE_SCROLL_MARGIN_X_PX - 1;
     let up = mouse_y >= 0 && mouse_y <= EDGE_SCROLL_MARGIN_Y_PX;
@@ -340,197 +313,131 @@ fn edge_axis(mouse_x: i32, mouse_y: i32, width: i32, height: i32) -> (f32, f32) 
     (x, y)
 }
 
-fn clamp_center(center: f32, extent: f32) -> f32 {
-    let half = (extent.abs() * 0.5).clamp(0.0, (WORLD_MAX - WORLD_MIN) * 0.5);
-    center.clamp(WORLD_MIN + half, WORLD_MAX - half)
-}
-
-fn preferred_snapshot() -> Option<CameraSnapshot> {
-    let mut best: Option<CameraSnapshot> = None;
-
-    for slot in &CANDIDATES {
-        let address = slot.address.load(Ordering::Acquire);
-        if address == 0 {
-            continue;
-        }
-        let snapshot = CameraSnapshot {
-            address,
-            zoom: f32::from_bits(slot.zoom.load(Ordering::Relaxed)),
-            center_x: f32::from_bits(slot.center_x.load(Ordering::Relaxed)),
-            center_y: f32::from_bits(slot.center_y.load(Ordering::Relaxed)),
-            extent_a: f32::from_bits(slot.extent_a.load(Ordering::Relaxed)),
-            extent_b: f32::from_bits(slot.extent_b.load(Ordering::Relaxed)),
-            mode: slot.mode.load(Ordering::Relaxed) as u8,
-            calls: slot.calls.load(Ordering::Acquire),
-        };
-        if best.map_or(true, |current| snapshot.calls > current.calls) {
-            best = Some(snapshot);
-        }
-    }
-
-    best
-}
-
-unsafe fn issue_native_manual_intent(address: usize, axis_x: f32, axis_y: f32) {
-    if address == 0 || (axis_x == 0.0 && axis_y == 0.0) {
-        return;
-    }
-    let this = address as *mut u8;
-    ptr::write_unaligned(
-        this.add(PAN_X_OFFSET).cast::<f32>(),
-        axis_x.signum() * NATIVE_MANUAL_INTENT_SPEED,
-    );
-    ptr::write_unaligned(
-        this.add(PAN_Y_OFFSET).cast::<f32>(),
-        axis_y.signum() * NATIVE_MANUAL_INTENT_SPEED,
-    );
-    NATIVE_INTENT_PENDING.store(true, Ordering::Release);
-}
-
-unsafe fn clear_stale_native_intent(address: usize) {
-    if address == 0 || !NATIVE_INTENT_PENDING.swap(false, Ordering::AcqRel) {
-        return;
-    }
-    let this = address as *mut u8;
-    ptr::write_unaligned(this.add(PAN_X_OFFSET).cast::<f32>(), 0.0);
-    ptr::write_unaligned(this.add(PAN_Y_OFFSET).cast::<f32>(), 0.0);
-}
-
-unsafe fn write_camera_center(snapshot: CameraSnapshot, center_x: f32, center_y: f32) {
-    if snapshot.address == 0 || !center_x.is_finite() || !center_y.is_finite() {
-        return;
-    }
-
-    let this = snapshot.address as *mut u8;
-    ptr::write_unaligned(this.add(CENTER_X_OFFSET).cast::<f32>(), center_x);
-    ptr::write_unaligned(this.add(CENTER_Y_OFFSET).cast::<f32>(), center_y);
-
-    for slot in &CANDIDATES {
-        if slot.address.load(Ordering::Acquire) == snapshot.address {
-            slot.center_x.store(center_x.to_bits(), Ordering::Release);
-            slot.center_y.store(center_y.to_bits(), Ordering::Release);
-            break;
-        }
-    }
-}
-
-fn camera_control_step(state: &mut CameraControlState) {
-    if !direct_control_camera_active(state) {
-        return;
-    }
-
-    let Some(snapshot) = preferred_snapshot() else {
-        state.reset_gesture();
-        return;
-    };
-    if !snapshot.center_x.is_finite()
-        || !snapshot.center_y.is_finite()
-        || !snapshot.extent_a.is_finite()
-        || !snapshot.extent_b.is_finite()
-        || snapshot.extent_a <= 0.0
-        || snapshot.extent_b <= 0.0
-    {
-        state.reset_gesture();
-        return;
+unsafe fn inject_native_pan(this: *mut u8) -> Option<DragCorrection> {
+    if this.is_null() || !direct_control_camera_active() {
+        reset_manual_pan_state();
+        return None;
     }
 
     let Some((mouse_x, mouse_y, width, height)) = foreground_cursor() else {
-        unsafe { clear_stale_native_intent(snapshot.address) };
-        state.reset_gesture();
-        return;
+        reset_manual_pan_state();
+        return None;
     };
 
-    let now_ms = unsafe { GetTickCount64() };
-    let dt = if state.last_step_ms == 0 {
-        0.0
-    } else {
-        (now_ms.saturating_sub(state.last_step_ms) as f32 / 1000.0)
-            .clamp(0.0, MAX_CONTROL_DT_SECONDS)
-    };
-    state.last_step_ms = now_ms;
+    let extent_a = ptr::read_unaligned(this.add(EXTENT_A_OFFSET).cast::<f32>());
+    let extent_b = ptr::read_unaligned(this.add(EXTENT_B_OFFSET).cast::<f32>());
+    let center_x = ptr::read_unaligned(this.add(CENTER_X_OFFSET).cast::<f32>());
+    let center_y = ptr::read_unaligned(this.add(CENTER_Y_OFFSET).cast::<f32>());
+    if !extent_a.is_finite()
+        || !extent_b.is_finite()
+        || !center_x.is_finite()
+        || !center_y.is_finite()
+        || extent_a <= 0.0
+        || extent_b <= 0.0
+    {
+        return None;
+    }
 
-    let middle_down = unsafe { GetAsyncKeyState(VK_MBUTTON_CODE) < 0 };
+    let middle_down = GetAsyncKeyState(VK_MBUTTON_CODE) < 0;
+    let mut pan_x = 0.0f32;
+    let mut pan_y = 0.0f32;
+    let mut correction = None;
+
     if middle_down {
-        state.edge_active = false;
+        let was_down = MMB_WAS_DOWN.swap(true, Ordering::AcqRel);
+        if !was_down {
+            DRAG_START_MOUSE_X.store(mouse_x, Ordering::Release);
+            DRAG_START_MOUSE_Y.store(mouse_y, Ordering::Release);
+            DRAG_LAST_MOUSE_X.store(mouse_x, Ordering::Release);
+            DRAG_LAST_MOUSE_Y.store(mouse_y, Ordering::Release);
+            DRAG_START_CENTER_X.store(center_x.to_bits(), Ordering::Release);
+            DRAG_START_CENTER_Y.store(center_y.to_bits(), Ordering::Release);
+            DRAG_START_EXTENT_X.store(extent_a.to_bits(), Ordering::Release);
+            DRAG_START_EXTENT_Y.store(extent_b.to_bits(), Ordering::Release);
+            DRAG_START_CLIENT_W.store(width, Ordering::Release);
+            DRAG_START_CLIENT_H.store(height, Ordering::Release);
+        } else {
+            let previous_x = DRAG_LAST_MOUSE_X.swap(mouse_x, Ordering::AcqRel);
+            let previous_y = DRAG_LAST_MOUSE_Y.swap(mouse_y, Ordering::AcqRel);
+            let sample_dx = mouse_x - previous_x;
+            let sample_dy = mouse_y - previous_y;
 
-        if !state.middle_down {
-            state.middle_down = true;
-            state.drag_moved = false;
-            state.drag_start_mouse_x = mouse_x;
-            state.drag_start_mouse_y = mouse_y;
-            state.drag_start_center_x = snapshot.center_x;
-            state.drag_start_center_y = snapshot.center_y;
-            state.drag_start_extent_x = snapshot.extent_a;
-            state.drag_start_extent_y = snapshot.extent_b;
-            state.drag_start_client_w = width.max(1);
-            state.drag_start_client_h = height.max(1);
-            return;
+            let start_x = DRAG_START_MOUSE_X.load(Ordering::Acquire);
+            let start_y = DRAG_START_MOUSE_Y.load(Ordering::Acquire);
+            let total_dx = mouse_x - start_x;
+            let total_dy = mouse_y - start_y;
+            let start_center_x = f32::from_bits(DRAG_START_CENTER_X.load(Ordering::Acquire));
+            let start_center_y = f32::from_bits(DRAG_START_CENTER_Y.load(Ordering::Acquire));
+            let start_extent_x = f32::from_bits(DRAG_START_EXTENT_X.load(Ordering::Acquire));
+            let start_extent_y = f32::from_bits(DRAG_START_EXTENT_Y.load(Ordering::Acquire));
+            let start_width = DRAG_START_CLIENT_W.load(Ordering::Acquire).max(1) as f32;
+            let start_height = DRAG_START_CLIENT_H.load(Ordering::Acquire).max(1) as f32;
+
+            if start_center_x.is_finite()
+                && start_center_y.is_finite()
+                && start_extent_x.is_finite()
+                && start_extent_y.is_finite()
+                && start_extent_x > 0.0
+                && start_extent_y > 0.0
+            {
+                let ui_per_client_x = UI_FALLBACK_W / start_width;
+                let ui_per_client_y = UI_FALLBACK_H / start_height;
+                let world_dx = total_dx as f32 * ui_per_client_x * start_extent_x / GAME_DRAW_SIZE;
+                let world_dy = total_dy as f32 * ui_per_client_y * start_extent_y / GAME_DRAW_SIZE;
+
+                correction = Some(DragCorrection {
+                    center_x: (start_center_x - world_dx).clamp(WORLD_MIN, WORLD_MAX),
+                    center_y: (start_center_y - world_dy).clamp(WORLD_MIN, WORLD_MAX),
+                });
+            }
+
+            // Give TFM2 a native manual-pan signal only while the mouse actually moves.
+            // Distance never comes from this fixed input; the absolute correction above
+            // is derived from total cursor displacement since the original hold point.
+            pan_x = if sample_dx > 0 {
+                -NATIVE_DRAG_INTENT_SPEED
+            } else if sample_dx < 0 {
+                NATIVE_DRAG_INTENT_SPEED
+            } else {
+                0.0
+            };
+            pan_y = if sample_dy > 0 {
+                -NATIVE_DRAG_INTENT_SPEED
+            } else if sample_dy < 0 {
+                NATIVE_DRAG_INTENT_SPEED
+            } else {
+                0.0
+            };
         }
-
-        let dx = mouse_x - state.drag_start_mouse_x;
-        let dy = mouse_y - state.drag_start_mouse_y;
-        if !state.drag_moved && (dx != 0 || dy != 0) {
-            unsafe { issue_native_manual_intent(snapshot.address, -(dx as f32), -(dy as f32)) };
-            state.drag_moved = true;
-        }
-
-        let ui_per_client_x = UI_FALLBACK_W / state.drag_start_client_w.max(1) as f32;
-        let ui_per_client_y = UI_FALLBACK_H / state.drag_start_client_h.max(1) as f32;
-        let world_dx =
-            dx as f32 * ui_per_client_x * state.drag_start_extent_x / GAME_DRAW_SIZE;
-        let world_dy =
-            dy as f32 * ui_per_client_y * state.drag_start_extent_y / GAME_DRAW_SIZE;
-        let center_x = clamp_center(
-            state.drag_start_center_x - world_dx,
-            state.drag_start_extent_x,
-        );
-        let center_y = clamp_center(
-            state.drag_start_center_y - world_dy,
-            state.drag_start_extent_y,
-        );
-        unsafe { write_camera_center(snapshot, center_x, center_y) };
-        return;
+    } else {
+        MMB_WAS_DOWN.store(false, Ordering::Release);
+        let (axis_x, axis_y) = edge_axis(mouse_x, mouse_y, width, height);
+        pan_x = axis_x * NATIVE_EDGE_PAN_SPEED;
+        pan_y = axis_y * NATIVE_EDGE_PAN_SPEED;
     }
 
-    if state.middle_down {
-        state.middle_down = false;
-        state.drag_moved = false;
+    let active = pan_x != 0.0 || pan_y != 0.0;
+    if active {
+        ptr::write_unaligned(this.add(PAN_X_OFFSET).cast::<f32>(), pan_x);
+        ptr::write_unaligned(this.add(PAN_Y_OFFSET).cast::<f32>(), pan_y);
+        PAN_WAS_ACTIVE.store(true, Ordering::Release);
+    } else if PAN_WAS_ACTIVE.swap(false, Ordering::AcqRel) {
+        // Clear one stale injected input when the gesture ends. Do not continually
+        // zero these fields: outside our gesture the base game's native input owns them.
+        ptr::write_unaligned(this.add(PAN_X_OFFSET).cast::<f32>(), 0.0);
+        ptr::write_unaligned(this.add(PAN_Y_OFFSET).cast::<f32>(), 0.0);
     }
 
-    let (axis_x, axis_y) = edge_axis(mouse_x, mouse_y, width, height);
-    let edge_active = axis_x != 0.0 || axis_y != 0.0;
-    if !edge_active {
-        state.edge_active = false;
-        unsafe { clear_stale_native_intent(snapshot.address) };
-        return;
-    }
-
-    if !state.edge_active {
-        state.edge_active = true;
-        state.edge_center_x = snapshot.center_x;
-        state.edge_center_y = snapshot.center_y;
-        unsafe { issue_native_manual_intent(snapshot.address, axis_x, axis_y) };
-    }
-
-    if dt <= 0.0 {
-        return;
-    }
-
-    state.edge_center_x +=
-        axis_x * snapshot.extent_a * EDGE_SCROLL_VIEWPORTS_PER_SECOND * dt;
-    state.edge_center_y +=
-        axis_y * snapshot.extent_b * EDGE_SCROLL_VIEWPORTS_PER_SECOND * dt;
-    state.edge_center_x = clamp_center(state.edge_center_x, snapshot.extent_a);
-    state.edge_center_y = clamp_center(state.edge_center_y, snapshot.extent_b);
-    unsafe { write_camera_center(snapshot, state.edge_center_x, state.edge_center_y) };
+    correction
 }
 
-fn camera_control_loop() {
-    let mut state = CameraControlState::default();
-    loop {
-        camera_control_step(&mut state);
-        thread::sleep(Duration::from_millis(CAMERA_CONTROL_POLL_MS));
+unsafe fn apply_drag_correction(this: *mut u8, correction: DragCorrection) {
+    if this.is_null() || !correction.center_x.is_finite() || !correction.center_y.is_finite() {
+        return;
     }
+
+    ptr::write_unaligned(this.add(CENTER_X_OFFSET).cast::<f32>(), correction.center_x);
+    ptr::write_unaligned(this.add(CENTER_Y_OFFSET).cast::<f32>(), correction.center_y);
 }
 
 unsafe fn capture(this: *mut u8) {
@@ -602,7 +509,8 @@ pub fn clear_candidates() {
     for slot in &CANDIDATES {
         slot.clear();
     }
-    NATIVE_INTENT_PENDING.store(false, Ordering::Release);
+    LAST_SELECTED_ATHLETE.store(NO_ATHLETE, Ordering::Release);
+    reset_manual_pan_state();
 }
 
 pub fn snapshots() -> Vec<CameraSnapshot> {
@@ -692,10 +600,6 @@ unsafe fn install_inner() -> Result<(), String> {
     let mut ignored = 0u32;
     let _ = VirtualProtect(target.cast::<c_void>(), PATCH_LEN, old_protect, &mut ignored);
     let _ = FlushInstructionCache(GetCurrentProcess(), target.cast::<c_void>(), PATCH_LEN);
-
-    let _ = thread::Builder::new()
-        .name("tfm2-direct-control-camera".to_owned())
-        .spawn(camera_control_loop);
 
     Ok(())
 }
