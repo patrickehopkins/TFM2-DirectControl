@@ -1,11 +1,14 @@
-//! Camera capture plus Direct Control camera driving for Teamfight Manager 2 v0.5.8.
+//! Camera capture plus match-wide camera driving for Teamfight Manager 2 v0.5.8.
 //!
 //! Keep capture and camera mutation deliberately separate. `base` is the physically
-//! validated read-only camera adapter. Direct Control never writes the derived camera
+//! validated read-only camera adapter. Harbinger never writes the derived camera
 //! center at +0xE4/+0xE8; doing that created a second camera authority and caused
 //! flicker, snap-back, and screen-to-world disagreement. Camera gestures drive only
 //! TFM2's native pan inputs at +0x418/+0x41C, leaving the game authoritative for the
 //! actual camera center, follow state, minimap camera jumps, bounds, and rendering.
+//!
+//! These camera gestures are match-view QoL, not manual-control ownership. MMB drag
+//! and edge scroll remain available while spectating after `End` releases a champion.
 
 #[path = "camera_probe/base.rs"]
 mod base;
@@ -40,7 +43,6 @@ const NATIVE_EDGE_PAN_SPEED: f32 = 200.0;
 const DRAG_POSITION_GAIN: f32 = 60.0;
 const CAMERA_CONTROL_POLL_MS: u64 = 2;
 const VK_MBUTTON_CODE: i32 = 0x04;
-const NO_ATHLETE: usize = usize::MAX;
 
 #[repr(C)]
 struct WinPoint {
@@ -73,7 +75,6 @@ extern "system" {
 
 #[derive(Debug, Clone, Copy)]
 struct CameraControlState {
-    selected_athlete: usize,
     pan_address: usize,
     pan_active: bool,
     middle_down: bool,
@@ -90,7 +91,6 @@ struct CameraControlState {
 impl Default for CameraControlState {
     fn default() -> Self {
         Self {
-            selected_athlete: NO_ATHLETE,
             pan_address: 0,
             pan_active: false,
             middle_down: false,
@@ -202,22 +202,16 @@ fn reset_gesture(state: &mut CameraControlState) {
     state.middle_down = false;
 }
 
-fn direct_control_active(state: &mut CameraControlState) -> bool {
-    let selected = crate::control::selected_athlete().unwrap_or(NO_ATHLETE);
-    if selected != state.selected_athlete {
-        reset_gesture(state);
-        state.selected_athlete = selected;
-    }
-
-    if selected == NO_ATHLETE || !crate::pacing_probe::manual_input_enabled() {
-        reset_gesture(state);
-        return false;
-    }
-    true
+fn camera_match_active() -> bool {
+    crate::pacing_probe::snapshot().interactive_match
 }
 
 fn camera_control_step(state: &mut CameraControlState) {
-    if !direct_control_active(state) {
+    // Camera gestures remain active throughout the interactive match, regardless of
+    // whether a champion is currently under manual control. Releasing with `End`
+    // therefore returns combat to spectator/AI control without sacrificing MMB/edge QoL.
+    if !camera_match_active() {
+        reset_gesture(state);
         return;
     }
 
@@ -316,7 +310,6 @@ pub fn ensure_installed() -> Result<(), String> {
 pub fn clear_candidates() {
     if let Ok(mut state) = driver_state().lock() {
         reset_gesture(&mut state);
-        state.selected_athlete = NO_ATHLETE;
     }
     base::clear_candidates();
 }
