@@ -3,17 +3,22 @@
 //! The official stable mod API deliberately does not expose the spectator camera.
 //! For the single tested 0.5.8 executable we therefore detour the game's camera
 //! input/update handler and capture only a few verified fields from its `this`
-//! pointer. No gameplay mutation happens here.
+//! pointer.
 //!
-//! Keep every version-specific RVA/offset in this module. Higher-level direct
-//! control code should consume `CameraSnapshot` and never know TFM2's private
-//! object layout.
+//! Match-wide camera gestures publish requested native pan values into atomics. The
+//! detoured camera handler applies those requests synchronously immediately before
+//! TFM2's original handler runs. This avoids racing the game's own camera/input code
+//! from a background thread while still leaving TFM2 authoritative for camera-center
+//! integration, bounds, follow state, minimap relocation, and rendering.
+//!
+//! Keep every version-specific RVA/offset in this module. Higher-level camera/control
+//! code should consume `CameraSnapshot` and never know TFM2's private object layout.
 
 use std::{
     ffi::c_void,
     ptr,
     sync::{
-        atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
         OnceLock,
     },
 };
@@ -28,6 +33,8 @@ const CENTER_Y_OFFSET: usize = 0xE8;
 const EXTENT_A_OFFSET: usize = 0xEC;
 const EXTENT_B_OFFSET: usize = 0xF0;
 const MODE_OFFSET: usize = 0xF4;
+const PAN_X_OFFSET: usize = 0x418;
+const PAN_Y_OFFSET: usize = 0x41C;
 
 // The first 12 bytes of the confirmed handler are eight whole push instructions,
 // so they can be copied to a trampoline without relocating RIP-relative code.
@@ -120,6 +127,14 @@ static CANDIDATES: [CandidateSlot; MAX_CANDIDATES] = [
 static TRAMPOLINE: AtomicUsize = AtomicUsize::new(0);
 static INSTALL_RESULT: OnceLock<Result<(), String>> = OnceLock::new();
 
+// Requested pan is published by the match-wide camera driver. The actual private
+// camera fields are touched only from inside the native camera-handler thread.
+static REQUESTED_PAN_ADDRESS: AtomicUsize = AtomicUsize::new(0);
+static REQUESTED_PAN_X: AtomicU32 = AtomicU32::new(0);
+static REQUESTED_PAN_Y: AtomicU32 = AtomicU32::new(0);
+static REQUESTED_PAN_ACTIVE: AtomicBool = AtomicBool::new(false);
+static REQUESTED_PAN_CLEAR_ONCE: AtomicBool = AtomicBool::new(false);
+
 // Observed machine-level signature at the two known call sites. Only the first
 // argument matters to us; preserving the rest exactly lets the original handler
 // continue normally through the trampoline.
@@ -142,6 +157,8 @@ unsafe extern "system" fn camera_handler_hook(
     arg6: usize,
     arg7: usize,
 ) {
+    inject_requested_pan(this);
+
     let trampoline = TRAMPOLINE.load(Ordering::Acquire);
     if trampoline != 0 {
         let original: CameraHandlerFn = std::mem::transmute(trampoline);
@@ -149,6 +166,58 @@ unsafe extern "system" fn camera_handler_hook(
     }
 
     capture(this);
+}
+
+unsafe fn inject_requested_pan(this: *mut u8) {
+    if this.is_null() {
+        return;
+    }
+
+    let address = this as usize;
+    if REQUESTED_PAN_ADDRESS.load(Ordering::Acquire) != address {
+        return;
+    }
+
+    if REQUESTED_PAN_ACTIVE.load(Ordering::Acquire) {
+        let pan_x = f32::from_bits(REQUESTED_PAN_X.load(Ordering::Relaxed));
+        let pan_y = f32::from_bits(REQUESTED_PAN_Y.load(Ordering::Relaxed));
+        if pan_x.is_finite() && pan_y.is_finite() {
+            ptr::write_unaligned(this.add(PAN_X_OFFSET).cast::<f32>(), pan_x);
+            ptr::write_unaligned(this.add(PAN_Y_OFFSET).cast::<f32>(), pan_y);
+        }
+    } else if REQUESTED_PAN_CLEAR_ONCE.swap(false, Ordering::AcqRel) {
+        // Clear one final injected value when the gesture ends, then stop touching
+        // native pan state so TFM2's own controls regain full ownership.
+        ptr::write_unaligned(this.add(PAN_X_OFFSET).cast::<f32>(), 0.0);
+        ptr::write_unaligned(this.add(PAN_Y_OFFSET).cast::<f32>(), 0.0);
+    }
+}
+
+pub fn set_pan_request(address: usize, pan_x: f32, pan_y: f32) {
+    if address == 0 || !pan_x.is_finite() || !pan_y.is_finite() {
+        return;
+    }
+
+    REQUESTED_PAN_X.store(pan_x.to_bits(), Ordering::Relaxed);
+    REQUESTED_PAN_Y.store(pan_y.to_bits(), Ordering::Relaxed);
+    REQUESTED_PAN_ADDRESS.store(address, Ordering::Release);
+    REQUESTED_PAN_CLEAR_ONCE.store(false, Ordering::Release);
+    REQUESTED_PAN_ACTIVE.store(true, Ordering::Release);
+}
+
+pub fn clear_pan_request(address: usize) {
+    if address == 0 {
+        REQUESTED_PAN_ACTIVE.store(false, Ordering::Release);
+        REQUESTED_PAN_CLEAR_ONCE.store(false, Ordering::Release);
+        REQUESTED_PAN_ADDRESS.store(0, Ordering::Release);
+        return;
+    }
+
+    REQUESTED_PAN_X.store(0.0f32.to_bits(), Ordering::Relaxed);
+    REQUESTED_PAN_Y.store(0.0f32.to_bits(), Ordering::Relaxed);
+    REQUESTED_PAN_ADDRESS.store(address, Ordering::Release);
+    REQUESTED_PAN_ACTIVE.store(false, Ordering::Release);
+    REQUESTED_PAN_CLEAR_ONCE.store(true, Ordering::Release);
 }
 
 unsafe fn capture(this: *mut u8) {
@@ -218,6 +287,10 @@ pub fn ensure_installed() -> Result<(), String> {
 }
 
 pub fn clear_candidates() {
+    REQUESTED_PAN_ACTIVE.store(false, Ordering::Release);
+    REQUESTED_PAN_CLEAR_ONCE.store(false, Ordering::Release);
+    REQUESTED_PAN_ADDRESS.store(0, Ordering::Release);
+
     for slot in &CANDIDATES {
         slot.clear();
     }
