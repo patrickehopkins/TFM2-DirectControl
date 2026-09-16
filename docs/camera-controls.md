@@ -2,11 +2,11 @@
 
 ## Validated behavior
 
-Middle-mouse drag is now **physically validated** and matches the intended MOBA-style grab-and-drag behavior. Harbinger calculates a desired camera center from total cursor displacement, but moves the camera only through TFM2's native pan inputs; the game's real camera remains authoritative. This eliminated the previous flicker, snap-back, and screen-to-world disagreement caused by directly overwriting derived camera-center fields.
+Middle-mouse drag is **physically validated** and matches the intended MOBA-style grab-and-drag behavior. Harbinger calculates a desired camera center from total cursor displacement, but moves the camera only through TFM2's native pan inputs; the game's real camera remains authoritative. This eliminated the earlier flicker, snap-back, and screen-to-world disagreement caused by directly overwriting derived camera-center fields.
 
 MMB drag itself is considered validated. Preserve its position-servo/native-pan mechanics unless a reproducible regression requires reopening them.
 
-Minimap camera relocation remains native TFM2 behavior and composes correctly with Direct Control's contextual RMB minimap commands when MMB is not held.
+Minimap camera relocation remains native TFM2 behavior and composes correctly with Direct Control's contextual RMB minimap commands.
 
 ## Match-wide availability
 
@@ -14,19 +14,15 @@ MMB drag and edge scrolling are **match-view QoL**, not champion-ownership featu
 
 Combat/control keybind mode may still switch between Direct Control and spectator behavior, but camera gestures must not disappear merely because no champion is selected.
 
-## MMB pointer-ownership rule
+## UI interaction during MMB
 
-Physical testing found one remaining integration problem: TFM2's UI pointer routing can temporarily stall camera integration while an MMB drag crosses interactive UI. The visible symptom is that camera motion pauses over a panel/minimap and then catches up after the cursor leaves that widget.
+Physical testing found one remaining integration problem in the otherwise-good MMB path: crossing interactive UI can temporarily stall camera integration, and the minimap can slow the drag while the cursor is over it. The desired end result is still that MMB behaves as a pure viewport-map drag rather than an interaction with match UI.
 
-The intended rule is now explicit: **while MMB is held, MMB camera drag owns pointer routing and native match UI is non-interactive to the pointer.** In practical terms:
+A first attempt tried to fake a harmless native pointer location while MMB was held. That was **physically rejected**: it made MMB stutter and caused visible UI flicker. Do not reintroduce synthetic pointer movement, pointer-coordinate rewriting, or broad LMB/RMB suppression as an MMB fix.
 
-- native UI hover/capture must not interrupt or slow camera drag;
-- the minimap, player cards, score/stat bars, and other widgets should behave as though they are not under the pointer for the duration of the MMB hold;
-- Harbinger must still read the real OS cursor, so Direct Control LMB/RMB gameplay commands on battlefield ground/characters continue to use the player's true pointer location while MMB is held;
-- native UI interaction is restored immediately when MMB is released;
-- ordinary minimap LMB camera relocation remains unchanged when MMB is not held.
+Current retry keeps the known-good physical cursor polling untouched. Harbinger publishes only the desired native pan values; the native camera detour now applies those values synchronously immediately before TFM2's own camera handler runs. This is intended to make UI hover irrelevant to the pan-field race without lying to the game's pointer system.
 
-The current implementation uses a narrow match-only window-procedure shim to hide the physical MMB pointer from native UI hit testing while leaving Harbinger's Win32 cursor/button polling untouched. Do not solve this by moving the OS cursor or by writing the derived camera center directly.
+If UI hover still stalls MMB after this pass, prefer restoring the last fully smooth MMB behavior rather than layering additional pointer-routing hacks onto it. A later deeper native UI/camera ownership investigation would then be the correct route.
 
 ## Edge-scroll completion
 
@@ -39,7 +35,7 @@ The confirmed failure pattern is highly specific:
 - top/bottom UI regions can suppress edge movement even though the OS cursor is physically at the real client edge;
 - full-view and Info/split-view edge geometry can therefore appear different because different UI occupies those areas.
 
-The current corrective approach preserves native camera authority and reproduces the good path: while the real cursor remains at an edge, Harbinger keeps the native pan input active and periodically posts a harmless synthetic mouse-move pulse at a safe battlefield coordinate. This should make stationary hover use the same continuous camera-update cadence observed when the user physically wiggles the mouse and should prevent top/bottom UI hover from gating the camera.
+The synthetic-mouse-movement experiment was physically rejected and removed. The current approach instead eliminates the asynchronous pan-field race: the camera driver publishes the requested edge-pan vector, and the already-existing native camera hook writes that vector synchronously at camera-handler entry. No fake mouse messages are generated and no UI hover state is modified.
 
 Required physical result:
 
@@ -47,7 +43,7 @@ Required physical result:
 - a completely stationary cursor glides continuously rather than ticking;
 - top/bottom bars do not create dead camera zones;
 - edge speed remains useful and consistent;
-- no camera-center writes or second camera authority are reintroduced.
+- no camera-center writes, synthetic pointer events, or second camera authority are introduced.
 
 ## Follow/recenter
 
