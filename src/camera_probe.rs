@@ -5,17 +5,19 @@
 //! +0xE4/+0xE8; doing that created a second camera authority and caused flicker,
 //! snap-back, and screen-to-world disagreement.
 //!
-//! Camera gestures publish desired native pan values to `base`; the native hook applies
-//! them synchronously immediately before TFM2's own camera handler runs. The game stays
+//! MMB drag publishes desired native pan values to `base`; the native hook applies them
+//! synchronously immediately before TFM2's own camera handler runs. The game stays
 //! authoritative for actual camera-center integration, bounds, follow state, minimap
 //! camera jumps, and rendering.
 //!
-//! These camera gestures are match-view QoL, not manual-control ownership. MMB drag
-//! and edge scroll remain available while spectating after `End` releases a champion.
+//! MMB drag and wheel zoom are match-view QoL, not manual-control ownership. They remain
+//! available while spectating after `End` releases a champion.
 //!
-//! Do not synthesize mouse movement or rewrite native pointer coordinates to keep the
-//! camera alive. Those experiments visibly disturbed UI hover state and degraded the
-//! validated MMB gesture. Physical cursor state is read only through Win32 polling.
+//! Screen-edge scrolling is deliberately shelved. Do not synthesize mouse movement or
+//! post fake pointer messages to keep the camera alive; that experiment visibly disturbed
+//! UI hover state. The only pointer-routing exception in this pass is a narrow MMB-only
+//! shim: real physical WM_MOUSEMOVE events are forwarded to native UI at an inert
+//! battlefield coordinate while Harbinger continues reading the true OS cursor itself.
 
 #[path = "camera_probe/base.rs"]
 mod base;
@@ -24,7 +26,10 @@ pub use base::CameraSnapshot;
 
 use std::{
     ffi::c_void,
-    sync::{Mutex, OnceLock},
+    sync::{
+        atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering},
+        Mutex, OnceLock,
+    },
     thread,
     time::Duration,
 };
@@ -35,10 +40,6 @@ const UI_FALLBACK_H: f32 = 1080.0;
 const WORLD_MIN: f32 = 0.0;
 const WORLD_MAX: f32 = 960.0;
 
-const EDGE_SCROLL_MARGIN_X_PX: i32 = 18;
-const EDGE_SCROLL_MARGIN_Y_PX: i32 = 84;
-const NATIVE_EDGE_PAN_SPEED: f32 = 200.0;
-
 // MMB is position-driven rather than velocity-driven. The cursor defines an exact
 // desired camera center. A proportional native-pan command continuously closes the
 // gap between TFM2's real captured center and that desired center. There is no drag
@@ -47,6 +48,23 @@ const NATIVE_EDGE_PAN_SPEED: f32 = 200.0;
 const DRAG_POSITION_GAIN: f32 = 60.0;
 const CAMERA_CONTROL_POLL_MS: u64 = 2;
 const VK_MBUTTON_CODE: i32 = 0x04;
+
+const GWLP_WNDPROC: i32 = -4;
+const WM_MOUSEMOVE: u32 = 0x0200;
+const WM_LBUTTONDOWN: u32 = 0x0201;
+const WM_LBUTTONUP: u32 = 0x0202;
+const WM_LBUTTONDBLCLK: u32 = 0x0203;
+const WM_RBUTTONDOWN: u32 = 0x0204;
+const WM_RBUTTONUP: u32 = 0x0205;
+const WM_RBUTTONDBLCLK: u32 = 0x0206;
+const WM_MBUTTONDOWN: u32 = 0x0207;
+const WM_MBUTTONUP: u32 = 0x0208;
+const WM_MBUTTONDBLCLK: u32 = 0x0209;
+const WM_MOUSEWHEEL: u32 = 0x020A;
+const MK_LBUTTON: usize = 0x0001;
+const MK_RBUTTON: usize = 0x0002;
+const MK_MBUTTON: usize = 0x0010;
+const WHEEL_DELTA: i32 = 120;
 
 #[repr(C)]
 struct WinPoint {
@@ -75,6 +93,15 @@ extern "system" {
     fn GetCursorPos(point: *mut WinPoint) -> i32;
     fn ScreenToClient(hwnd: *mut c_void, point: *mut WinPoint) -> i32;
     fn GetClientRect(hwnd: *mut c_void, rect: *mut WinRect) -> i32;
+    fn SetWindowLongPtrW(hwnd: *mut c_void, index: i32, new_long: isize) -> isize;
+    fn CallWindowProcW(
+        previous: isize,
+        hwnd: *mut c_void,
+        message: u32,
+        wparam: usize,
+        lparam: isize,
+    ) -> isize;
+    fn DefWindowProcW(hwnd: *mut c_void, message: u32, wparam: usize, lparam: isize) -> isize;
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -113,6 +140,20 @@ impl Default for CameraControlState {
 static DRIVER_STARTED: OnceLock<()> = OnceLock::new();
 static DRIVER_STATE: OnceLock<Mutex<CameraControlState>> = OnceLock::new();
 
+// The window shim never generates messages of its own. During MMB it only changes the
+// coordinates of real incoming mouse-move messages before native UI sees them. Harbinger
+// reads the real pointer separately with GetCursorPos, so camera motion remains anchored
+// to the physical mouse while cards/buttons/panels never become the native hover target.
+static SHIM_HWND: AtomicUsize = AtomicUsize::new(0);
+static ORIGINAL_WNDPROC: AtomicUsize = AtomicUsize::new(0);
+static MATCH_CAMERA_ACTIVE: AtomicBool = AtomicBool::new(false);
+static ACTIVE_CAMERA_ADDRESS: AtomicUsize = AtomicUsize::new(0);
+static MMB_UI_LOCK_ACTIVE: AtomicBool = AtomicBool::new(false);
+static VIRTUAL_HOVER_FLIP: AtomicBool = AtomicBool::new(false);
+static SWALLOWED_LBUTTON: AtomicBool = AtomicBool::new(false);
+static SWALLOWED_RBUTTON: AtomicBool = AtomicBool::new(false);
+static WHEEL_REMAINDER: AtomicI32 = AtomicI32::new(0);
+
 fn driver_state() -> &'static Mutex<CameraControlState> {
     DRIVER_STATE.get_or_init(|| Mutex::new(CameraControlState::default()))
 }
@@ -123,7 +164,169 @@ fn preferred_snapshot() -> Option<CameraSnapshot> {
         .max_by_key(|candidate| candidate.calls)
 }
 
-fn foreground_cursor() -> Option<(i32, i32, i32, i32)> {
+fn pack_client_point(x: i32, y: i32) -> isize {
+    let packed_x = x as i16 as u16 as u32;
+    let packed_y = y as i16 as u16 as u32;
+    (packed_x | (packed_y << 16)) as isize
+}
+
+unsafe fn virtual_battlefield_lparam(hwnd: *mut c_void) -> Option<isize> {
+    let mut rect = WinRect {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    if GetClientRect(hwnd, &mut rect) == 0 {
+        return None;
+    }
+
+    let width = rect.right - rect.left;
+    let height = rect.bottom - rect.top;
+    if width < 4 || height < 4 {
+        return None;
+    }
+
+    // Quarter-width / half-height is inside the battlefield in both validated match
+    // layouts. Alternate by one physical pixel only when a *real* mouse-move arrives;
+    // this prevents an event framework from coalescing repeated identical coordinates
+    // without creating any synthetic movement or touching the OS cursor.
+    let flip = VIRTUAL_HOVER_FLIP.fetch_xor(true, Ordering::AcqRel);
+    let base_x = (width / 4).clamp(1, width - 2);
+    let x = (base_x + if flip { 1 } else { 0 }).clamp(1, width - 2);
+    let y = (height / 2).clamp(1, height - 2);
+    Some(pack_client_point(x, y))
+}
+
+fn wheel_steps(delta: i32) -> i32 {
+    loop {
+        let previous = WHEEL_REMAINDER.load(Ordering::Acquire);
+        let total = previous.saturating_add(delta);
+        let steps = total / WHEEL_DELTA;
+        let remainder = total - steps * WHEEL_DELTA;
+        if WHEEL_REMAINDER
+            .compare_exchange(previous, remainder, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+        {
+            return steps;
+        }
+    }
+}
+
+unsafe extern "system" fn camera_pointer_wndproc(
+    hwnd: *mut c_void,
+    message: u32,
+    wparam: usize,
+    lparam: isize,
+) -> isize {
+    let original = ORIGINAL_WNDPROC.load(Ordering::Acquire) as isize;
+    if original == 0 {
+        return DefWindowProcW(hwnd, message, wparam, lparam);
+    }
+
+    if !MATCH_CAMERA_ACTIVE.load(Ordering::Acquire) {
+        return CallWindowProcW(original, hwnd, message, wparam, lparam);
+    }
+
+    match message {
+        WM_MBUTTONDOWN | WM_MBUTTONDBLCLK => {
+            MMB_UI_LOCK_ACTIVE.store(true, Ordering::Release);
+            // MMB has no native match function here; keep it exclusively as the camera
+            // grab button so a widget cannot capture the drag on press.
+            return 0;
+        }
+        WM_MBUTTONUP => {
+            MMB_UI_LOCK_ACTIVE.store(false, Ordering::Release);
+            SWALLOWED_LBUTTON.store(false, Ordering::Release);
+            SWALLOWED_RBUTTON.store(false, Ordering::Release);
+            // Do not synthesize a hover-restoration move. Native UI resumes on the next
+            // genuine mouse message at the real pointer location.
+            return 0;
+        }
+        WM_MOUSEMOVE if MMB_UI_LOCK_ACTIVE.load(Ordering::Acquire) => {
+            if let Some(safe) = virtual_battlefield_lparam(hwnd) {
+                let clean_wparam = wparam & !(MK_LBUTTON | MK_RBUTTON | MK_MBUTTON);
+                return CallWindowProcW(original, hwnd, message, clean_wparam, safe);
+            }
+            return 0;
+        }
+        WM_LBUTTONDOWN | WM_LBUTTONDBLCLK if MMB_UI_LOCK_ACTIVE.load(Ordering::Acquire) => {
+            // Direct Control still sees the physical button through GetAsyncKeyState.
+            // Only native UI activation is suppressed while MMB owns pointer routing.
+            SWALLOWED_LBUTTON.store(true, Ordering::Release);
+            return 0;
+        }
+        WM_LBUTTONUP if SWALLOWED_LBUTTON.swap(false, Ordering::AcqRel) => {
+            return 0;
+        }
+        WM_RBUTTONDOWN | WM_RBUTTONDBLCLK if MMB_UI_LOCK_ACTIVE.load(Ordering::Acquire) => {
+            SWALLOWED_RBUTTON.store(true, Ordering::Release);
+            return 0;
+        }
+        WM_RBUTTONUP if SWALLOWED_RBUTTON.swap(false, Ordering::AcqRel) => {
+            return 0;
+        }
+        WM_MOUSEWHEEL => {
+            // Do not change zoom in the middle of an anchored MMB drag; that would alter
+            // the screen/world scale underneath the captured drag origin.
+            if MMB_UI_LOCK_ACTIVE.load(Ordering::Acquire) {
+                return 0;
+            }
+
+            let delta = ((wparam >> 16) & 0xffff) as u16 as i16 as i32;
+            let steps = wheel_steps(delta);
+            let address = ACTIVE_CAMERA_ADDRESS.load(Ordering::Acquire);
+            if address != 0 && steps != 0 {
+                base::queue_zoom_steps(address, steps);
+            }
+            // Wheel is now a match-wide camera control; do not let a hovered widget
+            // consume the same notch for unrelated UI behavior.
+            return 0;
+        }
+        _ => {}
+    }
+
+    CallWindowProcW(original, hwnd, message, wparam, lparam)
+}
+
+fn release_pointer_shim() {
+    let hwnd = SHIM_HWND.swap(0, Ordering::AcqRel);
+    let original = ORIGINAL_WNDPROC.swap(0, Ordering::AcqRel);
+
+    MMB_UI_LOCK_ACTIVE.store(false, Ordering::Release);
+    VIRTUAL_HOVER_FLIP.store(false, Ordering::Release);
+    SWALLOWED_LBUTTON.store(false, Ordering::Release);
+    SWALLOWED_RBUTTON.store(false, Ordering::Release);
+    WHEEL_REMAINDER.store(0, Ordering::Release);
+
+    if hwnd != 0 && original != 0 {
+        unsafe {
+            let _ = SetWindowLongPtrW(hwnd as *mut c_void, GWLP_WNDPROC, original as isize);
+        }
+    }
+}
+
+fn ensure_pointer_shim(hwnd: usize) {
+    if hwnd == 0 || SHIM_HWND.load(Ordering::Acquire) == hwnd {
+        return;
+    }
+
+    release_pointer_shim();
+
+    unsafe {
+        let previous = SetWindowLongPtrW(
+            hwnd as *mut c_void,
+            GWLP_WNDPROC,
+            camera_pointer_wndproc as usize as isize,
+        );
+        if previous != 0 {
+            ORIGINAL_WNDPROC.store(previous as usize, Ordering::Release);
+            SHIM_HWND.store(hwnd, Ordering::Release);
+        }
+    }
+}
+
+fn foreground_cursor() -> Option<(usize, i32, i32, i32, i32)> {
     unsafe {
         let hwnd = GetForegroundWindow();
         if hwnd.is_null() {
@@ -160,24 +363,8 @@ fn foreground_cursor() -> Option<(i32, i32, i32, i32)> {
             return None;
         }
 
-        Some((point.x, point.y, width, height))
+        Some((hwnd as usize, point.x, point.y, width, height))
     }
-}
-
-fn edge_axis(mouse_x: i32, mouse_y: i32, width: i32, height: i32) -> (f32, f32) {
-    let left = mouse_x <= EDGE_SCROLL_MARGIN_X_PX;
-    let right = mouse_x >= width - EDGE_SCROLL_MARGIN_X_PX - 1;
-    let up = mouse_y <= EDGE_SCROLL_MARGIN_Y_PX;
-    let down = mouse_y >= height - EDGE_SCROLL_MARGIN_Y_PX - 1;
-
-    let mut x = (right as i32 - left as i32) as f32;
-    let mut y = (down as i32 - up as i32) as f32;
-    if x != 0.0 && y != 0.0 {
-        const INV_SQRT_2: f32 = 0.707_106_77;
-        x *= INV_SQRT_2;
-        y *= INV_SQRT_2;
-    }
-    (x, y)
 }
 
 fn clamp_center(value: f32) -> f32 {
@@ -214,17 +401,24 @@ fn publish_pan(state: &mut CameraControlState, address: usize, pan_x: f32, pan_y
     }
 }
 
+fn disable_match_camera(state: &mut CameraControlState) {
+    MATCH_CAMERA_ACTIVE.store(false, Ordering::Release);
+    ACTIVE_CAMERA_ADDRESS.store(0, Ordering::Release);
+    reset_gesture(state);
+    release_pointer_shim();
+}
+
 fn camera_control_step(state: &mut CameraControlState) {
-    // Camera gestures remain active throughout the interactive match, regardless of
-    // whether a champion is currently under manual control. Releasing with `End`
-    // therefore returns combat to spectator/AI control without sacrificing MMB/edge QoL.
+    // MMB and wheel zoom remain available throughout the interactive match, regardless
+    // of whether a champion is currently under manual control. Screen-edge panning is
+    // intentionally absent from this driver while that feature is shelved.
     if !camera_match_active() {
-        reset_gesture(state);
+        disable_match_camera(state);
         return;
     }
 
     let Some(camera) = preferred_snapshot() else {
-        reset_gesture(state);
+        disable_match_camera(state);
         return;
     };
     if camera.address == 0
@@ -235,17 +429,23 @@ fn camera_control_step(state: &mut CameraControlState) {
         || camera.extent_a <= 0.0
         || camera.extent_b <= 0.0
     {
-        reset_gesture(state);
+        disable_match_camera(state);
         return;
     }
 
-    let Some((mouse_x, mouse_y, width, height)) = foreground_cursor() else {
-        reset_gesture(state);
+    let Some((hwnd, mouse_x, mouse_y, width, height)) = foreground_cursor() else {
+        disable_match_camera(state);
         return;
     };
 
+    ensure_pointer_shim(hwnd);
+    ACTIVE_CAMERA_ADDRESS.store(camera.address, Ordering::Release);
+    MATCH_CAMERA_ACTIVE.store(true, Ordering::Release);
+
     let middle_down = unsafe { GetAsyncKeyState(VK_MBUTTON_CODE) < 0 };
-    let (pan_x, pan_y) = if middle_down {
+    MMB_UI_LOCK_ACTIVE.store(middle_down, Ordering::Release);
+
+    if middle_down {
         if !state.middle_down {
             state.middle_down = true;
             state.drag_start_mouse_x = mouse_x;
@@ -267,20 +467,13 @@ fn camera_control_step(state: &mut CameraControlState) {
 
         let desired_x = clamp_center(state.drag_start_center_x - world_dx);
         let desired_y = clamp_center(state.drag_start_center_y - world_dy);
-        (
-            (desired_x - camera.center_x) * DRAG_POSITION_GAIN,
-            (desired_y - camera.center_y) * DRAG_POSITION_GAIN,
-        )
+        let pan_x = (desired_x - camera.center_x) * DRAG_POSITION_GAIN;
+        let pan_y = (desired_y - camera.center_y) * DRAG_POSITION_GAIN;
+        publish_pan(state, camera.address, pan_x, pan_y);
     } else {
         state.middle_down = false;
-        let (axis_x, axis_y) = edge_axis(mouse_x, mouse_y, width, height);
-        (
-            axis_x * NATIVE_EDGE_PAN_SPEED,
-            axis_y * NATIVE_EDGE_PAN_SPEED,
-        )
-    };
-
-    publish_pan(state, camera.address, pan_x, pan_y);
+        publish_pan(state, camera.address, 0.0, 0.0);
+    }
 }
 
 fn camera_control_loop() {
@@ -308,7 +501,11 @@ pub fn ensure_installed() -> Result<(), String> {
 
 pub fn clear_candidates() {
     if let Ok(mut state) = driver_state().lock() {
-        reset_gesture(&mut state);
+        disable_match_camera(&mut state);
+    } else {
+        MATCH_CAMERA_ACTIVE.store(false, Ordering::Release);
+        ACTIVE_CAMERA_ADDRESS.store(0, Ordering::Release);
+        release_pointer_shim();
     }
     base::clear_candidates();
 }
