@@ -5,11 +5,12 @@
 //! input/update handler and capture only a few verified fields from its `this`
 //! pointer.
 //!
-//! Match-wide camera gestures publish requested native pan values into atomics. The
-//! detoured camera handler applies those requests synchronously immediately before
-//! TFM2's original handler runs. This avoids racing the game's own camera/input code
-//! from a background thread while still leaving TFM2 authoritative for camera-center
-//! integration, bounds, follow state, minimap relocation, and rendering.
+//! Match-wide camera gestures publish requested native pan and zoom values into
+//! atomics. The detoured camera handler applies those requests synchronously
+//! immediately before TFM2's original handler runs. This avoids racing the game's
+//! own camera/input code from a background thread while still leaving TFM2
+//! authoritative for camera-center integration, bounds, follow state, minimap
+//! relocation, and rendering.
 //!
 //! Keep every version-specific RVA/offset in this module. Higher-level camera/control
 //! code should consume `CameraSnapshot` and never know TFM2's private object layout.
@@ -18,7 +19,7 @@ use std::{
     ffi::c_void,
     ptr,
     sync::{
-        atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering},
         OnceLock,
     },
 };
@@ -35,6 +36,9 @@ const EXTENT_B_OFFSET: usize = 0xF0;
 const MODE_OFFSET: usize = 0xF4;
 const PAN_X_OFFSET: usize = 0x418;
 const PAN_Y_OFFSET: usize = 0x41C;
+const ZOOM_STEP: f32 = 0.25;
+const ZOOM_MIN: f32 = 0.5;
+const ZOOM_MAX: f32 = 3.0;
 
 // The first 12 bytes of the confirmed handler are eight whole push instructions,
 // so they can be copied to a trampoline without relocating RIP-relative code.
@@ -135,6 +139,12 @@ static REQUESTED_PAN_Y: AtomicU32 = AtomicU32::new(0);
 static REQUESTED_PAN_ACTIVE: AtomicBool = AtomicBool::new(false);
 static REQUESTED_PAN_CLEAR_ONCE: AtomicBool = AtomicBool::new(false);
 
+// Mouse-wheel input is captured at the match window, but the version-specific zoom
+// field is only changed here, synchronously on the camera-handler thread. Multiple
+// notches may accumulate before the next matching camera callback.
+static REQUESTED_ZOOM_ADDRESS: AtomicUsize = AtomicUsize::new(0);
+static REQUESTED_ZOOM_STEPS: AtomicI32 = AtomicI32::new(0);
+
 // Observed machine-level signature at the two known call sites. Only the first
 // argument matters to us; preserving the rest exactly lets the original handler
 // continue normally through the trampoline.
@@ -157,6 +167,7 @@ unsafe extern "system" fn camera_handler_hook(
     arg6: usize,
     arg7: usize,
 ) {
+    inject_requested_zoom(this);
     inject_requested_pan(this);
 
     let trampoline = TRAMPOLINE.load(Ordering::Acquire);
@@ -166,6 +177,33 @@ unsafe extern "system" fn camera_handler_hook(
     }
 
     capture(this);
+}
+
+unsafe fn inject_requested_zoom(this: *mut u8) {
+    if this.is_null() {
+        return;
+    }
+
+    let address = this as usize;
+    if REQUESTED_ZOOM_ADDRESS.load(Ordering::Acquire) != address {
+        return;
+    }
+
+    let steps = REQUESTED_ZOOM_STEPS.swap(0, Ordering::AcqRel);
+    if steps == 0 {
+        return;
+    }
+
+    let zoom = ptr::read_unaligned(this.add(ZOOM_OFFSET).cast::<f32>());
+    if !zoom.is_finite() {
+        return;
+    }
+
+    // Static and runtime RE confirmed native zoom moves in 0.25 increments and clamps
+    // to 0.5..3.0. Writing the requested zoom before the original handler lets TFM2's
+    // own camera update continue to own its derived extents and render state.
+    let next = (zoom + steps as f32 * ZOOM_STEP).clamp(ZOOM_MIN, ZOOM_MAX);
+    ptr::write_unaligned(this.add(ZOOM_OFFSET).cast::<f32>(), next);
 }
 
 unsafe fn inject_requested_pan(this: *mut u8) {
@@ -191,6 +229,15 @@ unsafe fn inject_requested_pan(this: *mut u8) {
         ptr::write_unaligned(this.add(PAN_X_OFFSET).cast::<f32>(), 0.0);
         ptr::write_unaligned(this.add(PAN_Y_OFFSET).cast::<f32>(), 0.0);
     }
+}
+
+pub fn queue_zoom_steps(address: usize, steps: i32) {
+    if address == 0 || steps == 0 {
+        return;
+    }
+
+    REQUESTED_ZOOM_ADDRESS.store(address, Ordering::Release);
+    REQUESTED_ZOOM_STEPS.fetch_add(steps, Ordering::AcqRel);
 }
 
 pub fn set_pan_request(address: usize, pan_x: f32, pan_y: f32) {
@@ -290,6 +337,8 @@ pub fn clear_candidates() {
     REQUESTED_PAN_ACTIVE.store(false, Ordering::Release);
     REQUESTED_PAN_CLEAR_ONCE.store(false, Ordering::Release);
     REQUESTED_PAN_ADDRESS.store(0, Ordering::Release);
+    REQUESTED_ZOOM_STEPS.store(0, Ordering::Release);
+    REQUESTED_ZOOM_ADDRESS.store(0, Ordering::Release);
 
     for slot in &CANDIDATES {
         slot.clear();
