@@ -1,63 +1,46 @@
 # Camera controls
 
-## Validated behavior
+## Status — locked / validated
 
-Middle-mouse drag is **physically validated** and matches the intended MOBA-style grab-and-drag behavior. Harbinger calculates a desired camera center from total cursor displacement, but moves the camera only through TFM2's native pan inputs; the game's real camera remains authoritative. This eliminated the earlier flicker, snap-back, and screen-to-world disagreement caused by directly overwriting derived camera-center fields.
+Camera controls are considered **done for now**. Do not alter the validated MMB or wheel behavior during unrelated work. Reopen this area only for the planned resolution/UI-scaling compatibility audit or for a reproducible regression.
 
-MMB drag itself is considered validated. Preserve its position-servo/native-pan mechanics unless a reproducible regression requires reopening them.
+Physically validated behavior:
 
-Minimap camera relocation remains native TFM2 behavior and composes correctly with Direct Control's contextual RMB minimap commands.
+- **MMB grab-and-drag — PASS.** The camera follows total physical cursor displacement at the desired 1:1 feel without a speed ceiling, catch-up teleport, flicker, snap-back, or screen-to-world disagreement.
+- **MMB over native UI — PASS.** The drag continues normally across the minimap, player cards, buttons, and top/bottom match UI. Those UI regions no longer stall or slow the camera while MMB is held.
+- **Mouse-wheel zoom — PASS.** Wheel up zooms in and wheel down zooms out using the native-sized `0.25` step and validated `0.5 .. 3.0` range.
+- **Match-wide availability — PASS.** MMB drag and wheel zoom remain available after `End` releases the controlled champion and returns the user to ordinary spectator/AI control.
+- Native minimap LMB camera relocation continues to compose with Direct Control's contextual RMB minimap commands.
 
-## Match-wide availability
+## Architecture to preserve
 
-MMB drag and mouse-wheel zoom are **match-view QoL**, not champion-ownership features. They should remain available throughout an interactive match whether the user is manually controlling a champion or spectating after `End` releases control.
+Harbinger never writes the derived camera center at `+0xE4/+0xE8`. Earlier direct-center ownership caused flicker, snap-back, and disagreement between the rendered camera and RMB world projection.
 
-Combat/control keybind mode may still switch between Direct Control and spectator behavior, but these camera gestures must not disappear merely because no champion is selected.
+MMB instead computes a desired center from total physical cursor displacement and publishes native pan requests. The version-checked camera hook applies those requests synchronously immediately before TFM2's own camera handler runs, leaving TFM2 authoritative for camera-center integration, bounds, follow state, minimap relocation, and rendering.
 
-## UI interaction during MMB
+While MMB is held, a narrow window-procedure shim prevents native match UI from capturing the gesture. Harbinger still reads the true OS cursor directly for camera displacement. Real incoming mouse-move events are presented to native UI at an inert battlefield coordinate, and native MMB/UI click handling is suppressed for the duration of the hold. No synthetic mouse messages are generated and the OS cursor is never moved. Releasing MMB immediately restores ordinary native UI interaction.
 
-Physical testing narrowed the remaining MMB integration problem substantially. The position-servo behavior itself is correct, and MMB now moves normally across the minimap, but native UI regions such as player cards, buttons, and the top/bottom match bars can still stall camera integration while the physical cursor crosses them.
+Wheel input is queued to the active camera and applied synchronously by the same native camera hook. Wheel zoom is ignored during an active MMB hold so the captured drag scale cannot change underneath its anchor.
 
-A previous attempt used synthetic mouse movement plus broad pointer-coordinate spoofing. That was **physically rejected**: it made MMB stutter and caused visible UI flicker. Synthetic mouse messages, cursor movement, and periodic fake edge wakes are prohibited going forward.
-
-The current pass is the final narrow retry before accepting the known-good MMB behavior as-is. While MMB is held:
-
-- Harbinger still reads the true OS cursor directly for the actual drag displacement;
-- native MMB press/release is swallowed because MMB has no desired native match action;
-- each **real** incoming mouse-move event is forwarded to native UI at a stable inert battlefield coordinate, alternating by only one physical pixel so the native update path cannot collapse identical events;
-- no extra mouse-move messages are generated;
-- native LMB/RMB UI activation is suppressed during the MMB hold, while Direct Control can still observe the physical buttons through `GetAsyncKeyState` for gameplay input;
-- releasing MMB immediately returns pointer ownership to the native UI, with no synthetic hover-restoration message.
-
-The intended result is that MMB behaves as a pure viewport-map gesture: cards, buttons, bars, and the minimap cannot capture or slow it. If this pass causes stutter, visible UI flicker, or any other regression, revert the UI-routing shim and keep the previously validated MMB behavior rather than adding another workaround.
-
-## Mouse-wheel zoom
-
-Mouse-wheel zoom is now part of the match-wide camera QoL test:
-
-- wheel **up** requests one native-sized `+0.25` zoom step (zoom in);
-- wheel **down** requests one `-0.25` step (zoom out);
-- zoom remains clamped to the validated native `0.5 .. 3.0` range;
-- wheel delta is accumulated in standard 120-unit notches so high-resolution wheels do not become excessively sensitive;
-- wheel input is queued to the active camera and applied synchronously by the existing native camera hook rather than mutating camera state from the UI thread;
-- wheel zoom is intentionally ignored during an active MMB hold so the drag's captured screen/world scale cannot change underneath its anchor.
+These mechanics are now validated behavior. Preserve them unless the later scaling audit proves that one of their coordinate assumptions is wrong.
 
 ## Screen-edge scrolling — shelved
 
-Custom screen-edge scrolling is **shelved for now by design**. All current Harbinger edge detection/pan behavior has been removed from the active camera driver rather than leaving a half-working implementation in place.
+Custom screen-edge scrolling is **shelved by design** and is not part of the current release-critical camera behavior. All Harbinger edge detection/pan behavior has been removed from the active camera driver.
 
-The unresolved behavior is documented for a possible later revisit: stationary edge hover ticked instead of gliding smoothly, and top/bottom UI regions suppressed edge movement. Physical mouse motion while touching an edge made the native path smoother, but attempts to manufacture that cadence with synthetic mouse messages created visible UI flicker and were rejected.
+The unresolved behavior is retained only as investigation history: stationary edge hover ticked rather than gliding smoothly, and top/bottom UI regions suppressed edge movement. Physical mouse motion while touching an edge made the native path smoother, but manufacturing that cadence with synthetic mouse messages created visible UI flicker and was rejected.
 
-If edge scrolling is revisited, investigate the native camera/update ownership path directly. Do not restore the synthetic-mouse wake approach merely because it produced continuous movement.
+If edge scrolling is ever revisited, investigate the native camera/update ownership path directly. Do not restore synthetic mouse wakes, direct camera-center ownership, or other workarounds that disturb native pointer/UI state.
 
-## Resolution / UI-scaling risk
+## Resolution / UI-scaling audit
 
-Current physical validation has been performed at one native-resolution setup. A dedicated pre-release compatibility pass must verify that Direct Control is not accidentally dependent on that exact resolution, aspect ratio, Windows DPI scale, or in-game UI scaling.
+Current physical validation has been performed on one native-resolution setup. A dedicated pre-release compatibility pass must verify that resolution, window size, aspect ratio, Windows DPI/display scaling, or any in-game UI-scale option does not invalidate coordinate assumptions.
 
-Most gameplay targeting already converts the physical cursor through live `draw_map_size("UI")`, live `ingame.center_log`, and live minimap rectangles. MMB is the most obvious remaining risk because its camera driver currently converts physical cursor displacement using the validated `1920 x 1080` logical-UI assumption outside `StableClient`.
+Most gameplay targeting already converts the physical cursor through live `draw_map_size("UI")`, live `ingame.center_log`, and live minimap rectangles. MMB is the highest-risk path because its camera driver currently converts physical cursor displacement using the validated `1920 x 1080` logical-UI assumption outside `StableClient`.
 
-The later compatibility audit should cover at least multiple 16:9 resolutions/window sizes, both full and Info/split match layouts, any available in-game UI-scale setting, and a non-default Windows display scale if practical. Re-test RMB projection, skill aim, minimap input, MMB 1:1 drag, wheel zoom, and HUD/click geometry. If MMB scaling fails, publish the live UI/battlefield geometry from the stable client to the camera adapter rather than adding more resolution-specific constants.
+The compatibility audit should cover multiple 16:9 resolutions/window sizes, both full and Info/split match layouts, any available in-game UI-scale setting, and a non-default Windows display scale if practical. Re-test RMB projection, skill aim, minimap input, MMB 1:1 drag, wheel zoom, HUD/click geometry, and UI bypass behavior during MMB. If MMB scaling fails, publish live UI/battlefield geometry from the stable client to the camera adapter rather than adding resolution-specific constants.
 
-## Follow/recenter
+## Later optional camera polish
 
-A dedicated hold-to-center/follow action (for example Space) remains desirable after the current MMB/wheel camera pass is stable. Persistent follow/lock already exists natively through TFM2's F-key camera behavior and can later be exposed more cleanly through the custom shortcut pass.
+- **Screen-edge scrolling:** shelved until/unless a deeper native-camera route is worth revisiting.
+- **Space recenter/follow:** still desirable as optional QoL, but not part of the now-validated camera milestone. Persistent follow/lock already exists natively through TFM2's F-key camera behavior and can later be exposed through the custom shortcut pass.
