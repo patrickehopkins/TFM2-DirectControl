@@ -9,7 +9,7 @@ This file records the current functionality-first scope and implementation prior
 ## Implementation priority
 
 1. **Hold/Stop** — **validated.** `H` is the current binding because native `S` pauses match presentation. It stops movement, attacking, skill aim, and Return/recall while retaining manual ownership.
-2. **Auto-attack chase timing** — **validated strongly.** When an exact-target Attack is temporarily illegal, Direct Control now asks TFM2 whether literal `MoveTo(target)` is legal on that exact simulation frame. Legal movement resumes pursuit immediately; illegal movement falls back to hold. Physical testing showed this closely matches desired attack/chase cadence without inventing a cooldown or windup timer.
+2. **Auto-attack chase timing** — **validated strongly.** When an exact-target Attack is temporarily illegal, Direct Control asks TFM2 whether literal `MoveTo(target)` is legal on that exact simulation frame. Legal movement resumes pursuit immediately; illegal movement falls back to hold.
 3. **`End` — temporary release to AI / return to spectator** — **validated.**
    - releases only the currently controlled champion;
    - restores normal AI control immediately;
@@ -22,113 +22,113 @@ This file records the current functionality-first scope and implementation prior
    - acquire the nearest currently legal target to the controlled champion, then retain it through the normal exact-target attack/chase timing;
    - after the acquired target dies, becomes untargetable, or leaves vision, resume the original attack-move destination and allow a new legal target to be acquired;
    - do not auto-hunt distant visible enemies before they enter legal basic-attack range;
-   - physical testing completed without complications;
-   - native TFM2 `A = Back 10 Seconds` must be remapped during development unless/until shortcut integration can prevent the conflict.
+   - native TFM2 `A = Back 10 Seconds` must be remapped during development unless/until shortcut integration prevents the conflict.
 5. **Single-target skill chase + follow-up attack** — **validated.**
    - a confirmed hostile Target skill that is currently out of range retains the exact clicked entity and moves toward it until the skill becomes legal;
-   - runtime validator evidence is used conservatively to distinguish hostile Target skills from Direction/Position/Self actions rather than treating every failed entity click as a chase request;
-   - cast the skill immediately once the exact Target input becomes legal;
-   - after a successful hostile single-target cast, transition that same entity into the existing exact-target auto-attack/chase behavior without requiring another click;
+   - runtime validator evidence is used conservatively to distinguish hostile Target skills from Direction/Position/Self actions;
+   - cast immediately once the exact Target input becomes legal;
+   - after a successful hostile single-target cast, transition that same entity into exact-target auto-attack/chase behavior;
    - if the target dies, becomes untargetable, changes relation, or leaves legal vision before the cast, drop the pending chase rather than tracking through fog;
    - locked-slot validation remains ahead of all skill probing.
 6. **Minimap movement** — **validated in both live UI layouts.**
-   - recognize only the minimap belonging to the currently active match layout rather than leaving both calibrated minimap hitboxes live simultaneously;
-   - contextual RMB behavior is intentionally preserved: ground issues MoveTo and hostile markers issue exact-target Attack;
+   - recognize only the minimap belonging to the currently active match layout;
+   - contextual RMB is preserved: ground issues MoveTo and hostile markers issue exact-target Attack;
    - minimap input is camera-independent and does not fall through to ordinary battlefield projection;
    - current armed-skill/minimap ray behavior is acceptable and intentionally unchanged for now.
 7. **Universal skill use while on cooldown** — **validated.**
    - while Q/W/R is on cooldown, pressing/confirming it produces **no gameplay response**;
-   - do not arm/ray-cast a cooldown skill;
-   - do not queue or begin single-target chase for a cooldown skill;
-   - do not queue a delayed cast;
-   - later cooldown UI should provide explicit red feedback/readability (for example `Q ON COOLDOWN`) without changing the no-response gameplay rule.
-8. **MOBA-style camera movement** — **current polish / physical testing.**
-   - MMB grab-and-drag is **physically validated** and matches the desired 1:1 cursor-driven behavior;
-   - MMB and wheel zoom are match-wide QoL and remain active after `End` returns the champion to AI/spectator mode;
-   - one final MMB/UI-integration pass is active: while MMB is held, native match UI should effectively stop existing as an interactive pointer target, while Harbinger continues to read the true physical cursor for camera displacement and gameplay input;
-   - the final retry may reroute only **real incoming** mouse-move events to an inert battlefield coordinate while MMB is held; it must not generate/post synthetic mouse movement, move the OS cursor, or reintroduce direct camera-center writes;
-   - if that narrow pass causes stutter, flicker, or other regressions, revert the UI-routing shim and keep the previously validated MMB behavior rather than adding another workaround;
-   - add match-wide mouse-wheel zoom: wheel up = zoom in, wheel down = zoom out, using the native `0.25` step and `0.5 .. 3.0` limits;
-   - **screen-edge scrolling is shelved for now** and all Harbinger edge-scroll behavior should remain removed from the active driver. Preserve the investigation notes for a later native-camera revisit rather than shipping the known ticking/UI-blocked implementation;
-   - arrow-key camera panning was physically rejected and removed;
-   - add hold-Space recenter/follow after the current MMB/wheel camera pass is stable; persistent follow/lock can later be exposed through the Direct Control shortcut scheme;
-   - do not disturb the already-useful minimap LMB camera relocation + RMB command workflow.
+   - do not arm/ray-cast, queue chase, or queue a delayed cast;
+   - later cooldown UI should make the unavailable state explicit without changing the no-response gameplay rule.
+8. **MOBA-style camera controls** — **validated / locked for now.**
+   - MMB grab-and-drag is physically validated with the intended 1:1 cursor-driven feel;
+   - MMB continues normally across the minimap, player cards, buttons, and top/bottom native UI; the MMB/UI integration issue is **PASS**;
+   - match-wide mouse-wheel zoom is **PASS**: wheel up zooms in, wheel down zooms out, using the native `0.25` step and `0.5 .. 3.0` limits;
+   - MMB and wheel zoom remain active after `End` returns the champion to AI/spectator mode;
+   - preserve the validated native-pan / narrow MMB UI-routing architecture and do not modify it during unrelated work;
+   - **screen-edge scrolling is shelved** and all Harbinger edge-scroll behavior remains removed from the active driver;
+   - arrow-key camera panning was rejected and removed;
+   - native minimap LMB camera relocation + RMB command workflow remains intact;
+   - detailed architecture and rejected experiments are recorded in `docs/camera-controls.md`.
 9. **Clicks beyond the playable map edge** — battlefield clicks just outside the legal map should still express the intended direction. Clamp/project the request onto a legal/pathable map-edge destination so pathfinding moves the champion toward that edge rather than silently eating the order. Never allow movement off-map.
 10. **Skill cooldown UI** — expose direct-control-friendly Q/W/R cooldown/readiness information with high visibility so the player does not have to infer cooldowns from the normal spectator presentation. Include explicit red feedback for attempted use while unavailable.
 11. **Click-target hitbox polish**
    - enlarge only the **clickable/selectable area**; never alter entity collision/pathing geometry;
-   - towers and the final objective need substantially more forgiving selection because their rendered footprint is much larger than their current clickable collision circle;
-   - champions should receive modest click forgiveness as well, especially to reduce rapid-RMB attack orders accidentally becoming ground MoveTo orders;
-   - creeps may receive only enough forgiveness to remain usable without making the lane visually "sticky";
+   - towers and the final objective need substantially more forgiving selection;
+   - champions should receive modest click forgiveness, especially to reduce rapid-RMB attack orders accidentally becoming ground MoveTo orders;
+   - creeps should receive only enough forgiveness to remain usable without making the lane visually sticky;
    - when enlarged selectable areas overlap, prefer **Champion > Building/Objective > Creep**.
 12. **Max-range skill radii / ray clipping revisit**
-   - this remains high-value direct-control QoL and must be revisited rather than accepted as permanently blocked;
-   - radial/ray range must represent the current live match values after simulated balance patches;
+   - radial/ray range must represent current live match values after simulated balance patches;
    - do not hard-code per-champion ranges from one game patch;
    - investigate deeper live action/effect metadata or a version-resilient native extraction route if the stable runtime API remains insufficient.
 13. **Automatic team fog-of-war on direct control**
    - when manual control is taken of a champion, automatically switch spectator vision/fog-of-war to that champion's team;
-   - this should follow whichever side the selected champion belongs to rather than assuming the user's original team.
+   - follow whichever side the selected champion belongs to rather than assuming the user's original team.
 14. **F-key selection mapping hardening**
    - preserve the game's native role order exactly after verifying it during implementation; current working hypothesis is `F1-F5 = player team Top, Jungle, Mid, Bottom, Support` and `F6-F10 = opponent team` in that same order;
-   - current Direct Control implementation finds visible `(F1)`-`(F10)` player cards in the UI tree and name-matches them back to stable athlete ids; this works, but is more indirect and more UI-layout-sensitive than necessary;
-   - investigate piggy-backing the base game's existing Follow Own / Follow Enemy role tracking so the same native team/role identity source drives manual selection;
-   - A/B test the native-derived mapper against the existing UI/name mapper and revert/retain the existing mapper if the native route introduces complications;
-   - prefer native/stable team-role data over repeated UI-tree scans if accessible; keep the existing mapper as a fallback.
-15. **Custom Direct Control keybinds / shortcut-mode separation** — pre-release polish before match-start timing. Full design inventory is in `docs/keybind-plan.md`.
-   - preferred design: add a dedicated **Direct Control** category/control scheme in Shortcuts Settings that becomes active only while a champion is under manual control; native spectator shortcuts resume immediately when `End` releases control;
-   - acceptable fallback: place Direct Control entries into the normal shortcut settings namespace with conflict handling/clear labeling if a separate mode is disproportionately invasive;
-   - rejected design: globally override native shortcut behavior with Direct Control defaults regardless of mode;
+   - current implementation finds visible `(F1)`-`(F10)` player cards in the UI tree and name-matches them to stable athlete ids; this works but is indirect and UI-layout-sensitive;
+   - investigate piggy-backing the base game's existing Follow Own / Follow Enemy role tracking;
+   - A/B test against the working UI/name mapper and retain the existing mapper if the native route introduces complications.
+15. **Custom Direct Control keybinds / shortcut-mode separation** — full design inventory is in `docs/keybind-plan.md`.
+   - preferred design: dedicated **Direct Control** shortcut category/control scheme active only while a champion is manually controlled; native spectator shortcuts resume immediately when `End` releases control;
+   - acceptable fallback: normal shortcut settings namespace with conflict handling and clear labeling;
+   - rejected design: globally override native shortcuts regardless of mode;
    - catalogue all injected player-facing actions and camera gestures;
    - **playback-desync safety is mandatory:** suppress native commands that seek/jump/pause presentation away from the live controlled simulation, including Back/Forward 10 Seconds and Previous/Next Highlight;
-   - ordinary speed controls are a deliberate exception only when Harbinger synchronizes presentation speed and live simulation pacing together;
-   - **snap-to-live watchdog is also mandatory:** independently detect divergence between the presentation/playback position and the live paced simulation while Direct Control owns a champion; if they differ beyond a small expected tolerance, immediately snap presentation back to the live point and restore the currently selected synchronized speed as needed;
+   - ordinary speed controls are an exception only when Harbinger synchronizes presentation speed and live simulation pacing together;
+   - **snap-to-live watchdog is mandatory:** detect divergence between presentation/playback position and live paced simulation while Direct Control owns a champion, snap presentation directly back to live, and restore the selected synchronized speed;
    - do **not** repair desync by temporarily speeding playback until it catches up;
-   - prefer event-driven desync detection from the native playback controller if available; otherwise use a lightweight periodic comparison. Disable the watchdog when `End` returns the player to ordinary spectator mode.
+   - prefer event-driven detection from the native playback controller; lightweight polling is the fallback.
 16. **Current-gold HUD** — pre-release readability polish.
    - expose the manually controlled champion/player's current spendable gold somewhere continuously readable in Direct Control mode;
    - support both live match UI layouts;
-   - this is the minimal pre-release economy information; richer next-purchase information belongs to the later shop-control/auto-shop refinement in `docs/economy-ui-plan.md`.
+   - richer next-purchase information belongs to the later shop-control/auto-shop refinement in `docs/economy-ui-plan.md`.
 17. **Synchronized match-speed variation / death fast-forward** — pre-release playback QoL.
-   - allow useful in-game speed variation during Direct Control by changing the Candidate-A wall-clock pacer and presentation rate together;
-   - requested mappings: `0.5x = 30 Hz`, `1x = 60 Hz`, `2x = 120 Hz`, `3x = 180 Hz`; if native `1.5x` remains exposed, synchronize it at `90 Hz` rather than allowing an unsafe presentation-only rate;
-   - re-anchor pacing immediately whenever speed changes so time accumulated under the old multiplier never becomes catch-up/slowdown budget;
-   - native Highlight Mode itself is not useful during Direct Control and must not seek/skip the presentation;
-   - preferred replacement for the Highlight slot is a **death-timer fast-forward**: while the controlled champion is dead, temporarily run live simulation and presentation together at a deliberately fast rate, then automatically restore the player's previous ordinary speed on respawn;
-   - if the native Highlight speed multiplier can be identified as a fixed safe rate, it may be reused for death fast-forward; otherwise choose an explicit rate rather than guessing;
+   - change Candidate-A wall-clock pacing and presentation rate together;
+   - requested mappings: `0.5x = 30 Hz`, `1x = 60 Hz`, `1.5x = 90 Hz` if exposed, `2x = 120 Hz`, `3x = 180 Hz`;
+   - re-anchor pacing immediately whenever speed changes so old-rate elapsed time never becomes catch-up/slowdown budget;
+   - Highlight Mode itself must not seek/skip presentation during Direct Control;
+   - preferred Highlight replacement is **death-timer fast-forward**: while the controlled champion is dead, run live simulation and presentation together at a deliberately fast rate, then restore the prior ordinary speed on respawn;
    - cancel/restore the prior speed if control is released or switched to a living champion before respawn.
-18. **Pregame / pre-simulation start handling** — final match-start polish/fallback before the compatibility audit and Pings.
-   - preferred route: reuse any clean solution discovered by the Flame Simulator pre-game pre-simulation probe so the player can enter the map before meaningful match simulation gets ahead of them;
-   - if no clean start-gate/pause solution is found, apply a flat **+60 second offset** to the normal opening schedule rather than allowing the vanilla timings to occur before the player can meaningfully participate;
-   - the fallback offset must preserve all normal relative timing: character AI activation, lane creep spawns/waves, jungle spawns, Serpen and Morgar spawns, and other scheduled opening events each occur one minute later than they normally would; do **not** bunch all of those events together at the 1:00 mark;
-   - treat this as a match-start schedule offset, not a blanket modification to ordinary combat cooldowns/action durations;
-   - the first minute can function as a League-like pregame roam/setup window before normal match activity begins;
-   - optionally add a temporary spawn-area collision wall/barrier only if testing shows unrestricted first-minute roaming creates undesirable exploits. Prefer free roaming if it behaves well.
-19. **Resolution / UI-scaling compatibility audit** — final pre-release portability polish immediately before Pings.
-   - current physical testing has been concentrated on one native-resolution setup; explicitly test whether resolution, window size, aspect ratio, Windows DPI/display scaling, or any in-game UI-scale option invalidates coordinate assumptions;
-   - cover both full and Info/split match layouts and at minimum multiple 16:9 resolutions/window sizes; add a non-16:9 case if TFM2 supports one cleanly;
-   - re-test RMB world projection, skill aim, minimap input, MMB 1:1 drag, mouse-wheel zoom, HUD placement, and click-target geometry;
-   - most gameplay projection already uses live `draw_map_size("UI")`, live `ingame.center_log`, and live minimap rectangles, but MMB currently still relies on the validated `1920 x 1080` logical-UI assumption outside `StableClient`, so treat it as the highest-risk scaling path;
-   - if a mismatch is found, publish live UI/battlefield geometry from the stable render/client path into the camera adapter rather than adding resolution-specific constants.
-20. **Pings/team commands** — **post-release work / release boundary.** Potentially large subsystem; do not hold the first public release for this unless explicitly reconsidered.
-21. **Shop control** — post-release/manual-shopping work. Default auto-shop remains an explicit supported mode; when auto-shop is selected, expose the native next intended item/upgrade and the additional gold needed to afford it beside current gold where practical. See `docs/economy-ui-plan.md`.
+18. **Pregame / pre-simulation start handling**
+   - preferred route: reuse any clean solution discovered by the Flame Simulator pre-game pre-simulation probe so the player can enter the map before meaningful simulation gets ahead of them;
+   - fallback: apply a flat **+60 second offset** to the normal opening schedule while preserving all relative event timing;
+   - shift character AI activation, lane waves, jungle spawns, Serpen/Morgar, and other opening schedule events together; do not alter ordinary combat cooldown/action timing;
+   - optionally add a temporary spawn-area barrier only if unrestricted first-minute roaming proves abusive.
+19. **Champion-specific compatibility sweep** — pre-release, universal-first. See `docs/champion-compatibility.md`.
+   - **Gambler Skill 1:** confirmed completely nonfunctional under Direct Control. Identify whether it belongs to a broader native action/target family first; use an isolated Gambler adapter only if its skill is genuinely unique.
+   - **Gunfighter attack-move:** confirmed that `A + LMB` currently produces either attacking or walking rather than his intended move-while-attacking behavior. Revisit `can_use_with_move` and native move-compatible attack semantics first; add unique handling only if required.
+   - do not distort already validated generic champion behavior to accommodate one unusual champion.
+20. **Pause/menu and early-results safety audit** — pre-release playback integrity.
+   - reproduce long pause-menu states and verify Candidate A actually stops rather than presentation pausing while live simulation continues ahead;
+   - resume must re-anchor pacing so pause duration cannot become catch-up budget;
+   - inspect **View Match Results Immediately** while simulation is still in progress;
+   - if that control forces completion, seeks presentation, or bypasses pacing, gate or synchronize it while Direct Control owns the live match.
+21. **Resolution / UI-scaling compatibility audit** — final pre-release portability polish immediately before Pings.
+   - current physical validation is concentrated on one native-resolution setup; explicitly test resolution, window size, aspect ratio, Windows DPI/display scaling, and any in-game UI-scale option;
+   - cover both full and Info/split layouts and multiple 16:9 resolutions/window sizes; add a non-16:9 case if TFM2 supports one cleanly;
+   - re-test RMB world projection, skill aim, minimap input, MMB 1:1 drag, MMB UI bypass, mouse-wheel zoom, HUD placement, and click-target geometry;
+   - most gameplay projection already uses live `draw_map_size("UI")`, live `ingame.center_log`, and live minimap rectangles, but MMB still relies on the validated `1920 x 1080` logical-UI assumption outside `StableClient`, so treat it as the highest-risk scaling path;
+   - if a mismatch is found, publish live UI/battlefield geometry from the stable client into the camera adapter rather than adding resolution-specific constants.
+22. **Pings/team commands** — **post-release work / release boundary.** Potentially large subsystem; do not hold the first public release for this unless explicitly reconsidered.
+23. **Shop control** — post-release/manual-shopping work. Default auto-shop remains an explicit supported mode; when auto-shop is selected, expose the native next intended item/upgrade and additional gold needed beside current gold where practical. See `docs/economy-ui-plan.md`.
 
 ## Must iron out before release
 
-- **Locked-skill safety:** never probe or emit Q/W/R inputs before the slot is unlocked for the selected champion level. Current progression gate: Q level 1, W level 3, R level 5. Physical testing found that probing a locked W/R can wedge the watched simulation worker; the current build now rejects locked slots before validation and has passed the reproduction test.
-- **Dynamic skill targeting presentation:** max-range radials/ray clipping must reflect the current live match values after simulated balance patches. Never hard-code per-champion range values from one patch.
-- **Basic Return behavior:** B uses the game's native Return Home input. Current repeated Return input immediately restarts recall after damage interruption; acceptable for functionality, but channel/restart behavior is a polish candidate before final release if it remains visually or mechanically undesirable.
-- **Native-hook version resilience:** before 1.0, harden version-sensitive native discovery. Prefer masked/pattern scanning plus structural validation over fixed RVAs; use executable version/hash as diagnostics rather than the only locator; derive related call targets dynamically where practical; reject zero/ambiguous matches safely; and degrade only the affected feature if a private game layout can no longer be verified.
+- **Locked-skill safety:** never probe or emit Q/W/R inputs before the slot is unlocked for the selected champion level. Current progression gate: Q level 1, W level 3, R level 5. Physical testing found that probing a locked W/R can wedge the watched simulation worker; the current build rejects locked slots before validation and has passed the reproduction test.
+- **Dynamic skill targeting presentation:** max-range radials/ray clipping must reflect current live match values after simulated balance patches. Never hard-code per-champion range values from one patch.
+- **Basic Return behavior:** B uses the game's native Return Home input. Current repeated Return input immediately restarts recall after damage interruption; acceptable for functionality, but channel/restart behavior remains a polish candidate.
+- **Native-hook version resilience:** before 1.0, harden version-sensitive native discovery. Prefer masked/pattern scanning plus structural validation over fixed RVAs; use executable version/hash as diagnostics rather than the only locator; derive related call targets dynamically where practical; reject zero/ambiguous matches safely; and degrade only the affected feature if a private layout can no longer be verified.
 
 ## Current Hold/Stop behavior
 
-`H` cancels the selected champion's current move, exact-target attack, Return Home order, and armed skill targeting. Hold is an explicit persistent command. Ordinary movement/attack stops by anchoring to a fixed position. Because TFM2 does not treat a zero-distance MoveTo as an interrupt to an active Return channel, the implementation emits one ordinary movement tick when Hold replaces Return, then captures and holds the champion's resulting position on the next tick. Physical testing now confirms that this closes the recall gap as well.
+`H` cancels the selected champion's current move, exact-target attack, Return Home order, and armed skill targeting. Hold is an explicit persistent command. Ordinary movement/attack stops by anchoring to a fixed position. Because TFM2 does not treat a zero-distance MoveTo as an interrupt to an active Return channel, the implementation emits one ordinary movement tick when Hold replaces Return, then captures and holds the champion's resulting position on the next tick. Physical testing confirms this closes the recall gap.
 
 ## Auto-attack chase timing note
 
-The earlier conservative implementation held for the entire remaining basic-attack cooldown. That was visibly too slow. The current implementation no longer derives recovery from cooldown at all: after Attack becomes invalid, it validates literal chase movement on the current frame. If TFM2 accepts the movement, pursuit resumes; if not, Direct Control holds. Physical testing produced a strong result and is now the preferred generic chase rule.
+The earlier conservative implementation held for the entire remaining basic-attack cooldown. That was visibly too slow. The current implementation no longer derives recovery from cooldown: after Attack becomes invalid, it validates literal chase movement on the current frame. If TFM2 accepts movement, pursuit resumes; if not, Direct Control holds.
 
-Rapid RMB can still appear to "chase without attacking" because every new click is context-resolved independently. A click that misses the hostile entity's current selectable circle becomes a ground MoveTo and replaces the prior Attack order. Treat that as click-target hitbox/selectability polish, not as a reason to disturb the validated chase-timing rule.
+Rapid RMB can still appear to "chase without attacking" because every new click is context-resolved independently. A click that misses the hostile entity's current selectable circle becomes ground MoveTo and replaces the prior Attack order. Treat that as click-target hitbox/selectability polish, not as a reason to disturb the validated chase-timing rule.
 
 ## Companion mod / Workshop launch note
 
@@ -141,7 +141,7 @@ Do not silently copy or bundle that mod's implementation. For the eventual Works
 ## Deferred / later polish
 
 - **Screen-edge camera scrolling:** shelved after repeated physical tests showed stationary-edge ticking and top/bottom UI blockage. Revisit only through a deeper native camera/update investigation; do not restore the rejected synthetic-mouse wake workaround.
+- **Space recenter/follow:** desirable camera QoL, but not part of the now-locked camera milestone. Consider exposing native follow/recenter behavior later through the shortcut system.
 - **Friendly champion selection cleanup:** do not redesign the visible selection UI here. F1-F10 is sufficient for functionality; only harden how those fixed role slots resolve to athlete ids.
-- **Gunfighter move-while-attacking composition:** character-specific follow-up after generic controls are stable; attack-move is particularly important to this character.
 - **Idle retaliation:** possible later behavior where an otherwise-idle selected champion that is attacked by an enemy already in legal basic-attack range returns fire.
 - **Morgard/ping override investigation:** revisit only if explicit manual orders are still observably overridden after the core command path is stable.
