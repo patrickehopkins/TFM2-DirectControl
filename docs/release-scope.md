@@ -49,27 +49,43 @@ This file records the current functionality-first scope and implementation prior
    - arrow-key camera panning was rejected and removed;
    - native minimap LMB camera relocation + RMB command workflow remains intact;
    - detailed architecture and rejected experiments are recorded in `docs/camera-controls.md`.
-9. **Clicks beyond the playable map edge** — battlefield clicks just outside the legal map should still express the intended direction. Clamp/project the request onto a legal/pathable map-edge destination so pathfinding moves the champion toward that edge rather than silently eating the order. Never allow movement off-map.
-10. **Skill cooldown UI** — expose direct-control-friendly Q/W/R cooldown/readiness information with high visibility so the player does not have to infer cooldowns from the normal spectator presentation. Include explicit red feedback for attempted use while unavailable.
-11. **Click-target hitbox polish**
+9. **Clicks beyond the playable map edge** — **current physical test.**
+   - a battlefield movement click that projects outside the legal `0..960` world square is clamped to the corresponding legal map edge instead of being discarded or emitting an off-map destination;
+   - this applies to ordinary RMB ground movement and `A + LMB` attack-move destinations;
+   - clamping expresses **direction only**. Harbinger never moves the champion directly and never bypasses collision/pathing;
+   - the resulting destination still goes through TFM2's normal `MoveTo` / pathfinding / collision behavior, so walls, champion radius, terrain collision, and other native blockers remain authoritative;
+   - UI outside the actual battlefield viewport is still not treated as a movement surface;
+   - verify all four world edges and corners, including movement toward blocked edge geometry, before marking PASS.
+10. **Automatic team fog-of-war on direct control** — **next rapid-fire item.**
+   - when manual control is taken of a champion, automatically switch spectator vision/fog-of-war to that champion's team;
+   - follow whichever side the selected champion belongs to rather than assuming the user's original team.
+11. **F-key selection mapping hardening** — **next after team fog.**
+   - preserve the game's native role order exactly after verifying it during implementation; current working hypothesis is `F1-F5 = player team Top, Jungle, Mid, Bottom, Support` and `F6-F10 = opponent team` in that same order;
+   - current implementation finds visible `(F1)`-`(F10)` player cards in the UI tree and name-matches them to stable athlete ids; this works but is indirect and UI-layout-sensitive;
+   - investigate piggy-backing the base game's existing Follow Own / Follow Enemy role tracking;
+   - A/B test against the working UI/name mapper and retain the existing mapper if the native route introduces complications.
+12. **Synchronized match-speed variation / death fast-forward** — **next after F-key hardening.**
+   - change Candidate-A wall-clock pacing and presentation rate together;
+   - requested mappings: `0.5x = 30 Hz`, `1x = 60 Hz`, `1.5x = 90 Hz` if exposed, `2x = 120 Hz`, `3x = 180 Hz`;
+   - re-anchor pacing immediately whenever speed changes so old-rate elapsed time never becomes catch-up/slowdown budget;
+   - Highlight Mode itself must not seek/skip presentation during Direct Control;
+   - preferred Highlight replacement is **death-timer fast-forward**: while the controlled champion is dead, run live simulation and presentation together at a deliberately fast rate, then restore the prior ordinary speed on respawn;
+   - cancel/restore the prior speed if control is released or switched to a living champion before respawn.
+13. **Click-target hitbox polish** — **next after synchronized speed.**
    - enlarge only the **clickable/selectable area**; never alter entity collision/pathing geometry;
    - towers and the final objective need substantially more forgiving selection;
    - champions should receive modest click forgiveness, especially to reduce rapid-RMB attack orders accidentally becoming ground MoveTo orders;
    - creeps should receive only enough forgiveness to remain usable without making the lane visually sticky;
    - when enlarged selectable areas overlap, prefer **Champion > Building/Objective > Creep**.
-12. **Max-range skill radii / ray clipping revisit**
+
+**After item 13, revisit the remaining order before proceeding.** The items below remain pre-release requirements/candidates, but their exact sequence is intentionally provisional.
+
+14. **Skill cooldown UI** — expose direct-control-friendly Q/W/R cooldown/readiness information with high visibility so the player does not have to infer cooldowns from the normal spectator presentation. Include explicit red feedback for attempted use while unavailable.
+15. **Max-range skill radii / ray clipping revisit**
    - radial/ray range must represent current live match values after simulated balance patches;
    - do not hard-code per-champion ranges from one game patch;
    - investigate deeper live action/effect metadata or a version-resilient native extraction route if the stable runtime API remains insufficient.
-13. **Automatic team fog-of-war on direct control**
-   - when manual control is taken of a champion, automatically switch spectator vision/fog-of-war to that champion's team;
-   - follow whichever side the selected champion belongs to rather than assuming the user's original team.
-14. **F-key selection mapping hardening**
-   - preserve the game's native role order exactly after verifying it during implementation; current working hypothesis is `F1-F5 = player team Top, Jungle, Mid, Bottom, Support` and `F6-F10 = opponent team` in that same order;
-   - current implementation finds visible `(F1)`-`(F10)` player cards in the UI tree and name-matches them to stable athlete ids; this works but is indirect and UI-layout-sensitive;
-   - investigate piggy-backing the base game's existing Follow Own / Follow Enemy role tracking;
-   - A/B test against the working UI/name mapper and retain the existing mapper if the native route introduces complications.
-15. **Custom Direct Control keybinds / shortcut-mode separation** — full design inventory is in `docs/keybind-plan.md`.
+16. **Custom Direct Control keybinds / shortcut-mode separation** — full design inventory is in `docs/keybind-plan.md`.
    - preferred design: dedicated **Direct Control** shortcut category/control scheme active only while a champion is manually controlled; native spectator shortcuts resume immediately when `End` releases control;
    - acceptable fallback: normal shortcut settings namespace with conflict handling and clear labeling;
    - rejected design: globally override native shortcuts regardless of mode;
@@ -79,17 +95,10 @@ This file records the current functionality-first scope and implementation prior
    - **snap-to-live watchdog is mandatory:** detect divergence between presentation/playback position and live paced simulation while Direct Control owns a champion, snap presentation directly back to live, and restore the selected synchronized speed;
    - do **not** repair desync by temporarily speeding playback until it catches up;
    - prefer event-driven detection from the native playback controller; lightweight polling is the fallback.
-16. **Current-gold HUD** — pre-release readability polish.
+17. **Current-gold HUD** — pre-release readability polish.
    - expose the manually controlled champion/player's current spendable gold somewhere continuously readable in Direct Control mode;
    - support both live match UI layouts;
    - richer next-purchase information belongs to the later shop-control/auto-shop refinement in `docs/economy-ui-plan.md`.
-17. **Synchronized match-speed variation / death fast-forward** — pre-release playback QoL.
-   - change Candidate-A wall-clock pacing and presentation rate together;
-   - requested mappings: `0.5x = 30 Hz`, `1x = 60 Hz`, `1.5x = 90 Hz` if exposed, `2x = 120 Hz`, `3x = 180 Hz`;
-   - re-anchor pacing immediately whenever speed changes so old-rate elapsed time never becomes catch-up/slowdown budget;
-   - Highlight Mode itself must not seek/skip presentation during Direct Control;
-   - preferred Highlight replacement is **death-timer fast-forward**: while the controlled champion is dead, run live simulation and presentation together at a deliberately fast rate, then restore the prior ordinary speed on respawn;
-   - cancel/restore the prior speed if control is released or switched to a living champion before respawn.
 18. **Pregame / pre-simulation start handling**
    - preferred route: reuse any clean solution discovered by the Flame Simulator pre-game pre-simulation probe so the player can enter the map before meaningful simulation gets ahead of them;
    - fallback: apply a flat **+60 second offset** to the normal opening schedule while preserving all relative event timing;
