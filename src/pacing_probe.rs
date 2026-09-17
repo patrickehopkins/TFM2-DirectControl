@@ -8,10 +8,10 @@
 //! revision allows one complete Candidate-A simulation tick through before holding on the next tick.
 //! That tests whether the client only needs an initial simulation frame/state to construct InGame.
 //!
-//! The held Candidate-A worker now also polls Ctrl+Home directly. That escape does not depend on
-//! `post_render`, so it still works if the Start Match UI thread is synchronously waiting. If one
-//! tick is insufficient and the client has not reached InGame after two seconds, the gate
-//! automatically releases into the known-good 60 Hz pacer rather than leaving the process hung.
+//! The held Candidate-A worker also polls Ctrl+Home directly. That escape does not depend on
+//! `post_render`, so it still works if the Start Match UI thread is synchronously waiting. The gate
+//! never auto-releases on a timer: simulation remains held until the user deliberately starts it or
+//! explicitly releases Direct Control.
 //!
 //! Pause uses a separate presentation gate. Ctrl+End permanently releases pacing and manual input
 //! for the current match.
@@ -36,7 +36,6 @@ const ALLOWED_LEAD_MS: u64 = 35;
 const MAX_SLEEP_SLICE_MS: u64 = 2;
 const MAX_SINGLE_CALLBACK_WAIT_MS: u64 = 250;
 const BLOCK_SLEEP_SLICE_MS: u64 = 2;
-const PREMATCH_AUTO_RELEASE_MS: u64 = 2_000;
 
 const PHASE_WAITING_START: u8 = 0;
 const PHASE_RUNNING: u8 = 1;
@@ -297,8 +296,6 @@ fn ctrl_home_down() -> bool {
 }
 
 fn wait_until_started() -> bool {
-    let wait_started_ms = unsafe { GetTickCount64() };
-
     loop {
         if manual_control_released() {
             return false;
@@ -307,21 +304,9 @@ fn wait_until_started() -> bool {
             return true;
         }
 
-        // `post_render` is not guaranteed to run while Start Match waits. Poll the escape chord on
-        // this worker too, so Ctrl+Home can always release a rejected prematch gate experiment.
+        // `post_render` is not guaranteed to run while Start Match waits. Poll the deliberate start
+        // chord on this worker too, but never auto-release the held simulation on elapsed time.
         if ctrl_home_down() {
-            request_start_simulation();
-            return true;
-        }
-
-        // If the one-tick runway was insufficient, recover automatically before Windows decides
-        // the process is hung. Once InGame is actually visible, do NOT auto-start: leave the held
-        // tick waiting for the user's deliberate Ctrl+Home.
-        let now_ms = unsafe { GetTickCount64() };
-        if !INTERACTIVE_MATCH.load(Ordering::Acquire)
-            && now_ms.saturating_sub(wait_started_ms) >= PREMATCH_AUTO_RELEASE_MS
-        {
-            START_AUTO_RELEASED.store(true, Ordering::Release);
             request_start_simulation();
             return true;
         }
@@ -366,7 +351,7 @@ fn pace_candidate_a(tick: u64) {
             return;
         }
         // The exact held tick becomes the fresh pacing origin. Time spent waiting is never catch-up
-        // budget, whether release came from the visible UI, worker-local Ctrl+Home, or auto-recovery.
+        // budget, whether release came from the visible UI or worker-local Ctrl+Home.
         reanchor_pacer();
         return pace_candidate_a(tick);
     }
