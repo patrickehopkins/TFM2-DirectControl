@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Read-only native action xref probe for Teamfight Manager 2.
+"""Read-only spectator camera semantic-action discovery for Teamfight Manager 2.
 
-Locates the spectator-camera action strings in TeamfightManager2.exe, then scans
-executable sections for RIP-relative references to those exact strings. For each
-xref it prints nearby bytes and rel32 call targets. The goal is to identify the
-semantic action registry/dispatcher used by:
+TFM2's Rust binaries store many shortcut/action names as slices inside large
+concatenated string blobs rather than as independent NUL-terminated C strings.
+This probe therefore searches for substring starts, Rust-style &str descriptors
+(pointer + usize length), direct/nearby RIP-relative references to those
+descriptors, and the native match-view UI paths for the same vision controls.
 
+The goal is to find a binding-independent native route for:
     in_game_camera_all
     in_game_camera_team0
     in_game_camera_team1
@@ -23,17 +25,24 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-ACTION_NAMES = (
-    "in_game_camera_all",
-    "in_game_camera_team0",
-    "in_game_camera_team1",
-    "in_game_auto_follow",
+ANCHORS = (
+    ("action", "in_game_camera_all"),
+    ("action", "in_game_camera_team0"),
+    ("action", "in_game_camera_team1"),
+    ("action", "in_game_auto_follow"),
+    ("ui", "speed_buttons.view_all"),
+    ("ui", "speed_buttons.view_blue"),
+    ("ui", "speed_buttons.view_red"),
+    ("ui", "center_data.camera_buttons."),
+    ("ui", "wide_data.camera_buttons."),
 )
 
 CONTEXT_BEFORE = 0x50
 CONTEXT_AFTER = 0x90
+STRING_CONTEXT = 0x70
 CALL_SCAN_BEFORE = 0x80
 CALL_SCAN_AFTER = 0x100
+NEAR_DATA_RADIUS = 0x100
 
 
 @dataclass(frozen=True)
@@ -71,7 +80,7 @@ class PeImage:
         self.image_size = struct.unpack_from("<I", self.data, optional_offset + 56)[0]
 
         section_offset = optional_offset + optional_size
-        sections: list[Section] = []
+        self.sections: list[Section] = []
         for index in range(section_count):
             offset = section_offset + index * 40
             name = self.data[offset : offset + 8].rstrip(b"\0").decode("ascii", "replace")
@@ -79,7 +88,7 @@ class PeImage:
                 "<IIII", self.data, offset + 8
             )
             characteristics = struct.unpack_from("<I", self.data, offset + 36)[0]
-            sections.append(
+            self.sections.append(
                 Section(
                     name=name,
                     rva=virtual_address,
@@ -89,7 +98,6 @@ class PeImage:
                     characteristics=characteristics,
                 )
             )
-        self.sections = sections
 
     def offset_to_rva(self, offset: int) -> int:
         for section in self.sections:
@@ -127,8 +135,26 @@ def hexdump(data: bytes, start_rva: int) -> str:
     return "\n".join(lines)
 
 
-def find_ascii_string_rvas(image: PeImage, text: str) -> list[int]:
-    needle = text.encode("ascii") + b"\0"
+def ascii_context(image: PeImage, rva: int) -> str:
+    try:
+        offset = image.rva_to_offset(rva)
+    except ValueError:
+        return "<unavailable>"
+    start = max(0, offset - STRING_CONTEXT)
+    end = min(len(image.data), offset + STRING_CONTEXT)
+    chunk = image.data[start:end]
+    text = "".join(chr(b) if 32 <= b <= 126 else "." for b in chunk)
+    try:
+        start_rva = image.offset_to_rva(start)
+    except ValueError:
+        start_rva = 0
+    return f"    around RVA 0x{start_rva:08X}: {text}"
+
+
+def find_substring_rvas(image: PeImage, text: str) -> list[int]:
+    """Find raw ASCII substring starts; do not require a trailing NUL."""
+
+    needle = text.encode("ascii")
     out: list[int] = []
     start = 0
     while True:
@@ -140,19 +166,52 @@ def find_ascii_string_rvas(image: PeImage, text: str) -> list[int]:
         except ValueError:
             pass
         start = offset + 1
-    return out
+    return sorted(set(out))
 
 
-def rip_refs_to(image: PeImage, target_rva: int) -> list[tuple[int, str]]:
-    """Find common x64 RIP-relative LEA/MOV references to target_rva.
+def find_pointer_occurrences(image: PeImage, target_rva: int) -> list[int]:
+    """Find data locations containing the absolute VA of target_rva."""
 
-    Supports optional REX prefixes and ModRM mod=00,r/m=101 encodings for
-    LEA (8D) and MOV (8B). This is intentionally conservative and does not try
-    to be a complete x86 decoder.
-    """
+    needle = struct.pack("<Q", image.image_base + target_rva)
+    out: list[int] = []
+    start = 0
+    while True:
+        offset = image.data.find(needle, start)
+        if offset < 0:
+            break
+        try:
+            out.append(image.offset_to_rva(offset))
+        except ValueError:
+            pass
+        start = offset + 1
+    return sorted(set(out))
 
-    refs: list[tuple[int, str]] = []
 
+def descriptor_kind(image: PeImage, descriptor_rva: int, text_len: int) -> str:
+    """Classify common pointer+length layouts at a pointer occurrence."""
+
+    try:
+        offset = image.rva_to_offset(descriptor_rva)
+    except ValueError:
+        return "pointer"
+
+    if offset + 16 <= len(image.data):
+        length64 = struct.unpack_from("<Q", image.data, offset + 8)[0]
+        if length64 == text_len:
+            return "Rust &str {ptr, usize_len}"
+
+    if offset + 12 <= len(image.data):
+        length32 = struct.unpack_from("<I", image.data, offset + 8)[0]
+        if length32 == text_len:
+            return "ptr + u32_len"
+
+    return "pointer"
+
+
+def collect_rip_refs(image: PeImage) -> list[tuple[int, int, str]]:
+    """Collect common x64 RIP-relative LEA/MOV references once for the whole image."""
+
+    refs: list[tuple[int, int, str]] = []
     for section in image.sections:
         if not section.executable or section.raw_size < 7:
             continue
@@ -163,9 +222,11 @@ def rip_refs_to(image: PeImage, target_rva: int) -> list[tuple[int, str]]:
             opcode_index = i + rex_len
             if opcode_index + 6 > len(data):
                 continue
+
             opcode = data[opcode_index]
             if opcode not in (0x8D, 0x8B):
                 continue
+
             modrm = data[opcode_index + 1]
             if (modrm & 0xC7) != 0x05:
                 continue
@@ -174,12 +235,25 @@ def rip_refs_to(image: PeImage, target_rva: int) -> list[tuple[int, str]]:
             insn_len = rex_len + 6
             insn_rva = section.rva + i
             resolved = insn_rva + insn_len + disp
-            if resolved != target_rva:
-                continue
-
-            refs.append((insn_rva, "lea" if opcode == 0x8D else "mov"))
+            refs.append((insn_rva, resolved, "lea" if opcode == 0x8D else "mov"))
 
     return refs
+
+
+def refs_to(
+    all_refs: list[tuple[int, int, str]], target_rva: int
+) -> list[tuple[int, int, str]]:
+    return [ref for ref in all_refs if ref[1] == target_rva]
+
+
+def refs_near(
+    all_refs: list[tuple[int, int, str]], target_rva: int, radius: int = NEAR_DATA_RADIUS
+) -> list[tuple[int, int, str]]:
+    return [
+        ref
+        for ref in all_refs
+        if abs(ref[1] - target_rva) <= radius
+    ]
 
 
 def nearby_rel32_calls(image: PeImage, center_rva: int) -> list[tuple[int, int]]:
@@ -208,14 +282,7 @@ def nearby_rel32_calls(image: PeImage, center_rva: int) -> list[tuple[int, int]]
             target = call_rva + 5 + disp
             out.append((call_rva, target))
 
-    # Preserve order while removing duplicates from overlapping scan regions.
-    seen: set[tuple[int, int]] = set()
-    unique: list[tuple[int, int]] = []
-    for item in sorted(out):
-        if item not in seen:
-            seen.add(item)
-            unique.append(item)
-    return unique
+    return sorted(set(out))
 
 
 def dump_xref_context(image: PeImage, xref_rva: int) -> str:
@@ -230,6 +297,29 @@ def dump_xref_context(image: PeImage, xref_rva: int) -> str:
     return "<xref outside executable section>"
 
 
+def emit_code_ref(
+    lines: list[str],
+    image: PeImage,
+    xref_rva: int,
+    resolved_rva: int,
+    kind: str,
+    label: str,
+) -> None:
+    lines.append(
+        f"{label}: 0x{xref_rva:08X} ({kind}) -> data RVA 0x{resolved_rva:08X}"
+    )
+    calls = nearby_rel32_calls(image, xref_rva)
+    if calls:
+        lines.append("Nearby rel32 calls:")
+        for call_rva, target in calls:
+            marker = "  <== near xref" if abs(call_rva - xref_rva) <= 0x20 else ""
+            lines.append(f"  CALL 0x{call_rva:08X} -> 0x{target:08X}{marker}")
+    else:
+        lines.append("Nearby rel32 calls: <none>")
+    lines.append("Byte context:")
+    lines.append(dump_xref_context(image, xref_rva))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("exe", type=Path, help="path to TeamfightManager2.exe")
@@ -242,78 +332,112 @@ def main() -> int:
     args = parser.parse_args()
 
     image = PeImage(args.exe.resolve())
+    all_refs = collect_rip_refs(image)
 
     lines: list[str] = [
-        "TFM2 DIRECT CONTROL - SPECTATOR CAMERA ACTION XREF REPORT",
+        "TFM2 DIRECT CONTROL - SPECTATOR CAMERA SEMANTIC ACTION REPORT",
         f"Executable: {image.path}",
         f"SHA-256: {sha256(image.data)}",
         f"PE timestamp: 0x{image.timestamp:08X}",
         f"Image size: 0x{image.image_size:08X}",
         f"Image base: 0x{image.image_base:X}",
+        f"Collected RIP-relative LEA/MOV refs: {len(all_refs)}",
         "",
         "Read-only static analysis. No game files or process memory were modified.",
         "",
     ]
 
-    all_xrefs: dict[str, list[int]] = {}
+    discovered_code_refs: list[tuple[int, str]] = []
 
-    for name in ACTION_NAMES:
-        string_rvas = find_ascii_string_rvas(image, name)
-        lines.append(f"===== {name} =====")
+    for category, name in ANCHORS:
+        lines.append(f"===== [{category}] {name} =====")
+        string_rvas = find_substring_rvas(image, name)
         if not string_rvas:
-            lines.append("String: NOT FOUND")
+            lines.append("ASCII substring: NOT FOUND")
             lines.append("")
-            all_xrefs[name] = []
             continue
 
-        name_xrefs: list[int] = []
         for string_rva in string_rvas:
-            lines.append(f"String RVA: 0x{string_rva:08X}")
-            refs = rip_refs_to(image, string_rva)
-            if not refs:
-                lines.append("RIP-relative executable refs: <none>")
-                continue
+            lines.append(f"Substring RVA: 0x{string_rva:08X}")
+            lines.append(ascii_context(image, string_rva))
 
-            for xref_rva, kind in refs:
-                name_xrefs.append(xref_rva)
-                lines.append(f"XREF: 0x{xref_rva:08X} ({kind})")
-                calls = nearby_rel32_calls(image, xref_rva)
-                if calls:
-                    lines.append("Nearby rel32 calls:")
-                    for call_rva, target in calls:
-                        marker = "  <== near xref" if abs(call_rva - xref_rva) <= 0x20 else ""
-                        lines.append(
-                            f"  CALL 0x{call_rva:08X} -> 0x{target:08X}{marker}"
+            direct = refs_to(all_refs, string_rva)
+            if direct:
+                for xref_rva, resolved, kind in direct:
+                    discovered_code_refs.append((xref_rva, name))
+                    emit_code_ref(
+                        lines, image, xref_rva, resolved, kind, "DIRECT STRING XREF"
+                    )
+            else:
+                lines.append("Direct executable refs to substring: <none>")
+
+            pointer_rvas = find_pointer_occurrences(image, string_rva)
+            if not pointer_rvas:
+                lines.append("Absolute pointer/descriptor occurrences: <none>")
+            else:
+                lines.append("Absolute pointer/descriptor occurrences:")
+                for descriptor_rva in pointer_rvas:
+                    kind = descriptor_kind(image, descriptor_rva, len(name))
+                    lines.append(
+                        f"  data RVA 0x{descriptor_rva:08X}: {kind}"
+                    )
+
+                    exact_descriptor_refs = refs_to(all_refs, descriptor_rva)
+                    for xref_rva, resolved, ref_kind in exact_descriptor_refs:
+                        discovered_code_refs.append((xref_rva, name))
+                        emit_code_ref(
+                            lines,
+                            image,
+                            xref_rva,
+                            resolved,
+                            ref_kind,
+                            "DESCRIPTOR XREF",
                         )
-                else:
-                    lines.append("Nearby rel32 calls: <none>")
-                lines.append("Byte context:")
-                lines.append(dump_xref_context(image, xref_rva))
-                lines.append("")
 
-        all_xrefs[name] = sorted(set(name_xrefs))
+                    if not exact_descriptor_refs:
+                        near = refs_near(all_refs, descriptor_rva)
+                        # Near references are useful when code addresses the base of a
+                        # static table rather than this exact {ptr,len} member.
+                        near = sorted(
+                            near,
+                            key=lambda item: (abs(item[1] - descriptor_rva), item[0]),
+                        )[:12]
+                        if near:
+                            lines.append(
+                                f"  Nearby executable data refs (within 0x{NEAR_DATA_RADIUS:X}):"
+                            )
+                            for xref_rva, resolved, ref_kind in near:
+                                delta = resolved - descriptor_rva
+                                discovered_code_refs.append((xref_rva, name))
+                                lines.append(
+                                    f"    0x{xref_rva:08X} ({ref_kind}) -> "
+                                    f"0x{resolved:08X} (descriptor {delta:+#x})"
+                                )
+                        else:
+                            lines.append("  Executable refs to/near descriptor: <none>")
+
+            lines.append("")
+
         lines.append("")
 
-    lines.append("===== XREF CLUSTERS =====")
-    flattened = sorted(
-        (xref, name)
-        for name, xrefs in all_xrefs.items()
-        for xref in xrefs
-    )
+    lines.append("===== CODE-XREF CLUSTERS =====")
+    flattened = sorted(set(discovered_code_refs))
     if not flattened:
-        lines.append("<no executable string xrefs found>")
+        lines.append("<no usable executable refs found>")
     else:
         for xref, name in flattened:
             neighbors = [
                 (other_xref, other_name)
                 for other_xref, other_name in flattened
-                if other_name != name and abs(other_xref - xref) <= 0x400
+                if other_name != name and abs(other_xref - xref) <= 0x600
             ]
             neighbor_text = ", ".join(
-                f"{other_name}@0x{other_xref:08X}" for other_xref, other_name in neighbors
+                f"{other_name}@0x{other_xref:08X}"
+                for other_xref, other_name in neighbors[:12]
             )
             lines.append(
-                f"{name}@0x{xref:08X}: {neighbor_text if neighbor_text else '<no other action xref within 0x400>'}"
+                f"{name}@0x{xref:08X}: "
+                f"{neighbor_text if neighbor_text else '<no other anchor xref within 0x600>'}"
             )
 
     output = args.output.resolve()
