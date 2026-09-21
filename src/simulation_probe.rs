@@ -1,4 +1,4 @@
-//! Read-only entry/exit probe for Teamfight Manager 2 v0.5.8 client simulation jobs.
+//! Read-only entry/exit probe for known Teamfight Manager 2 client simulation jobs.
 //!
 //! Static analysis of TeamfightManager2.exe found three client-side functions in
 //! `game-view/src/logic/client/data.rs` that call the common game-core simulation wrapper.
@@ -19,17 +19,39 @@ use std::{
     },
 };
 
-const EXPECTED_PE_TIMESTAMP: u32 = 0x6A97_8218;
-const EXPECTED_IMAGE_SIZE: u32 = 0x04A1_D000;
+#[derive(Debug, Clone, Copy)]
+struct SimulationLayout {
+    pe_timestamp: u32,
+    image_size: u32,
+    candidate_rvas: [usize; 3],
+    core_wrapper_rva: usize,
+    /// v0.5.8 has a separate runner function. In v0.6.0 the equivalent body is
+    /// inlined into the enlarged wrapper, so this is a verified body anchor.
+    core_runner_anchor_rva: usize,
+}
 
-// `game-view/src/logic/client/data.rs` candidates discovered by static analysis.
-const CANDIDATE_A_RVA: usize = 0x00B1_CF10;
-const CANDIDATE_B_RVA: usize = 0x00B1_DB20;
-const CANDIDATE_C_RVA: usize = 0x00B1_E730;
+const BUILD_0_5_8: SimulationLayout = SimulationLayout {
+    pe_timestamp: 0x6A97_8218,
+    image_size: 0x04A1_D000,
+    candidate_rvas: [0x00B1_CF10, 0x00B1_DB20, 0x00B1_E730],
+    core_wrapper_rva: 0x0180_EAA0,
+    core_runner_anchor_rva: 0x0181_3FB0,
+};
 
-// Common game-core simulation path reached by Candidate A.
-const CORE_WRAPPER_RVA: usize = 0x0180_EAA0;
-const CORE_RUNNER_RVA: usize = 0x0181_3FB0;
+const BUILD_0_6_0: SimulationLayout = SimulationLayout {
+    pe_timestamp: 0x6AAA_07D1,
+    image_size: 0x0522_8000,
+    candidate_rvas: [0x00AC_2AE0, 0x00AC_36F0, 0x00AC_4300],
+    core_wrapper_rva: 0x016D_2740,
+    core_runner_anchor_rva: 0x016D_3880,
+};
+
+fn known_layout(timestamp: u32, image_size: u32) -> Option<&'static SimulationLayout> {
+    [&BUILD_0_5_8, &BUILD_0_6_0]
+        .into_iter()
+        .find(|layout| layout.pe_timestamp == timestamp && layout.image_size == image_size)
+}
+
 const INSPECT_BYTES: usize = 32;
 
 const PATCH_LEN: usize = 12;
@@ -49,8 +71,18 @@ extern "system" {
     fn GetCurrentProcess() -> *mut c_void;
     fn GetCurrentThreadId() -> u32;
     fn GetTickCount64() -> u64;
-    fn VirtualAlloc(address: *mut c_void, size: usize, allocation_type: u32, protect: u32) -> *mut c_void;
-    fn VirtualProtect(address: *mut c_void, size: usize, new_protect: u32, old_protect: *mut u32) -> i32;
+    fn VirtualAlloc(
+        address: *mut c_void,
+        size: usize,
+        allocation_type: u32,
+        protect: u32,
+    ) -> *mut c_void;
+    fn VirtualProtect(
+        address: *mut c_void,
+        size: usize,
+        new_protect: u32,
+        old_protect: *mut u32,
+    ) -> i32;
     fn FlushInstructionCache(process: *mut c_void, address: *const c_void, size: usize) -> i32;
 }
 
@@ -101,7 +133,8 @@ impl ProbeSlot {
     fn enter(&self, context: *mut u8) -> u64 {
         self.entries.fetch_add(1, Ordering::Relaxed);
         self.active.fetch_add(1, Ordering::AcqRel);
-        self.last_thread_id.store(unsafe { GetCurrentThreadId() }, Ordering::Relaxed);
+        self.last_thread_id
+            .store(unsafe { GetCurrentThreadId() }, Ordering::Relaxed);
         self.last_context.store(context as usize, Ordering::Relaxed);
         unsafe { GetTickCount64() }
     }
@@ -109,7 +142,8 @@ impl ProbeSlot {
     fn exit(&self, start_ms: u64) {
         let duration_ms = unsafe { GetTickCount64() }.saturating_sub(start_ms);
         self.last_duration_ms.store(duration_ms, Ordering::Relaxed);
-        self.max_duration_ms.fetch_max(duration_ms, Ordering::Relaxed);
+        self.max_duration_ms
+            .fetch_max(duration_ms, Ordering::Relaxed);
         self.completions.fetch_add(1, Ordering::Relaxed);
         self.active.fetch_sub(1, Ordering::AcqRel);
     }
@@ -136,13 +170,20 @@ static SLOT_C: ProbeSlot = ProbeSlot::new();
 static TRAMPOLINE_A: AtomicUsize = AtomicUsize::new(0);
 static TRAMPOLINE_B: AtomicUsize = AtomicUsize::new(0);
 static TRAMPOLINE_C: AtomicUsize = AtomicUsize::new(0);
+static ACTIVE_LAYOUT: OnceLock<&'static SimulationLayout> = OnceLock::new();
 static INSTALL_RESULT: OnceLock<Result<(), String>> = OnceLock::new();
 
 type SimulationJobFn = unsafe extern "system" fn(*mut u8);
 
-unsafe extern "system" fn hook_a(context: *mut u8) { run_hook(context, &SLOT_A, &TRAMPOLINE_A); }
-unsafe extern "system" fn hook_b(context: *mut u8) { run_hook(context, &SLOT_B, &TRAMPOLINE_B); }
-unsafe extern "system" fn hook_c(context: *mut u8) { run_hook(context, &SLOT_C, &TRAMPOLINE_C); }
+unsafe extern "system" fn hook_a(context: *mut u8) {
+    run_hook(context, &SLOT_A, &TRAMPOLINE_A);
+}
+unsafe extern "system" fn hook_b(context: *mut u8) {
+    run_hook(context, &SLOT_B, &TRAMPOLINE_B);
+}
+unsafe extern "system" fn hook_c(context: *mut u8) {
+    run_hook(context, &SLOT_C, &TRAMPOLINE_C);
+}
 
 unsafe fn run_hook(context: *mut u8, slot: &ProbeSlot, trampoline: &AtomicUsize) {
     let started = slot.enter(context);
@@ -155,10 +196,15 @@ unsafe fn run_hook(context: *mut u8, slot: &ProbeSlot, trampoline: &AtomicUsize)
 }
 
 pub fn snapshots() -> [SimulationProbeSnapshot; 3] {
+    let rvas = ACTIVE_LAYOUT
+        .get()
+        .copied()
+        .unwrap_or(&BUILD_0_6_0)
+        .candidate_rvas;
     [
-        SLOT_A.snapshot("A:data.rs:6143", CANDIDATE_A_RVA),
-        SLOT_B.snapshot("B:data.rs:6560", CANDIDATE_B_RVA),
-        SLOT_C.snapshot("C:data.rs:4053", CANDIDATE_C_RVA),
+        SLOT_A.snapshot("A:data.rs:6143", rvas[0]),
+        SLOT_B.snapshot("B:data.rs:6560", rvas[1]),
+        SLOT_C.snapshot("C:data.rs:4053", rvas[2]),
     ]
 }
 
@@ -169,11 +215,12 @@ pub fn core_signatures() -> Result<CoreSignatureSnapshot, String> {
             return Err("GetModuleHandleW(NULL) failed".to_owned());
         }
         let base = module_base.cast::<u8>();
+        let layout = ACTIVE_LAYOUT.get().copied().unwrap_or(&BUILD_0_6_0);
         Ok(CoreSignatureSnapshot {
-            wrapper_rva: CORE_WRAPPER_RVA,
-            wrapper_bytes: format_bytes(base.add(CORE_WRAPPER_RVA), INSPECT_BYTES),
-            runner_rva: CORE_RUNNER_RVA,
-            runner_bytes: format_bytes(base.add(CORE_RUNNER_RVA), INSPECT_BYTES),
+            wrapper_rva: layout.core_wrapper_rva,
+            wrapper_bytes: format_bytes(base.add(layout.core_wrapper_rva), INSPECT_BYTES),
+            runner_rva: layout.core_runner_anchor_rva,
+            runner_bytes: format_bytes(base.add(layout.core_runner_anchor_rva), INSPECT_BYTES),
         })
     }
 }
@@ -182,19 +229,25 @@ unsafe fn format_bytes(address: *const u8, count: usize) -> String {
     let bytes = std::slice::from_raw_parts(address, count);
     let mut out = String::with_capacity(count * 3);
     for (index, byte) in bytes.iter().enumerate() {
-        if index != 0 { out.push(' '); }
+        if index != 0 {
+            out.push(' ');
+        }
         let _ = write!(&mut out, "{byte:02X}");
     }
     out
 }
 
 pub fn ensure_installed() -> Result<(), String> {
-    INSTALL_RESULT.get_or_init(|| unsafe { install_inner() }).clone()
+    INSTALL_RESULT
+        .get_or_init(|| unsafe { install_inner() })
+        .clone()
 }
 
 unsafe fn install_inner() -> Result<(), String> {
     let module_base = GetModuleHandleW(ptr::null());
-    if module_base.is_null() { return Err("GetModuleHandleW(NULL) failed".to_owned()); }
+    if module_base.is_null() {
+        return Err("GetModuleHandleW(NULL) failed".to_owned());
+    }
 
     let base = module_base.cast::<u8>();
     let pe_offset = ptr::read_unaligned(base.add(0x3c).cast::<u32>()) as usize;
@@ -205,41 +258,81 @@ unsafe fn install_inner() -> Result<(), String> {
     let timestamp = ptr::read_unaligned(base.add(pe_offset + 8).cast::<u32>());
     let optional_header = pe_offset + 24;
     let image_size = ptr::read_unaligned(base.add(optional_header + 56).cast::<u32>());
-    if timestamp != EXPECTED_PE_TIMESTAMP || image_size != EXPECTED_IMAGE_SIZE {
-        return Err(format!("unsupported TeamfightManager2.exe build (timestamp=0x{timestamp:08X}, image=0x{image_size:08X})"));
-    }
+    let layout = known_layout(timestamp, image_size).ok_or_else(|| {
+        format!(
+            "unsupported TeamfightManager2.exe build (timestamp=0x{timestamp:08X}, image=0x{image_size:08X})"
+        )
+    })?;
+    let _ = ACTIVE_LAYOUT.set(layout);
 
-    for (name, rva) in [("A", CANDIDATE_A_RVA), ("B", CANDIDATE_B_RVA), ("C", CANDIDATE_C_RVA)] {
+    for (name, rva) in ["A", "B", "C"].into_iter().zip(layout.candidate_rvas) {
         let target = base.add(rva);
         let actual = std::slice::from_raw_parts(target, PATCH_LEN);
         if actual != EXPECTED_PROLOGUE {
-            return Err(format!("simulation candidate {name} signature mismatch at RVA 0x{rva:X}"));
+            return Err(format!(
+                "simulation candidate {name} signature mismatch at RVA 0x{rva:X}"
+            ));
         }
     }
 
-    install_detour(base.add(CANDIDATE_A_RVA), hook_a as usize, &TRAMPOLINE_A)?;
-    install_detour(base.add(CANDIDATE_B_RVA), hook_b as usize, &TRAMPOLINE_B)?;
-    install_detour(base.add(CANDIDATE_C_RVA), hook_c as usize, &TRAMPOLINE_C)?;
+    install_detour(
+        base.add(layout.candidate_rvas[0]),
+        hook_a as usize,
+        &TRAMPOLINE_A,
+    )?;
+    install_detour(
+        base.add(layout.candidate_rvas[1]),
+        hook_b as usize,
+        &TRAMPOLINE_B,
+    )?;
+    install_detour(
+        base.add(layout.candidate_rvas[2]),
+        hook_c as usize,
+        &TRAMPOLINE_C,
+    )?;
     Ok(())
 }
 
-unsafe fn install_detour(target: *mut u8, hook: usize, trampoline_slot: &AtomicUsize) -> Result<(), String> {
-    let trampoline = VirtualAlloc(ptr::null_mut(), TRAMPOLINE_LEN, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE).cast::<u8>();
-    if trampoline.is_null() { return Err("VirtualAlloc failed while creating simulation trampoline".to_owned()); }
+unsafe fn install_detour(
+    target: *mut u8,
+    hook: usize,
+    trampoline_slot: &AtomicUsize,
+) -> Result<(), String> {
+    let trampoline = VirtualAlloc(
+        ptr::null_mut(),
+        TRAMPOLINE_LEN,
+        MEM_COMMIT | MEM_RESERVE,
+        PAGE_EXECUTE_READWRITE,
+    )
+    .cast::<u8>();
+    if trampoline.is_null() {
+        return Err("VirtualAlloc failed while creating simulation trampoline".to_owned());
+    }
 
     ptr::copy_nonoverlapping(target, trampoline, PATCH_LEN);
     write_abs_jump(trampoline.add(PATCH_LEN), target.add(PATCH_LEN) as usize);
     trampoline_slot.store(trampoline as usize, Ordering::Release);
 
     let mut old_protect = 0u32;
-    if VirtualProtect(target.cast::<c_void>(), PATCH_LEN, PAGE_EXECUTE_READWRITE, &mut old_protect) == 0 {
+    if VirtualProtect(
+        target.cast::<c_void>(),
+        PATCH_LEN,
+        PAGE_EXECUTE_READWRITE,
+        &mut old_protect,
+    ) == 0
+    {
         trampoline_slot.store(0, Ordering::Release);
         return Err("VirtualProtect failed while enabling simulation detour write".to_owned());
     }
 
     write_abs_jump(target, hook);
     let mut ignored = 0u32;
-    let _ = VirtualProtect(target.cast::<c_void>(), PATCH_LEN, old_protect, &mut ignored);
+    let _ = VirtualProtect(
+        target.cast::<c_void>(),
+        PATCH_LEN,
+        old_protect,
+        &mut ignored,
+    );
     let _ = FlushInstructionCache(GetCurrentProcess(), target.cast::<c_void>(), PATCH_LEN);
     Ok(())
 }
@@ -247,7 +340,11 @@ unsafe fn install_detour(target: *mut u8, hook: usize, trampoline_slot: &AtomicU
 unsafe fn write_abs_jump(destination: *mut u8, target: usize) {
     *destination = 0x48;
     *destination.add(1) = 0xB8;
-    ptr::copy_nonoverlapping(target.to_le_bytes().as_ptr(), destination.add(2), std::mem::size_of::<usize>());
+    ptr::copy_nonoverlapping(
+        target.to_le_bytes().as_ptr(),
+        destination.add(2),
+        std::mem::size_of::<usize>(),
+    );
     *destination.add(10) = 0xFF;
     *destination.add(11) = 0xE0;
 }
