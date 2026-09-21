@@ -63,11 +63,12 @@ This file records the current functionality-first scope and implementation prior
    - radial/ray range must represent current live match values after simulated balance patches;
    - do not hard-code per-champion ranges from one game patch;
    - investigate deeper live action/effect metadata or a version-resilient native extraction route if the stable runtime API remains insufficient.
-13. **Automatic team fog-of-war on direct control** — **implemented; pending physical validation.**
-   - the authoritative Candidate-A callback publishes the selected champion's actual simulation team; do not infer side from F-key position or the user's original team;
-   - when that team changes, Direct Control invokes the base game's native Team 0 / Team 1 spectator-vision shortcut once, then leaves normal fog rendering entirely to TFM2;
-   - current bridge uses the native default `X = Team 0 / Blue` and `C = Team 1 / Red` shortcuts; keep that dispatch isolated so later shortcut-mode work can replace the physical-key bridge if needed;
-   - switching to the opposite-side champion must switch fog to that champion's team; `End` does not force vision back to all-map.
+13. **Automatic team fog-of-war on direct control** — **implementation route under investigation.**
+   - the authoritative Candidate-A callback now publishes the selected champion's actual simulation team; do not infer side from F-key position or the user's original team;
+   - **rejected:** synthesizing default `X` / `C` keypresses. Automatic fog is semantic behavior, not a shortcut, and must not depend on the player's configurable key bindings;
+   - preferred route: invoke the native `in_game_camera_team0` / `in_game_camera_team1` action directly, or manipulate a separately verified native spectator-vision state if no semantic action-call surface is available;
+   - current diagnostic exposes the captured native camera `mode` while the player manually toggles All / Team 0 / Team 1 vision so we can determine whether that verified field is the relevant state without writing it blindly;
+   - switching to the opposite-side champion must switch fog to that champion's team; `End` should not forcibly change fog unless we later choose that explicitly.
 14. **F-key selection mapping hardening**
    - preserve the game's native role order exactly after verifying it during implementation; current working hypothesis is `F1-F5 = player team Top, Jungle, Mid, Bottom, Support` and `F6-F10 = opponent team` in that same order;
    - current implementation finds visible `(F1)`-`(F10)` player cards in the UI tree and name-matches them to stable athlete ids; this works but is indirect and UI-layout-sensitive;
