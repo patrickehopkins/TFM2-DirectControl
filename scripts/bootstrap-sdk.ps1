@@ -1,5 +1,6 @@
 param(
-    [string]$GameDir = (Join-Path ${env:ProgramFiles(x86)} "Steam\steamapps\common\Teamfight Manager2")
+    [string]$GameDir = (Join-Path ${env:ProgramFiles(x86)} "Steam\steamapps\common\Teamfight Manager2"),
+    [switch]$Refresh
 )
 
 $ErrorActionPreference = "Stop"
@@ -14,9 +15,13 @@ if (-not (Test-Path $SdkSource)) {
 }
 
 if (Test-Path $SdkDestination) {
-    Write-Host "Stable SDK already exists at '$SdkDestination'."
-    Write-Host "Delete it and rerun this script if you want to refresh it from the installed game."
-    exit 0
+    if (-not $Refresh) {
+        Write-Host "Stable SDK already exists at '$SdkDestination'."
+        Write-Host "Pass -Refresh to replace it with the SDK from the installed game."
+        exit 0
+    }
+
+    Remove-Item -LiteralPath $SdkDestination -Recurse -Force
 }
 
 New-Item -ItemType Directory -Path $SdkRoot -Force | Out-Null

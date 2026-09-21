@@ -6,7 +6,9 @@ The goal is to expose a small, reusable set of low-level direct-control primitiv
 
 ## Status
 
-Bootstrap loading is verified on Teamfight Manager 2 v0.5.8. The watched-match simulation has been identified and continuous ~60 Hz wall-clock pacing has been physically validated for at least ten visible minutes without a safety fail-open. Native `InputV1::move_to` injection into the paced watched simulation is physically verified: selected actors respond in real time and other AI actors react to the changed behavior.
+Bootstrap loading and the full control path are physically verified on Teamfight Manager 2 v0.5.8. The watched-match simulation has been identified and continuous ~60 Hz wall-clock pacing has been physically validated for at least ten visible minutes without a safety fail-open. Native `InputV1::move_to` injection into the paced watched simulation is physically verified: selected actors respond in real time and other AI actors react to the changed behavior.
+
+The native simulation and camera adapters have been relocated and physically validated for v0.6.0 (PE timestamp `0x6AAA07D1`, image size `0x05228000`). A complete in-game pass confirmed real-time pacing, selection, movement and attacks, MMB pan, wheel zoom, pause/resume, skills, return-home, and Ctrl+End release. The source retains the verified v0.5.8 layouts as a separate compatibility profile. See `docs/v0.6.0-migration-validation.md` for the migration evidence and remaining source-build smoke test.
 
 Pause/resume is also physically verified. Opening the game's pause UI freezes Candidate A; closing it resumes from a re-anchored pacing origin, so paused wall time does not become hidden catch-up simulation. Persistent MoveTo commands survive pause/resume and remain responsive afterward.
 
@@ -155,7 +157,7 @@ From the repository root:
 .\scripts\install-dev.ps1
 ```
 
-On the first run, the script copies the stable SDK into `sdk\mod-api-stable`, builds the DLL, and installs these files under:
+The script refreshes `sdk\mod-api-stable` from the installed game, builds the DLL, and installs these files under:
 
 ```text
 <TFM2 install>\mods\tfm2_direct_control\

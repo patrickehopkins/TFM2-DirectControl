@@ -1,6 +1,18 @@
 # Camera / Screen-to-World Research
 
-Status: validated for Teamfight Manager 2 v0.5.8 target executable.
+Status: validated for the supported Teamfight Manager 2 v0.5.8 and v0.6.0 target executables.
+
+## v0.6.0 migration status
+
+Static relocation against the supplied v0.5.8 reference and v0.6.0 target identified the v0.6.0 camera handler at RVA `0x009CEBF0`. Its first 12 bytes remain the same eight whole push instructions used by the existing trampoline.
+
+The camera layout is mostly stable, but a new 12-byte region was inserted after the extent fields. The verified v0.6.0 offsets are:
+
+- zoom / center / extents: unchanged at `+0xE0` through `+0xF0`;
+- mode: `+0x100` (was `+0xF4`);
+- pan X/Y: `+0x428` / `+0x42C` (were `+0x418` / `+0x41C`).
+
+The adapter now selects a complete build-specific layout from the PE timestamp and image size before installing the detour. This prevents a partially migrated build from combining a new handler RVA with stale private offsets. Physical v0.6.0 testing confirmed MMB pan and wheel zoom in a complete control-path pass on 2026-09-20.
 
 This document records the evidence behind the camera adapter used by TFM2 Direct Control. Keep version-specific reverse-engineering details isolated here so the gameplay/control code can remain on the official stable mod API.
 
