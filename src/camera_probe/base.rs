@@ -1,7 +1,7 @@
-//! Version-checked camera-state capture for Teamfight Manager 2 v0.5.8.
+//! Version-checked camera-state capture for known Teamfight Manager 2 builds.
 //!
 //! The official stable mod API deliberately does not expose the spectator camera.
-//! For the single tested 0.5.8 executable we therefore detour the game's camera
+//! For each verified executable we therefore detour the game's camera
 //! input/update handler and capture only a few verified fields from its `this`
 //! pointer.
 //!
@@ -24,18 +24,55 @@ use std::{
     },
 };
 
-const HANDLER_RVA: usize = 0x009E_6750;
-const EXPECTED_PE_TIMESTAMP: u32 = 0x6A97_8218;
-const EXPECTED_IMAGE_SIZE: u32 = 0x04A1_D000;
+#[derive(Debug, Clone, Copy)]
+struct CameraLayout {
+    pe_timestamp: u32,
+    image_size: u32,
+    handler_rva: usize,
+    zoom_offset: usize,
+    center_x_offset: usize,
+    center_y_offset: usize,
+    extent_a_offset: usize,
+    extent_b_offset: usize,
+    mode_offset: usize,
+    pan_x_offset: usize,
+    pan_y_offset: usize,
+}
 
-const ZOOM_OFFSET: usize = 0xE0;
-const CENTER_X_OFFSET: usize = 0xE4;
-const CENTER_Y_OFFSET: usize = 0xE8;
-const EXTENT_A_OFFSET: usize = 0xEC;
-const EXTENT_B_OFFSET: usize = 0xF0;
-const MODE_OFFSET: usize = 0xF4;
-const PAN_X_OFFSET: usize = 0x418;
-const PAN_Y_OFFSET: usize = 0x41C;
+const BUILD_0_5_8: CameraLayout = CameraLayout {
+    pe_timestamp: 0x6A97_8218,
+    image_size: 0x04A1_D000,
+    handler_rva: 0x009E_6750,
+    zoom_offset: 0xE0,
+    center_x_offset: 0xE4,
+    center_y_offset: 0xE8,
+    extent_a_offset: 0xEC,
+    extent_b_offset: 0xF0,
+    mode_offset: 0xF4,
+    pan_x_offset: 0x418,
+    pan_y_offset: 0x41C,
+};
+
+const BUILD_0_6_0: CameraLayout = CameraLayout {
+    pe_timestamp: 0x6AAA_07D1,
+    image_size: 0x0522_8000,
+    handler_rva: 0x009C_EBF0,
+    zoom_offset: 0xE0,
+    center_x_offset: 0xE4,
+    center_y_offset: 0xE8,
+    extent_a_offset: 0xEC,
+    extent_b_offset: 0xF0,
+    mode_offset: 0x100,
+    pan_x_offset: 0x428,
+    pan_y_offset: 0x42C,
+};
+
+fn known_layout(timestamp: u32, image_size: u32) -> Option<&'static CameraLayout> {
+    [&BUILD_0_5_8, &BUILD_0_6_0]
+        .into_iter()
+        .find(|layout| layout.pe_timestamp == timestamp && layout.image_size == image_size)
+}
+
 const ZOOM_STEP: f32 = 0.25;
 const ZOOM_MIN: f32 = 0.5;
 const ZOOM_MAX: f32 = 3.0;
@@ -128,6 +165,7 @@ static CANDIDATES: [CandidateSlot; MAX_CANDIDATES] = [
     CandidateSlot::new(),
     CandidateSlot::new(),
 ];
+static ACTIVE_LAYOUT: OnceLock<&'static CameraLayout> = OnceLock::new();
 static TRAMPOLINE: AtomicUsize = AtomicUsize::new(0);
 static INSTALL_RESULT: OnceLock<Result<(), String>> = OnceLock::new();
 
@@ -194,7 +232,10 @@ unsafe fn inject_requested_zoom(this: *mut u8) {
         return;
     }
 
-    let zoom = ptr::read_unaligned(this.add(ZOOM_OFFSET).cast::<f32>());
+    let Some(layout) = ACTIVE_LAYOUT.get().copied() else {
+        return;
+    };
+    let zoom = ptr::read_unaligned(this.add(layout.zoom_offset).cast::<f32>());
     if !zoom.is_finite() {
         return;
     }
@@ -203,7 +244,7 @@ unsafe fn inject_requested_zoom(this: *mut u8) {
     // to 0.5..3.0. Writing the requested zoom before the original handler lets TFM2's
     // own camera update continue to own its derived extents and render state.
     let next = (zoom + steps as f32 * ZOOM_STEP).clamp(ZOOM_MIN, ZOOM_MAX);
-    ptr::write_unaligned(this.add(ZOOM_OFFSET).cast::<f32>(), next);
+    ptr::write_unaligned(this.add(layout.zoom_offset).cast::<f32>(), next);
 }
 
 unsafe fn inject_requested_pan(this: *mut u8) {
@@ -216,18 +257,22 @@ unsafe fn inject_requested_pan(this: *mut u8) {
         return;
     }
 
+    let Some(layout) = ACTIVE_LAYOUT.get().copied() else {
+        return;
+    };
+
     if REQUESTED_PAN_ACTIVE.load(Ordering::Acquire) {
         let pan_x = f32::from_bits(REQUESTED_PAN_X.load(Ordering::Relaxed));
         let pan_y = f32::from_bits(REQUESTED_PAN_Y.load(Ordering::Relaxed));
         if pan_x.is_finite() && pan_y.is_finite() {
-            ptr::write_unaligned(this.add(PAN_X_OFFSET).cast::<f32>(), pan_x);
-            ptr::write_unaligned(this.add(PAN_Y_OFFSET).cast::<f32>(), pan_y);
+            ptr::write_unaligned(this.add(layout.pan_x_offset).cast::<f32>(), pan_x);
+            ptr::write_unaligned(this.add(layout.pan_y_offset).cast::<f32>(), pan_y);
         }
     } else if REQUESTED_PAN_CLEAR_ONCE.swap(false, Ordering::AcqRel) {
         // Clear one final injected value when the gesture ends, then stop touching
         // native pan state so TFM2's own controls regain full ownership.
-        ptr::write_unaligned(this.add(PAN_X_OFFSET).cast::<f32>(), 0.0);
-        ptr::write_unaligned(this.add(PAN_Y_OFFSET).cast::<f32>(), 0.0);
+        ptr::write_unaligned(this.add(layout.pan_x_offset).cast::<f32>(), 0.0);
+        ptr::write_unaligned(this.add(layout.pan_y_offset).cast::<f32>(), 0.0);
     }
 }
 
@@ -272,12 +317,15 @@ unsafe fn capture(this: *mut u8) {
         return;
     }
 
-    let zoom = ptr::read_unaligned(this.add(ZOOM_OFFSET).cast::<f32>());
-    let center_x = ptr::read_unaligned(this.add(CENTER_X_OFFSET).cast::<f32>());
-    let center_y = ptr::read_unaligned(this.add(CENTER_Y_OFFSET).cast::<f32>());
-    let extent_a = ptr::read_unaligned(this.add(EXTENT_A_OFFSET).cast::<f32>());
-    let extent_b = ptr::read_unaligned(this.add(EXTENT_B_OFFSET).cast::<f32>());
-    let mode = ptr::read_unaligned(this.add(MODE_OFFSET).cast::<u8>());
+    let Some(layout) = ACTIVE_LAYOUT.get().copied() else {
+        return;
+    };
+    let zoom = ptr::read_unaligned(this.add(layout.zoom_offset).cast::<f32>());
+    let center_x = ptr::read_unaligned(this.add(layout.center_x_offset).cast::<f32>());
+    let center_y = ptr::read_unaligned(this.add(layout.center_y_offset).cast::<f32>());
+    let extent_a = ptr::read_unaligned(this.add(layout.extent_a_offset).cast::<f32>());
+    let extent_b = ptr::read_unaligned(this.add(layout.extent_b_offset).cast::<f32>());
+    let mode = ptr::read_unaligned(this.add(layout.mode_offset).cast::<u8>());
 
     // Do not publish clearly nonsensical values if the handler layout ever changes.
     if !zoom.is_finite()
@@ -385,17 +433,19 @@ unsafe fn install_inner() -> Result<(), String> {
     let timestamp = ptr::read_unaligned(base.add(pe_offset + 8).cast::<u32>());
     let optional_header = pe_offset + 24;
     let image_size = ptr::read_unaligned(base.add(optional_header + 56).cast::<u32>());
-    if timestamp != EXPECTED_PE_TIMESTAMP || image_size != EXPECTED_IMAGE_SIZE {
-        return Err(format!(
+    let layout = known_layout(timestamp, image_size).ok_or_else(|| {
+        format!(
             "unsupported TeamfightManager2.exe build (timestamp=0x{timestamp:08X}, image=0x{image_size:08X})"
-        ));
-    }
+        )
+    })?;
+    let _ = ACTIVE_LAYOUT.set(layout);
 
-    let target = base.add(HANDLER_RVA);
+    let target = base.add(layout.handler_rva);
     let actual = std::slice::from_raw_parts(target, PATCH_LEN);
     if actual != EXPECTED_PROLOGUE {
         return Err(format!(
-            "camera handler signature mismatch at RVA 0x{HANDLER_RVA:X}"
+            "camera handler signature mismatch at RVA 0x{:X}",
+            layout.handler_rva
         ));
     }
 

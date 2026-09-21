@@ -1,4 +1,4 @@
-//! Read-only entry/exit probe for Teamfight Manager 2 v0.5.8 client simulation jobs.
+//! Read-only entry/exit probe for known Teamfight Manager 2 client simulation jobs.
 //!
 //! Static analysis of TeamfightManager2.exe found three client-side functions in
 //! `game-view/src/logic/client/data.rs` that call the common game-core simulation wrapper.
@@ -19,17 +19,39 @@ use std::{
     },
 };
 
-const EXPECTED_PE_TIMESTAMP: u32 = 0x6A97_8218;
-const EXPECTED_IMAGE_SIZE: u32 = 0x04A1_D000;
+#[derive(Debug, Clone, Copy)]
+struct SimulationLayout {
+    pe_timestamp: u32,
+    image_size: u32,
+    candidate_rvas: [usize; 3],
+    core_wrapper_rva: usize,
+    /// v0.5.8 has a separate runner function. In v0.6.0 the equivalent body is
+    /// inlined into the enlarged wrapper, so this is a verified body anchor.
+    core_runner_anchor_rva: usize,
+}
 
-// `game-view/src/logic/client/data.rs` candidates discovered by static analysis.
-const CANDIDATE_A_RVA: usize = 0x00B1_CF10;
-const CANDIDATE_B_RVA: usize = 0x00B1_DB20;
-const CANDIDATE_C_RVA: usize = 0x00B1_E730;
+const BUILD_0_5_8: SimulationLayout = SimulationLayout {
+    pe_timestamp: 0x6A97_8218,
+    image_size: 0x04A1_D000,
+    candidate_rvas: [0x00B1_CF10, 0x00B1_DB20, 0x00B1_E730],
+    core_wrapper_rva: 0x0180_EAA0,
+    core_runner_anchor_rva: 0x0181_3FB0,
+};
 
-// Common game-core simulation path reached by Candidate A.
-const CORE_WRAPPER_RVA: usize = 0x0180_EAA0;
-const CORE_RUNNER_RVA: usize = 0x0181_3FB0;
+const BUILD_0_6_0: SimulationLayout = SimulationLayout {
+    pe_timestamp: 0x6AAA_07D1,
+    image_size: 0x0522_8000,
+    candidate_rvas: [0x00AC_2AE0, 0x00AC_36F0, 0x00AC_4300],
+    core_wrapper_rva: 0x016D_2740,
+    core_runner_anchor_rva: 0x016D_3880,
+};
+
+fn known_layout(timestamp: u32, image_size: u32) -> Option<&'static SimulationLayout> {
+    [&BUILD_0_5_8, &BUILD_0_6_0]
+        .into_iter()
+        .find(|layout| layout.pe_timestamp == timestamp && layout.image_size == image_size)
+}
+
 const INSPECT_BYTES: usize = 32;
 
 const PATCH_LEN: usize = 12;
@@ -136,6 +158,7 @@ static SLOT_C: ProbeSlot = ProbeSlot::new();
 static TRAMPOLINE_A: AtomicUsize = AtomicUsize::new(0);
 static TRAMPOLINE_B: AtomicUsize = AtomicUsize::new(0);
 static TRAMPOLINE_C: AtomicUsize = AtomicUsize::new(0);
+static ACTIVE_LAYOUT: OnceLock<&'static SimulationLayout> = OnceLock::new();
 static INSTALL_RESULT: OnceLock<Result<(), String>> = OnceLock::new();
 
 type SimulationJobFn = unsafe extern "system" fn(*mut u8);
@@ -155,10 +178,15 @@ unsafe fn run_hook(context: *mut u8, slot: &ProbeSlot, trampoline: &AtomicUsize)
 }
 
 pub fn snapshots() -> [SimulationProbeSnapshot; 3] {
+    let rvas = ACTIVE_LAYOUT
+        .get()
+        .copied()
+        .unwrap_or(&BUILD_0_6_0)
+        .candidate_rvas;
     [
-        SLOT_A.snapshot("A:data.rs:6143", CANDIDATE_A_RVA),
-        SLOT_B.snapshot("B:data.rs:6560", CANDIDATE_B_RVA),
-        SLOT_C.snapshot("C:data.rs:4053", CANDIDATE_C_RVA),
+        SLOT_A.snapshot("A:data.rs:6143", rvas[0]),
+        SLOT_B.snapshot("B:data.rs:6560", rvas[1]),
+        SLOT_C.snapshot("C:data.rs:4053", rvas[2]),
     ]
 }
 
@@ -169,11 +197,12 @@ pub fn core_signatures() -> Result<CoreSignatureSnapshot, String> {
             return Err("GetModuleHandleW(NULL) failed".to_owned());
         }
         let base = module_base.cast::<u8>();
+        let layout = ACTIVE_LAYOUT.get().copied().unwrap_or(&BUILD_0_6_0);
         Ok(CoreSignatureSnapshot {
-            wrapper_rva: CORE_WRAPPER_RVA,
-            wrapper_bytes: format_bytes(base.add(CORE_WRAPPER_RVA), INSPECT_BYTES),
-            runner_rva: CORE_RUNNER_RVA,
-            runner_bytes: format_bytes(base.add(CORE_RUNNER_RVA), INSPECT_BYTES),
+            wrapper_rva: layout.core_wrapper_rva,
+            wrapper_bytes: format_bytes(base.add(layout.core_wrapper_rva), INSPECT_BYTES),
+            runner_rva: layout.core_runner_anchor_rva,
+            runner_bytes: format_bytes(base.add(layout.core_runner_anchor_rva), INSPECT_BYTES),
         })
     }
 }
@@ -205,11 +234,14 @@ unsafe fn install_inner() -> Result<(), String> {
     let timestamp = ptr::read_unaligned(base.add(pe_offset + 8).cast::<u32>());
     let optional_header = pe_offset + 24;
     let image_size = ptr::read_unaligned(base.add(optional_header + 56).cast::<u32>());
-    if timestamp != EXPECTED_PE_TIMESTAMP || image_size != EXPECTED_IMAGE_SIZE {
-        return Err(format!("unsupported TeamfightManager2.exe build (timestamp=0x{timestamp:08X}, image=0x{image_size:08X})"));
-    }
+    let layout = known_layout(timestamp, image_size).ok_or_else(|| {
+        format!(
+            "unsupported TeamfightManager2.exe build (timestamp=0x{timestamp:08X}, image=0x{image_size:08X})"
+        )
+    })?;
+    let _ = ACTIVE_LAYOUT.set(layout);
 
-    for (name, rva) in [("A", CANDIDATE_A_RVA), ("B", CANDIDATE_B_RVA), ("C", CANDIDATE_C_RVA)] {
+    for (name, rva) in ["A", "B", "C"].into_iter().zip(layout.candidate_rvas) {
         let target = base.add(rva);
         let actual = std::slice::from_raw_parts(target, PATCH_LEN);
         if actual != EXPECTED_PROLOGUE {
@@ -217,9 +249,9 @@ unsafe fn install_inner() -> Result<(), String> {
         }
     }
 
-    install_detour(base.add(CANDIDATE_A_RVA), hook_a as usize, &TRAMPOLINE_A)?;
-    install_detour(base.add(CANDIDATE_B_RVA), hook_b as usize, &TRAMPOLINE_B)?;
-    install_detour(base.add(CANDIDATE_C_RVA), hook_c as usize, &TRAMPOLINE_C)?;
+    install_detour(base.add(layout.candidate_rvas[0]), hook_a as usize, &TRAMPOLINE_A)?;
+    install_detour(base.add(layout.candidate_rvas[1]), hook_b as usize, &TRAMPOLINE_B)?;
+    install_detour(base.add(layout.candidate_rvas[2]), hook_c as usize, &TRAMPOLINE_C)?;
     Ok(())
 }
 

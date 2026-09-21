@@ -1,4 +1,16 @@
-# TFM2 v0.5.8 Client Simulation Research
+# TFM2 Client Simulation Research
+
+## v0.6.0 migration status
+
+Direct comparison of the supplied v0.5.8 reference executable with the v0.6.0 target relocated the three `game-view/src/logic/client/data.rs` simulation jobs:
+
+- Candidate A: `0x00AC2AE0`;
+- Candidate B: `0x00AC36F0`;
+- Candidate C: `0x00AC4300`.
+
+All three retain the exact 12-byte whole-instruction prologue required by the existing trampolines. Candidate C also retained large exact instruction regions, while A/B retained the same wrapper-call structure around their relocated entries.
+
+The common simulation wrapper moved to `0x016D2740`. In v0.6.0 the old separate runner body is inlined into this enlarged wrapper; `0x016D3880` is retained only as a diagnostic body anchor, not a separately detoured function. The source now selects the complete v0.5.8 or v0.6.0 layout by verified PE timestamp and image size. Physical v0.6.0 testing confirmed real-time pacing, pause/resume, manual inputs, and Ctrl+End release in a complete control-path pass on 2026-09-20.
 
 This document records the reverse-engineering work around Teamfight Manager 2's client-side match simulation and playback timing. Camera research is in `camera-research.md`; screen-to-world validation is in `camera-validation-log.md`; physical direct-control tests are in `control-validation-log.md`.
 

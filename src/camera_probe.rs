@@ -1,4 +1,4 @@
-//! Camera capture plus match-wide camera driving for Teamfight Manager 2 v0.5.8.
+//! Camera capture plus match-wide camera driving for known Teamfight Manager 2 builds.
 //!
 //! Keep capture and camera mutation deliberately separate. `base` owns the physically
 //! validated native camera hook. Harbinger never writes the derived camera center at
