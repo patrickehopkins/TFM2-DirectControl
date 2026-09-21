@@ -67,7 +67,7 @@ This file records the current functionality-first scope and implementation prior
    - the authoritative Candidate-A callback now publishes the selected champion's actual simulation team; do not infer side from F-key position or the user's original team;
    - **rejected:** synthesizing default `X` / `C` keypresses. Automatic fog is semantic behavior, not a shortcut, and must not depend on the player's configurable key bindings;
    - preferred route: invoke the native `in_game_camera_team0` / `in_game_camera_team1` action directly, or manipulate a separately verified native spectator-vision state if no semantic action-call surface is available;
-   - current diagnostic exposes the captured native camera `mode` while the player manually toggles All / Team 0 / Team 1 vision so we can determine whether that verified field is the relevant state without writing it blindly;
+   - completed diagnostic: the captured native camera `mode` remained `0` for All / Team 0 / Team 1 vision, so that field is **not** the fog/vision selector and must not be repurposed;
    - switching to the opposite-side champion must switch fog to that champion's team; `End` should not forcibly change fog unless we later choose that explicitly.
 14. **F-key selection mapping hardening**
    - preserve the game's native role order exactly after verifying it during implementation; current working hypothesis is `F1-F5 = player team Top, Jungle, Mid, Bottom, Support` and `F6-F10 = opponent team` in that same order;
