@@ -49,7 +49,8 @@ This file records the current functionality-first scope and implementation prior
    - arrow-key camera panning was rejected and removed;
    - native minimap LMB camera relocation + RMB command workflow remains intact;
    - detailed architecture and rejected experiments are recorded in `docs/camera-controls.md`.
-9. **Clicks beyond the playable map edge** — battlefield clicks just outside the legal map should still express the intended direction. Clamp/project the request onto a legal/pathable map-edge destination so pathfinding moves the champion toward that edge rather than silently eating the order. Never allow movement off-map.
+9. **Clicks beyond the playable map edge** — **implemented; pending physical validation.** Battlefield clicks beyond the legal map now express direction by clamping only the requested movement destination into the legal 0..960 world square. TFM2 still receives an ordinary movement request, so native pathfinding, terrain, champion radius, and entity collision remain authoritative; Direct Control never grants permission to leave the map.
+   - after this validates, the current rapid-fire queue is **automatic team fog-of-war -> F-key selection hardening -> synchronized match speeds/death fast-forward -> click-target hitbox polish**; then revisit the remaining order.
 10. **Skill cooldown UI** — expose direct-control-friendly Q/W/R cooldown/readiness information with high visibility so the player does not have to infer cooldowns from the normal spectator presentation. Include explicit red feedback for attempted use while unavailable.
 11. **Click-target hitbox polish**
    - enlarge only the **clickable/selectable area**; never alter entity collision/pathing geometry;
