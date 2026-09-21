@@ -683,6 +683,10 @@ impl DirectControlExtension {
         let selected_team = control::selected_team()
             .map(|team| team.to_string())
             .unwrap_or_else(|| "?".to_owned());
+        let native_vision = Self::best_camera()
+            .and_then(|camera| camera.vision_mode)
+            .map(|mode| mode.to_string())
+            .unwrap_or_else(|| "?".to_owned());
         let order = if control_state.selected_athlete.is_none() {
             "AI / spectator".to_owned()
         } else if control_state.returning {
@@ -734,7 +738,9 @@ impl DirectControlExtension {
         Self::draw_text_line(
             ctx,
             84.0,
-            &format!("SELECTED: athlete {selected} | team {selected_team} | ORDER: {order}"),
+            &format!(
+                "SELECTED: athlete {selected} | team {selected_team} | native vision {native_vision} | ORDER: {order}"
+            ),
             0xffffffff,
         );
         Self::draw_text_line(
