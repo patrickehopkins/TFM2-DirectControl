@@ -71,8 +71,18 @@ extern "system" {
     fn GetCurrentProcess() -> *mut c_void;
     fn GetCurrentThreadId() -> u32;
     fn GetTickCount64() -> u64;
-    fn VirtualAlloc(address: *mut c_void, size: usize, allocation_type: u32, protect: u32) -> *mut c_void;
-    fn VirtualProtect(address: *mut c_void, size: usize, new_protect: u32, old_protect: *mut u32) -> i32;
+    fn VirtualAlloc(
+        address: *mut c_void,
+        size: usize,
+        allocation_type: u32,
+        protect: u32,
+    ) -> *mut c_void;
+    fn VirtualProtect(
+        address: *mut c_void,
+        size: usize,
+        new_protect: u32,
+        old_protect: *mut u32,
+    ) -> i32;
     fn FlushInstructionCache(process: *mut c_void, address: *const c_void, size: usize) -> i32;
 }
 
@@ -123,7 +133,8 @@ impl ProbeSlot {
     fn enter(&self, context: *mut u8) -> u64 {
         self.entries.fetch_add(1, Ordering::Relaxed);
         self.active.fetch_add(1, Ordering::AcqRel);
-        self.last_thread_id.store(unsafe { GetCurrentThreadId() }, Ordering::Relaxed);
+        self.last_thread_id
+            .store(unsafe { GetCurrentThreadId() }, Ordering::Relaxed);
         self.last_context.store(context as usize, Ordering::Relaxed);
         unsafe { GetTickCount64() }
     }
@@ -131,7 +142,8 @@ impl ProbeSlot {
     fn exit(&self, start_ms: u64) {
         let duration_ms = unsafe { GetTickCount64() }.saturating_sub(start_ms);
         self.last_duration_ms.store(duration_ms, Ordering::Relaxed);
-        self.max_duration_ms.fetch_max(duration_ms, Ordering::Relaxed);
+        self.max_duration_ms
+            .fetch_max(duration_ms, Ordering::Relaxed);
         self.completions.fetch_add(1, Ordering::Relaxed);
         self.active.fetch_sub(1, Ordering::AcqRel);
     }
@@ -163,9 +175,15 @@ static INSTALL_RESULT: OnceLock<Result<(), String>> = OnceLock::new();
 
 type SimulationJobFn = unsafe extern "system" fn(*mut u8);
 
-unsafe extern "system" fn hook_a(context: *mut u8) { run_hook(context, &SLOT_A, &TRAMPOLINE_A); }
-unsafe extern "system" fn hook_b(context: *mut u8) { run_hook(context, &SLOT_B, &TRAMPOLINE_B); }
-unsafe extern "system" fn hook_c(context: *mut u8) { run_hook(context, &SLOT_C, &TRAMPOLINE_C); }
+unsafe extern "system" fn hook_a(context: *mut u8) {
+    run_hook(context, &SLOT_A, &TRAMPOLINE_A);
+}
+unsafe extern "system" fn hook_b(context: *mut u8) {
+    run_hook(context, &SLOT_B, &TRAMPOLINE_B);
+}
+unsafe extern "system" fn hook_c(context: *mut u8) {
+    run_hook(context, &SLOT_C, &TRAMPOLINE_C);
+}
 
 unsafe fn run_hook(context: *mut u8, slot: &ProbeSlot, trampoline: &AtomicUsize) {
     let started = slot.enter(context);
@@ -211,19 +229,25 @@ unsafe fn format_bytes(address: *const u8, count: usize) -> String {
     let bytes = std::slice::from_raw_parts(address, count);
     let mut out = String::with_capacity(count * 3);
     for (index, byte) in bytes.iter().enumerate() {
-        if index != 0 { out.push(' '); }
+        if index != 0 {
+            out.push(' ');
+        }
         let _ = write!(&mut out, "{byte:02X}");
     }
     out
 }
 
 pub fn ensure_installed() -> Result<(), String> {
-    INSTALL_RESULT.get_or_init(|| unsafe { install_inner() }).clone()
+    INSTALL_RESULT
+        .get_or_init(|| unsafe { install_inner() })
+        .clone()
 }
 
 unsafe fn install_inner() -> Result<(), String> {
     let module_base = GetModuleHandleW(ptr::null());
-    if module_base.is_null() { return Err("GetModuleHandleW(NULL) failed".to_owned()); }
+    if module_base.is_null() {
+        return Err("GetModuleHandleW(NULL) failed".to_owned());
+    }
 
     let base = module_base.cast::<u8>();
     let pe_offset = ptr::read_unaligned(base.add(0x3c).cast::<u32>()) as usize;
@@ -245,33 +269,70 @@ unsafe fn install_inner() -> Result<(), String> {
         let target = base.add(rva);
         let actual = std::slice::from_raw_parts(target, PATCH_LEN);
         if actual != EXPECTED_PROLOGUE {
-            return Err(format!("simulation candidate {name} signature mismatch at RVA 0x{rva:X}"));
+            return Err(format!(
+                "simulation candidate {name} signature mismatch at RVA 0x{rva:X}"
+            ));
         }
     }
 
-    install_detour(base.add(layout.candidate_rvas[0]), hook_a as usize, &TRAMPOLINE_A)?;
-    install_detour(base.add(layout.candidate_rvas[1]), hook_b as usize, &TRAMPOLINE_B)?;
-    install_detour(base.add(layout.candidate_rvas[2]), hook_c as usize, &TRAMPOLINE_C)?;
+    install_detour(
+        base.add(layout.candidate_rvas[0]),
+        hook_a as usize,
+        &TRAMPOLINE_A,
+    )?;
+    install_detour(
+        base.add(layout.candidate_rvas[1]),
+        hook_b as usize,
+        &TRAMPOLINE_B,
+    )?;
+    install_detour(
+        base.add(layout.candidate_rvas[2]),
+        hook_c as usize,
+        &TRAMPOLINE_C,
+    )?;
     Ok(())
 }
 
-unsafe fn install_detour(target: *mut u8, hook: usize, trampoline_slot: &AtomicUsize) -> Result<(), String> {
-    let trampoline = VirtualAlloc(ptr::null_mut(), TRAMPOLINE_LEN, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE).cast::<u8>();
-    if trampoline.is_null() { return Err("VirtualAlloc failed while creating simulation trampoline".to_owned()); }
+unsafe fn install_detour(
+    target: *mut u8,
+    hook: usize,
+    trampoline_slot: &AtomicUsize,
+) -> Result<(), String> {
+    let trampoline = VirtualAlloc(
+        ptr::null_mut(),
+        TRAMPOLINE_LEN,
+        MEM_COMMIT | MEM_RESERVE,
+        PAGE_EXECUTE_READWRITE,
+    )
+    .cast::<u8>();
+    if trampoline.is_null() {
+        return Err("VirtualAlloc failed while creating simulation trampoline".to_owned());
+    }
 
     ptr::copy_nonoverlapping(target, trampoline, PATCH_LEN);
     write_abs_jump(trampoline.add(PATCH_LEN), target.add(PATCH_LEN) as usize);
     trampoline_slot.store(trampoline as usize, Ordering::Release);
 
     let mut old_protect = 0u32;
-    if VirtualProtect(target.cast::<c_void>(), PATCH_LEN, PAGE_EXECUTE_READWRITE, &mut old_protect) == 0 {
+    if VirtualProtect(
+        target.cast::<c_void>(),
+        PATCH_LEN,
+        PAGE_EXECUTE_READWRITE,
+        &mut old_protect,
+    ) == 0
+    {
         trampoline_slot.store(0, Ordering::Release);
         return Err("VirtualProtect failed while enabling simulation detour write".to_owned());
     }
 
     write_abs_jump(target, hook);
     let mut ignored = 0u32;
-    let _ = VirtualProtect(target.cast::<c_void>(), PATCH_LEN, old_protect, &mut ignored);
+    let _ = VirtualProtect(
+        target.cast::<c_void>(),
+        PATCH_LEN,
+        old_protect,
+        &mut ignored,
+    );
     let _ = FlushInstructionCache(GetCurrentProcess(), target.cast::<c_void>(), PATCH_LEN);
     Ok(())
 }
@@ -279,7 +340,11 @@ unsafe fn install_detour(target: *mut u8, hook: usize, trampoline_slot: &AtomicU
 unsafe fn write_abs_jump(destination: *mut u8, target: usize) {
     *destination = 0x48;
     *destination.add(1) = 0xB8;
-    ptr::copy_nonoverlapping(target.to_le_bytes().as_ptr(), destination.add(2), std::mem::size_of::<usize>());
+    ptr::copy_nonoverlapping(
+        target.to_le_bytes().as_ptr(),
+        destination.add(2),
+        std::mem::size_of::<usize>(),
+    );
     *destination.add(10) = 0xFF;
     *destination.add(11) = 0xE0;
 }
