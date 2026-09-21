@@ -6,7 +6,7 @@ mod pause_probe;
 mod simulation_probe;
 mod slot_mapping;
 
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 
 use mod_api_stable::{
     declare_stable_mod, ClientSceneKindV1, LogLevel, StableClient, StableExtension, StableHost,
@@ -18,12 +18,10 @@ use windows_sys::Win32::{
     System::Threading::GetCurrentProcessId,
     UI::{
         Input::KeyboardAndMouse::{
-            GetAsyncKeyState, MapVirtualKeyW, MAPVK_VK_TO_VSC, VK_CONTROL, VK_END, VK_HOME,
-            VK_LBUTTON, VK_RBUTTON,
+            GetAsyncKeyState, VK_CONTROL, VK_END, VK_HOME, VK_LBUTTON, VK_RBUTTON,
         },
         WindowsAndMessaging::{
             GetClientRect, GetCursorPos, GetForegroundWindow, GetWindowThreadProcessId,
-            PostMessageW, WM_KEYDOWN, WM_KEYUP,
         },
     },
 };
@@ -39,12 +37,6 @@ const PLAYER_SLOT_COUNT: usize = 10;
 const SIM_UNITS_PER_WORLD_UNIT: f32 = 1000.0;
 const MAP_WORLD_MIN: f32 = 0.0;
 const MAP_WORLD_MAX: f32 = 960.0;
-const NO_TEAM: usize = usize::MAX;
-// Native default spectator-vision shortcuts: X = Team 0 / Blue, C = Team 1 / Red.
-// This bridge is intentionally isolated so the later Direct Control shortcut pass can replace
-// physical-key dispatch with a native action invocation if/when that surface is available.
-const VK_TEAM0_VISION: u32 = 0x58; // X
-const VK_TEAM1_VISION: u32 = 0x43; // C
 
 const ATTACK_MOVE_KEY: &str = "A";
 const SKILL_Q_KEY: &str = "Q";
@@ -60,7 +52,6 @@ static TEMP_RELEASE_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static SELECT_KEYS_WERE_DOWN: AtomicU16 = AtomicU16::new(0);
 static LMB_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static RMB_WAS_DOWN: AtomicBool = AtomicBool::new(false);
-static LAST_AUTO_VISION_TEAM: AtomicUsize = AtomicUsize::new(NO_TEAM);
 
 #[derive(Debug, Clone, Copy, Default)]
 struct MouseSnapshot {
@@ -258,55 +249,6 @@ impl DirectControlExtension {
         let slot = rising.trailing_zeros() as usize;
         if let Some(athlete_id) = slot_mapping::resolve_fkey(ctx, slot) {
             control::select_athlete(athlete_id);
-        }
-    }
-
-    fn post_native_vision_key(vk: u32) -> bool {
-        unsafe {
-            let hwnd = GetForegroundWindow();
-            if hwnd.is_null() {
-                return false;
-            }
-
-            let mut foreground_process_id = 0u32;
-            GetWindowThreadProcessId(hwnd, &mut foreground_process_id);
-            if foreground_process_id == 0 || foreground_process_id != GetCurrentProcessId() {
-                return false;
-            }
-
-            let scan_code = MapVirtualKeyW(vk, MAPVK_VK_TO_VSC) & 0xff;
-            let down_lparam = 1isize | ((scan_code as isize) << 16);
-            let up_lparam = down_lparam | (1isize << 30) | (1isize << 31);
-
-            PostMessageW(hwnd, WM_KEYDOWN, vk as usize, down_lparam) != 0
-                && PostMessageW(hwnd, WM_KEYUP, vk as usize, up_lparam) != 0
-        }
-    }
-
-    fn poll_auto_team_vision(ingame: bool) {
-        if !ingame || control::selected_athlete().is_none() {
-            LAST_AUTO_VISION_TEAM.store(NO_TEAM, Ordering::Release);
-            return;
-        }
-
-        let Some(team) = control::selected_team() else {
-            // Selection is published on the render thread first; the authoritative simulation
-            // callback normally publishes its team on the next Candidate-A tick.
-            return;
-        };
-
-        let vk = match team {
-            0 => VK_TEAM0_VISION,
-            1 => VK_TEAM1_VISION,
-            _ => return,
-        };
-
-        if LAST_AUTO_VISION_TEAM.load(Ordering::Acquire) == team {
-            return;
-        }
-
-        if Self::post_native_vision_key(vk) {
-            LAST_AUTO_VISION_TEAM.store(team, Ordering::Release);
         }
     }
 
@@ -741,6 +683,9 @@ impl DirectControlExtension {
         let selected_team = control::selected_team()
             .map(|team| team.to_string())
             .unwrap_or_else(|| "?".to_owned());
+        let camera_mode = Self::best_camera()
+            .map(|camera| camera.mode.to_string())
+            .unwrap_or_else(|| "?".to_owned());
         let order = if control_state.selected_athlete.is_none() {
             "AI / spectator".to_owned()
         } else if control_state.returning {
@@ -792,7 +737,7 @@ impl DirectControlExtension {
         Self::draw_text_line(
             ctx,
             84.0,
-            &format!("SELECTED: athlete {selected} | team {selected_team} | ORDER: {order}"),
+            &format!("SELECTED: athlete {selected} | team {selected_team} | cam mode {camera_mode} | ORDER: {order}"),
             0xffffffff,
         );
         Self::draw_text_line(
@@ -844,7 +789,6 @@ impl StableExtension for DirectControlExtension {
             SELECT_KEYS_WERE_DOWN.store(0, Ordering::Release);
             LMB_WAS_DOWN.store(false, Ordering::Release);
             RMB_WAS_DOWN.store(false, Ordering::Release);
-            LAST_AUTO_VISION_TEAM.store(NO_TEAM, Ordering::Release);
         }
 
         let pause_ui = pause_probe::update(ctx, ingame);
@@ -852,7 +796,6 @@ impl StableExtension for DirectControlExtension {
         pacing_probe::set_presentation_state(ingame, pause_ui.paused);
         Self::poll_finish_chord(ingame);
         Self::poll_player_selection(ctx, ingame);
-        Self::poll_auto_team_vision(ingame);
         Self::poll_temporary_release(ingame);
         Self::poll_return_home(ctx, ingame);
         Self::poll_hold(ctx, ingame);
