@@ -49,8 +49,9 @@ This file records the current functionality-first scope and implementation prior
    - arrow-key camera panning was rejected and removed;
    - native minimap LMB camera relocation + RMB command workflow remains intact;
    - detailed architecture and rejected experiments are recorded in `docs/camera-controls.md`.
-9. **Clicks beyond the playable map edge** — **implemented; pending physical validation.** Battlefield clicks beyond the legal map now express direction by clamping only the requested movement destination into the legal 0..960 world square. TFM2 still receives an ordinary movement request, so native pathfinding, terrain, champion radius, and entity collision remain authoritative; Direct Control never grants permission to leave the map.
-   - after this validates, the current rapid-fire queue is **automatic team fog-of-war -> F-key selection hardening -> synchronized match speeds/death fast-forward -> click-target hitbox polish**; then revisit the remaining order.
+9. **Clicks beyond the playable map edge** — **validated.** Battlefield clicks beyond the legal map express direction by clamping only the requested movement destination into the legal 0..960 world square. TFM2 still receives an ordinary movement request, so native pathfinding, terrain, champion radius, and entity collision remain authoritative; Direct Control never grants permission to leave the map.
+   - physical validation passed RMB and attack-move edge/corner movement without bypassing normal pathing/collision.
+   - current rapid-fire queue: **automatic team fog-of-war -> F-key selection hardening -> synchronized match speeds/death fast-forward -> click-target hitbox polish**; then revisit the remaining order.
 10. **Skill cooldown UI** — expose direct-control-friendly Q/W/R cooldown/readiness information with high visibility so the player does not have to infer cooldowns from the normal spectator presentation. Include explicit red feedback for attempted use while unavailable.
 11. **Click-target hitbox polish**
    - enlarge only the **clickable/selectable area**; never alter entity collision/pathing geometry;
@@ -62,9 +63,11 @@ This file records the current functionality-first scope and implementation prior
    - radial/ray range must represent current live match values after simulated balance patches;
    - do not hard-code per-champion ranges from one game patch;
    - investigate deeper live action/effect metadata or a version-resilient native extraction route if the stable runtime API remains insufficient.
-13. **Automatic team fog-of-war on direct control**
-   - when manual control is taken of a champion, automatically switch spectator vision/fog-of-war to that champion's team;
-   - follow whichever side the selected champion belongs to rather than assuming the user's original team.
+13. **Automatic team fog-of-war on direct control** — **implemented; pending physical validation.**
+   - the authoritative Candidate-A callback publishes the selected champion's actual simulation team; do not infer side from F-key position or the user's original team;
+   - when that team changes, Direct Control invokes the base game's native Team 0 / Team 1 spectator-vision shortcut once, then leaves normal fog rendering entirely to TFM2;
+   - current bridge uses the native default `X = Team 0 / Blue` and `C = Team 1 / Red` shortcuts; keep that dispatch isolated so later shortcut-mode work can replace the physical-key bridge if needed;
+   - switching to the opposite-side champion must switch fog to that champion's team; `End` does not force vision back to all-map.
 14. **F-key selection mapping hardening**
    - preserve the game's native role order exactly after verifying it during implementation; current working hypothesis is `F1-F5 = player team Top, Jungle, Mid, Bottom, Support` and `F6-F10 = opponent team` in that same order;
    - current implementation finds visible `(F1)`-`(F10)` player cards in the UI tree and name-matches them to stable athlete ids; this works but is indirect and UI-layout-sensitive;
