@@ -35,6 +35,7 @@ struct CameraLayout {
     extent_a_offset: usize,
     extent_b_offset: usize,
     mode_offset: usize,
+    vision_mode_offset: Option<usize>,
     pan_x_offset: usize,
     pan_y_offset: usize,
 }
@@ -49,6 +50,8 @@ const BUILD_0_5_8: CameraLayout = CameraLayout {
     extent_a_offset: 0xEC,
     extent_b_offset: 0xF0,
     mode_offset: 0xF4,
+    // Not yet reverse-engineered on 0.5.8; do not guess.
+    vision_mode_offset: None,
     pan_x_offset: 0x418,
     pan_y_offset: 0x41C,
 };
@@ -63,6 +66,10 @@ const BUILD_0_6_0: CameraLayout = CameraLayout {
     extent_a_offset: 0xEC,
     extent_b_offset: 0xF0,
     mode_offset: 0x100,
+    // 0.6.0 UI code selects view_all / view_blue / view_red by comparing this
+    // byte on the native camera/view object against 0 / 1 / 2 respectively.
+    // Keep this read-only until the runtime diagnostic confirms the same object.
+    vision_mode_offset: Some(0x63),
     pan_x_offset: 0x428,
     pan_y_offset: 0x42C,
 };
@@ -119,6 +126,7 @@ pub struct CameraSnapshot {
     pub extent_a: f32,
     pub extent_b: f32,
     pub mode: u8,
+    pub vision_mode: Option<u8>,
     pub calls: u64,
 }
 
@@ -130,6 +138,7 @@ struct CandidateSlot {
     extent_a: AtomicU32,
     extent_b: AtomicU32,
     mode: AtomicU32,
+    vision_mode: AtomicU32,
     calls: AtomicU64,
 }
 
@@ -143,6 +152,7 @@ impl CandidateSlot {
             extent_a: AtomicU32::new(0),
             extent_b: AtomicU32::new(0),
             mode: AtomicU32::new(0),
+            vision_mode: AtomicU32::new(u32::MAX),
             calls: AtomicU64::new(0),
         }
     }
@@ -150,6 +160,7 @@ impl CandidateSlot {
     fn clear(&self) {
         self.calls.store(0, Ordering::Relaxed);
         self.mode.store(0, Ordering::Relaxed);
+        self.vision_mode.store(u32::MAX, Ordering::Relaxed);
         self.extent_b.store(0, Ordering::Relaxed);
         self.extent_a.store(0, Ordering::Relaxed);
         self.center_y.store(0, Ordering::Relaxed);
@@ -318,6 +329,9 @@ unsafe fn capture(this: *mut u8) {
     let extent_a = ptr::read_unaligned(this.add(layout.extent_a_offset).cast::<f32>());
     let extent_b = ptr::read_unaligned(this.add(layout.extent_b_offset).cast::<f32>());
     let mode = ptr::read_unaligned(this.add(layout.mode_offset).cast::<u8>());
+    let vision_mode = layout
+        .vision_mode_offset
+        .map(|offset| ptr::read_unaligned(this.add(offset).cast::<u8>()));
 
     // Do not publish clearly nonsensical values if the handler layout ever changes.
     if !zoom.is_finite()
@@ -364,6 +378,10 @@ unsafe fn capture(this: *mut u8) {
     slot.extent_a.store(extent_a.to_bits(), Ordering::Relaxed);
     slot.extent_b.store(extent_b.to_bits(), Ordering::Relaxed);
     slot.mode.store(mode as u32, Ordering::Relaxed);
+    slot.vision_mode.store(
+        vision_mode.map(u32::from).unwrap_or(u32::MAX),
+        Ordering::Relaxed,
+    );
     slot.calls.fetch_add(1, Ordering::Release);
 }
 
@@ -402,6 +420,10 @@ pub fn snapshots() -> Vec<CameraSnapshot> {
             extent_a: f32::from_bits(slot.extent_a.load(Ordering::Relaxed)),
             extent_b: f32::from_bits(slot.extent_b.load(Ordering::Relaxed)),
             mode: slot.mode.load(Ordering::Relaxed) as u8,
+            vision_mode: match slot.vision_mode.load(Ordering::Relaxed) {
+                u32::MAX => None,
+                value => Some(value as u8),
+            },
             calls: slot.calls.load(Ordering::Acquire),
         });
     }
