@@ -320,6 +320,94 @@ def emit_code_ref(
     lines.append(dump_xref_context(image, xref_rva))
 
 
+
+def decode_rust_str_descriptor(image: PeImage, descriptor_rva: int) -> tuple[str, int, int] | None:
+    """Decode a likely {absolute_ptr, usize_len} Rust &str descriptor."""
+
+    try:
+        offset = image.rva_to_offset(descriptor_rva)
+    except ValueError:
+        return None
+    if offset + 16 > len(image.data):
+        return None
+
+    ptr_va, length = struct.unpack_from("<QQ", image.data, offset)
+    if length == 0 or length > 128 or ptr_va < image.image_base:
+        return None
+
+    string_rva = ptr_va - image.image_base
+    try:
+        raw = image.bytes_at_rva(string_rva, length)
+    except ValueError:
+        return None
+    if not raw or any(byte < 0x20 or byte > 0x7E for byte in raw):
+        return None
+    try:
+        text = raw.decode("ascii")
+    except UnicodeDecodeError:
+        return None
+    return text, string_rva, length
+
+
+def emit_descriptor_table_near(
+    lines: list[str],
+    image: PeImage,
+    all_refs: list[tuple[int, int, str]],
+    center_rva: int,
+    radius: int = 0x280,
+) -> None:
+    """Dump nearby 16-byte Rust string descriptors plus executable refs to each."""
+
+    start = max(0, center_rva - radius)
+    end = center_rva + radius
+    # Align to 16 bytes because this table is a contiguous sequence of {ptr,len}.
+    start &= ~0xF
+
+    lines.append("===== LOCAL RUST STRING-DESCRIPTOR TABLE =====")
+    lines.append(
+        f"Scanning aligned descriptors around 0x{center_rva:08X} "
+        f"(0x{start:08X}..0x{end:08X})"
+    )
+
+    found = 0
+    for descriptor_rva in range(start, end + 1, 0x10):
+        decoded = decode_rust_str_descriptor(image, descriptor_rva)
+        if decoded is None:
+            continue
+        text, string_rva, length = decoded
+        found += 1
+        refs = refs_to(all_refs, descriptor_rva)
+        ref_text = ", ".join(
+            f"0x{xref:08X}/{kind}" for xref, _, kind in refs[:12]
+        )
+        lines.append(
+            f"0x{descriptor_rva:08X}: ptr=0x{string_rva:08X} "
+            f"len={length:>2} text={text!r}"
+            + (f" | refs: {ref_text}" if ref_text else "")
+        )
+
+    if found == 0:
+        lines.append("<no printable Rust &str descriptors decoded>")
+    lines.append("")
+
+
+def emit_code_window(
+    lines: list[str],
+    image: PeImage,
+    title: str,
+    start_rva: int,
+    end_rva: int,
+) -> None:
+    lines.append(f"===== {title} =====")
+    try:
+        block = image.bytes_at_rva(start_rva, end_rva - start_rva)
+    except ValueError as exc:
+        lines.append(f"<unavailable: {exc}>")
+        lines.append("")
+        return
+    lines.append(hexdump(block, start_rva))
+    lines.append("")
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("exe", type=Path, help="path to TeamfightManager2.exe")
@@ -348,6 +436,8 @@ def main() -> int:
     ]
 
     discovered_code_refs: list[tuple[int, str]] = []
+    descriptor_centers: dict[str, list[int]] = {}
+    direct_code_refs: dict[str, list[int]] = {}
 
     for category, name in ANCHORS:
         lines.append(f"===== [{category}] {name} =====")
@@ -363,6 +453,9 @@ def main() -> int:
 
             direct = refs_to(all_refs, string_rva)
             if direct:
+                direct_code_refs.setdefault(name, []).extend(
+                    xref_rva for xref_rva, _, _ in direct
+                )
                 for xref_rva, resolved, kind in direct:
                     discovered_code_refs.append((xref_rva, name))
                     emit_code_ref(
@@ -372,6 +465,8 @@ def main() -> int:
                 lines.append("Direct executable refs to substring: <none>")
 
             pointer_rvas = find_pointer_occurrences(image, string_rva)
+            if pointer_rvas:
+                descriptor_centers.setdefault(name, []).extend(pointer_rvas)
             if not pointer_rvas:
                 lines.append("Absolute pointer/descriptor occurrences: <none>")
             else:
@@ -419,6 +514,58 @@ def main() -> int:
             lines.append("")
 
         lines.append("")
+
+    # The action descriptors for all/team0/team1/auto-follow are contiguous in
+    # the current Rust data table. Decode the local table and show exact code refs
+    # so we can identify the input-query surface instead of treating nearby data
+    # references as evidence.
+    team0_descriptors = descriptor_centers.get("in_game_camera_team0", [])
+    if team0_descriptors:
+        emit_descriptor_table_near(
+            lines, image, all_refs, min(team0_descriptors)
+        )
+
+    # The view_red/view_blue/view_all paths form a tight per-frame UI-selection
+    # cluster. Dump the whole region so the state byte used to light those buttons
+    # can be decoded in context.
+    ui_refs = sorted(
+        set(
+            direct_code_refs.get("speed_buttons.view_red", [])
+            + direct_code_refs.get("speed_buttons.view_blue", [])
+            + direct_code_refs.get("speed_buttons.view_all", [])
+        )
+    )
+    if ui_refs:
+        low_cluster = [r for r in ui_refs if r < 0x0220_0000]
+        if low_cluster:
+            emit_code_window(
+                lines,
+                image,
+                "FOG BUTTON STATE CODE WINDOW",
+                max(0, min(low_cluster) - 0x120),
+                max(low_cluster) + 0x180,
+            )
+
+    # The higher action-string cluster appears to convert internal action ids to
+    # names. Dump its surrounding switch so the team0/team1 discriminants can be
+    # recovered if useful.
+    action_refs = sorted(
+        set(
+            direct_code_refs.get("in_game_camera_all", [])
+            + direct_code_refs.get("in_game_camera_team0", [])
+            + direct_code_refs.get("in_game_camera_team1", [])
+            + direct_code_refs.get("in_game_auto_follow", [])
+        )
+    )
+    high_action_refs = [r for r in action_refs if r >= 0x0260_0000]
+    if high_action_refs:
+        emit_code_window(
+            lines,
+            image,
+            "CAMERA ACTION ID/NAME CODE WINDOW",
+            max(0, min(high_action_refs) - 0x180),
+            max(high_action_refs) + 0x180,
+        )
 
     lines.append("===== CODE-XREF CLUSTERS =====")
     flattened = sorted(set(discovered_code_refs))
