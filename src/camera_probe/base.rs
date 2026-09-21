@@ -186,15 +186,7 @@ static REQUESTED_ZOOM_STEPS: AtomicI32 = AtomicI32::new(0);
 // Observed machine-level signature at the two known call sites. Only the first
 // argument matters to us; preserving the rest exactly lets the original handler
 // continue normally through the trampoline.
-type CameraHandlerFn = unsafe extern "system" fn(
-    *mut u8,
-    usize,
-    usize,
-    f32,
-    usize,
-    usize,
-    usize,
-);
+type CameraHandlerFn = unsafe extern "system" fn(*mut u8, usize, usize, f32, usize, usize, usize);
 
 unsafe extern "system" fn camera_handler_hook(
     this: *mut u8,
@@ -481,7 +473,12 @@ unsafe fn install_inner() -> Result<(), String> {
     write_abs_jump(target, camera_handler_hook as usize);
 
     let mut ignored = 0u32;
-    let _ = VirtualProtect(target.cast::<c_void>(), PATCH_LEN, old_protect, &mut ignored);
+    let _ = VirtualProtect(
+        target.cast::<c_void>(),
+        PATCH_LEN,
+        old_protect,
+        &mut ignored,
+    );
     let _ = FlushInstructionCache(GetCurrentProcess(), target.cast::<c_void>(), PATCH_LEN);
 
     Ok(())
