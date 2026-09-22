@@ -824,6 +824,18 @@ impl StableExtension for DirectControlExtension {
         Self::poll_return_home(ctx, ingame);
         Self::poll_hold(ctx, ingame);
 
+        // Automatic fog follows the controlled champion's authoritative simulation team.
+        // Stop enforcing on pause/release/spectator without changing the last native view.
+        let vision_team = if ingame
+            && pacing_probe::manual_input_enabled()
+            && control::selected_athlete().is_some()
+        {
+            control::selected_team()
+        } else {
+            None
+        };
+        camera_probe::set_team_vision(vision_team);
+
         if !control_scene {
             return;
         }
