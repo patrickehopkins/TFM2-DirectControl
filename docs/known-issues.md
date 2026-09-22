@@ -1,5 +1,19 @@
 # Known issues and deferred polish
 
+## Unfocused raw-key polling
+
+Status: **pre-release fix required**.
+
+Direct Control currently polls several keyboard controls with Win32 `GetAsyncKeyState`, which is global rather than scoped to the Teamfight Manager 2 foreground window. Physical testing confirmed that using `Ctrl+End` in another application while TFM2 remains open can silently trigger the mod's global release.
+
+The focus-safety sweep must cover Ctrl+Home, Ctrl+End, End, F1-F10, and the worker-thread prematch Ctrl+Home escape. Mouse/MMB paths already perform a foreground-process check; SDK `key_pressed` controls are not part of this raw-key issue.
+
+## Enemy follow can reveal a fogged champion
+
+Status: **accepted first-release limitation**.
+
+Automatic team fog is physically validated, but TFM2's native spectator follow behavior can still follow an opposing champion and thereby reveal that champion's position through fog. Direct Control will not attempt to turn spectator fog into an anti-cheat boundary for the first Workshop release.
+
 This document records issues that are intentionally **not** blocking continued command work.
 
 ## Startup pre-simulation

@@ -35,7 +35,13 @@ struct CameraLayout {
     extent_a_offset: usize,
     extent_b_offset: usize,
     mode_offset: Option<usize>,
+    /// Optional pointer field on the camera handler's `this` object that owns the
+    /// native All/Blue/Red byte. None means the byte lives directly on `this`.
+    vision_object_offset: Option<usize>,
     vision_mode_offset: Option<usize>,
+    /// Native code may require this owner-relative usize field to be zero before
+    /// changing vision. Preserve the game's own guard when known.
+    vision_write_guard_offset: Option<usize>,
     pan_x_offset: usize,
     pan_y_offset: usize,
 }
@@ -51,7 +57,9 @@ const BUILD_0_5_8: CameraLayout = CameraLayout {
     extent_b_offset: 0xF0,
     mode_offset: Some(0xF4),
     // Not yet reverse-engineered on 0.5.8; do not guess.
+    vision_object_offset: None,
     vision_mode_offset: None,
+    vision_write_guard_offset: None,
     pan_x_offset: 0x418,
     pan_y_offset: 0x41C,
 };
@@ -66,10 +74,11 @@ const BUILD_0_6_0: CameraLayout = CameraLayout {
     extent_a_offset: 0xEC,
     extent_b_offset: 0xF0,
     mode_offset: Some(0x100),
-    // 0.6.0 UI code selects view_all / view_blue / view_red by comparing this
-    // byte on the native camera/view object against 0 / 1 / 2 respectively.
-    // Keep this read-only until the runtime diagnostic confirms the same object.
+    // 0.6.0's historical probe treated +0x63 as direct camera state. It was never
+    // promoted to a write path; keep that legacy read-only behavior unchanged.
+    vision_object_offset: None,
     vision_mode_offset: Some(0x63),
+    vision_write_guard_offset: None,
     pan_x_offset: 0x428,
     pan_y_offset: 0x42C,
 };
@@ -86,8 +95,12 @@ const BUILD_0_6_1: CameraLayout = CameraLayout {
     // The relocated handler retains five of six v0.6.0 camera signatures, but the
     // +0x100 mode access is absent. Keep it unknown rather than reading a guessed byte.
     mode_offset: None,
-    // The 0.6.1 relocation probe did not validate the separate native-vision byte.
-    vision_mode_offset: None,
+    // v0.6.1 static analysis found the handler itself loading [this+0x418] and
+    // writing 0/1/2 to [owner+0x63] for All/Blue/Red. Physical testing had shown
+    // this+0x63 stays 0, which is why the earlier direct-object probe failed.
+    vision_object_offset: Some(0x418),
+    vision_mode_offset: Some(0x63),
+    vision_write_guard_offset: Some(0x10),
     pan_x_offset: 0x428,
     pan_y_offset: 0x42C,
 };
@@ -212,6 +225,10 @@ static REQUESTED_PAN_CLEAR_ONCE: AtomicBool = AtomicBool::new(false);
 static REQUESTED_ZOOM_ADDRESS: AtomicUsize = AtomicUsize::new(0);
 static REQUESTED_ZOOM_STEPS: AtomicI32 = AtomicI32::new(0);
 
+// Automatic team fog is published from the render/control layer but applied only
+// on the already-detoured native camera thread. u32::MAX means "do not enforce".
+static REQUESTED_VISION_MODE: AtomicU32 = AtomicU32::new(u32::MAX);
+
 // Observed machine-level signature at the two known call sites. Only the first
 // argument matters to us; preserving the rest exactly lets the original handler
 // continue normally through the trampoline.
@@ -235,6 +252,9 @@ unsafe extern "system" fn camera_handler_hook(
         original(this, arg2, arg3, arg4, arg5, arg6, arg7);
     }
 
+    // Apply team fog after native input handling so an ordinary spectator view-button
+    // click cannot override the controlled champion's required team vision mid-frame.
+    inject_requested_vision(this);
     capture(this);
 }
 
@@ -297,6 +317,52 @@ unsafe fn inject_requested_pan(this: *mut u8) {
     }
 }
 
+unsafe fn vision_object(this: *mut u8, layout: &CameraLayout) -> Option<*mut u8> {
+    let object = match layout.vision_object_offset {
+        Some(offset) => ptr::read_unaligned(this.add(offset).cast::<*mut u8>()),
+        None => this,
+    };
+    (!object.is_null()).then_some(object)
+}
+
+unsafe fn inject_requested_vision(this: *mut u8) {
+    if this.is_null() {
+        return;
+    }
+
+    let requested = REQUESTED_VISION_MODE.load(Ordering::Acquire);
+    if requested > 2 {
+        return;
+    }
+
+    let Some(layout) = ACTIVE_LAYOUT.get().copied() else {
+        return;
+    };
+    let Some(mode_offset) = layout.vision_mode_offset else {
+        return;
+    };
+    let Some(object) = vision_object(this, layout) else {
+        return;
+    };
+
+    if let Some(guard_offset) = layout.vision_write_guard_offset {
+        if ptr::read_unaligned(object.add(guard_offset).cast::<usize>()) != 0 {
+            return;
+        }
+    }
+
+    ptr::write_unaligned(object.add(mode_offset).cast::<u8>(), requested as u8);
+}
+
+pub fn set_vision_mode(mode: Option<u8>) {
+    REQUESTED_VISION_MODE.store(
+        mode.filter(|value| *value <= 2)
+            .map(u32::from)
+            .unwrap_or(u32::MAX),
+        Ordering::Release,
+    );
+}
+
 pub fn queue_zoom_steps(address: usize, steps: i32) {
     if address == 0 || steps == 0 {
         return;
@@ -349,9 +415,11 @@ unsafe fn capture(this: *mut u8) {
     let mode = layout
         .mode_offset
         .map(|offset| ptr::read_unaligned(this.add(offset).cast::<u8>()));
-    let vision_mode = layout
-        .vision_mode_offset
-        .map(|offset| ptr::read_unaligned(this.add(offset).cast::<u8>()));
+    let vision_mode = match layout.vision_mode_offset {
+        Some(offset) => vision_object(this, layout)
+            .map(|object| ptr::read_unaligned(object.add(offset).cast::<u8>())),
+        None => None,
+    };
 
     // Do not publish clearly nonsensical values if the handler layout ever changes.
     if !zoom.is_finite()
@@ -420,6 +488,7 @@ pub fn clear_candidates() {
     REQUESTED_PAN_ADDRESS.store(0, Ordering::Release);
     REQUESTED_ZOOM_STEPS.store(0, Ordering::Release);
     REQUESTED_ZOOM_ADDRESS.store(0, Ordering::Release);
+    REQUESTED_VISION_MODE.store(u32::MAX, Ordering::Release);
 
     for slot in &CANDIDATES {
         slot.clear();

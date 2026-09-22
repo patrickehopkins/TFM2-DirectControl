@@ -45,7 +45,7 @@ const SKILL_R_KEY: &str = "R";
 const RETURN_HOME_KEY: &str = "B";
 const HOLD_KEY: &str = "H";
 
-static WAS_INGAME: AtomicBool = AtomicBool::new(false);
+static MATCH_SESSION_ACTIVE: AtomicBool = AtomicBool::new(false);
 static START_CHORD_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static FINISH_CHORD_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static TEMP_RELEASE_WAS_DOWN: AtomicBool = AtomicBool::new(false);
@@ -771,37 +771,70 @@ impl StableExtension for DirectControlExtension {
     fn post_render(&self, ctx: &mut StableClient<'_>) {
         let ingame = matches!(ctx.client_scene_kind(), Some(ClientSceneKindV1::InGame));
         let control_scene = Self::control_scene(ctx);
-        let was_ingame = WAS_INGAME.swap(ingame, Ordering::AcqRel);
+        let session_was_active = MATCH_SESSION_ACTIVE.load(Ordering::Acquire);
 
-        if !ingame && was_ingame {
+        // Match and InGame are both part of the live match-view lifecycle. Do not treat a
+        // temporary transition from InGame -> Match (for example a pause/menu presentation state)
+        // as the end of the simulation session. That used to reset manual control and could let
+        // vanilla AI finish the watched simulation while the user was merely paused.
+        let session_active = if ingame {
+            if !session_was_active {
+                MATCH_SESSION_ACTIVE.store(true, Ordering::Release);
+                camera_probe::clear_candidates();
+                pause_probe::reset();
+                control::reset();
+                minimap::reset();
+                slot_mapping::reset();
+                START_CHORD_WAS_DOWN.store(false, Ordering::Release);
+                FINISH_CHORD_WAS_DOWN.store(false, Ordering::Release);
+                TEMP_RELEASE_WAS_DOWN.store(false, Ordering::Release);
+                SELECT_KEYS_WERE_DOWN.store(0, Ordering::Release);
+                LMB_WAS_DOWN.store(false, Ordering::Release);
+                RMB_WAS_DOWN.store(false, Ordering::Release);
+            }
+            true
+        } else if session_was_active && control_scene {
+            true
+        } else {
+            false
+        };
+
+        if session_was_active && !control_scene {
+            MATCH_SESSION_ACTIVE.store(false, Ordering::Release);
             pacing_probe::prepare_next_match();
             control::reset();
             minimap::reset();
             slot_mapping::reset();
         }
 
-        if ingame && !was_ingame {
-            camera_probe::clear_candidates();
-            pause_probe::reset();
-            control::reset();
-            minimap::reset();
-            slot_mapping::reset();
-            START_CHORD_WAS_DOWN.store(false, Ordering::Release);
-            FINISH_CHORD_WAS_DOWN.store(false, Ordering::Release);
-            TEMP_RELEASE_WAS_DOWN.store(false, Ordering::Release);
-            SELECT_KEYS_WERE_DOWN.store(0, Ordering::Release);
-            LMB_WAS_DOWN.store(false, Ordering::Release);
-            RMB_WAS_DOWN.store(false, Ordering::Release);
+        if session_active {
+            pacing_probe::note_render_heartbeat();
         }
 
-        let pause_ui = pause_probe::update(ctx, ingame);
+        let pause_ui = pause_probe::update(ctx, session_active);
+        // Once an InGame session has started, any temporary non-InGame match scene is fail-closed:
+        // hold Candidate A until the battlefield returns instead of running vanilla AI unseen.
+        let presentation_paused = session_active && (!ingame || pause_ui.paused);
+
         Self::poll_start_chord(control_scene);
-        pacing_probe::set_presentation_state(ingame, pause_ui.paused);
+        pacing_probe::set_presentation_state(session_active, presentation_paused);
         Self::poll_finish_chord(ingame);
         Self::poll_player_selection(ctx, ingame);
         Self::poll_temporary_release(ingame);
         Self::poll_return_home(ctx, ingame);
         Self::poll_hold(ctx, ingame);
+
+        // Automatic fog follows the controlled champion's authoritative simulation team.
+        // Stop enforcing on pause/release/spectator without changing the last native view.
+        let vision_team = if ingame
+            && pacing_probe::manual_input_enabled()
+            && control::selected_athlete().is_some()
+        {
+            control::selected_team()
+        } else {
+            None
+        };
+        camera_probe::set_team_vision(vision_team);
 
         if !control_scene {
             return;

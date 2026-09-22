@@ -35,6 +35,7 @@ const NO_PLAYER: usize = usize::MAX;
 const ALLOWED_LEAD_MS: u64 = 35;
 const MAX_SLEEP_SLICE_MS: u64 = 2;
 const MAX_SINGLE_CALLBACK_WAIT_MS: u64 = 250;
+const RENDER_HEARTBEAT_STALE_MS: u64 = 500;
 const BLOCK_SLEEP_SLICE_MS: u64 = 2;
 const PREMATCH_AUTO_RELEASE_MS: u64 = 2_000;
 
@@ -64,6 +65,7 @@ static ACTIVE_JOB_ENTRY: AtomicU64 = AtomicU64::new(0);
 static START_REQUESTED: AtomicBool = AtomicBool::new(false);
 static START_AUTO_RELEASED: AtomicBool = AtomicBool::new(false);
 static INTERACTIVE_MATCH: AtomicBool = AtomicBool::new(false);
+static LAST_RENDER_HEARTBEAT_MS: AtomicU64 = AtomicU64::new(0);
 static PRESENTATION_PHASE: AtomicU8 = AtomicU8::new(PHASE_WAITING_START);
 static PACER_ORIGIN_TICK: AtomicU64 = AtomicU64::new(NO_TICK);
 static PACER_ORIGIN_MS: AtomicU64 = AtomicU64::new(0);
@@ -123,6 +125,7 @@ fn reset_job_runtime() {
 
     START_REQUESTED.store(false, Ordering::Release);
     START_AUTO_RELEASED.store(false, Ordering::Release);
+    LAST_RENDER_HEARTBEAT_MS.store(0, Ordering::Release);
     PRESENTATION_PHASE.store(PHASE_WAITING_START, Ordering::Release);
     reanchor_pacer();
     MANUAL_FINISH_REQUESTED.store(false, Ordering::Release);
@@ -165,6 +168,13 @@ pub fn request_start_simulation() {
     START_REQUESTED.store(true, Ordering::Release);
     PRESENTATION_PHASE.store(PHASE_RUNNING, Ordering::Release);
     reanchor_pacer();
+}
+
+/// Publish a render heartbeat independently of pause-state inference. If the client stops
+/// rendering while a live match session still exists, Candidate A will fail closed and wait
+/// rather than silently simulating ahead with vanilla AI.
+pub fn note_render_heartbeat() {
+    LAST_RENDER_HEARTBEAT_MS.store(unsafe { GetTickCount64() }, Ordering::Release);
 }
 
 /// Publish interactive/pause state from the client render thread.
@@ -230,8 +240,9 @@ pub fn request_finish_simulation() {
 }
 
 pub fn manual_control_released() -> bool {
+    // Only an explicit global release may permanently relinquish live pacing/control.
+    // A transient pacer anomaly is recoverable and must never silently become Ctrl+End.
     MANUAL_FINISH_REQUESTED.load(Ordering::Acquire)
-        || SAFETY_FAIL_OPEN.load(Ordering::Acquire)
 }
 
 pub fn manual_input_enabled() -> bool {
@@ -347,6 +358,32 @@ fn wait_while_paused() -> bool {
     }
 }
 
+fn render_heartbeat_stale() -> bool {
+    if !INTERACTIVE_MATCH.load(Ordering::Acquire) {
+        return false;
+    }
+
+    let heartbeat = LAST_RENDER_HEARTBEAT_MS.load(Ordering::Acquire);
+    if heartbeat == 0 {
+        return false;
+    }
+
+    unsafe { GetTickCount64() }.saturating_sub(heartbeat) >= RENDER_HEARTBEAT_STALE_MS
+}
+
+fn wait_while_render_stalled() -> bool {
+    while render_heartbeat_stale() {
+        if manual_control_released() {
+            return false;
+        }
+
+        PAUSE_WAIT_COUNT.fetch_add(1, Ordering::Relaxed);
+        PAUSE_TOTAL_WAIT_MS.fetch_add(BLOCK_SLEEP_SLICE_MS, Ordering::Relaxed);
+        thread::sleep(Duration::from_millis(BLOCK_SLEEP_SLICE_MS));
+    }
+    true
+}
+
 fn pace_candidate_a(tick: u64) {
     if manual_control_released() {
         return;
@@ -373,6 +410,14 @@ fn pace_candidate_a(tick: u64) {
 
     if PRESENTATION_PHASE.load(Ordering::Acquire) == PHASE_PAUSED {
         if !wait_while_paused() {
+            return;
+        }
+        reanchor_pacer();
+        return pace_candidate_a(tick);
+    }
+
+    if render_heartbeat_stale() {
+        if !wait_while_render_stalled() {
             return;
         }
         reanchor_pacer();
@@ -415,6 +460,14 @@ fn pace_candidate_a(tick: u64) {
             return pace_candidate_a(tick);
         }
 
+        if render_heartbeat_stale() {
+            if !wait_while_render_stalled() {
+                return;
+            }
+            reanchor_pacer();
+            return pace_candidate_a(tick);
+        }
+
         let wall_now_ms = unsafe { GetTickCount64() };
         let wall_elapsed_ms = wall_now_ms.saturating_sub(origin_ms);
 
@@ -423,7 +476,11 @@ fn pace_candidate_a(tick: u64) {
         }
 
         if wall_now_ms.saturating_sub(callback_wait_start_ms) >= MAX_SINGLE_CALLBACK_WAIT_MS {
+            // Development builds used to treat this as a permanent fail-open, which silently
+            // relinquished manual authority. Recover in place instead: record that the guard
+            // fired, re-anchor on the next callback, and keep Direct Control ownership intact.
             SAFETY_FAIL_OPEN.store(true, Ordering::Release);
+            reanchor_pacer();
             return;
         }
 
