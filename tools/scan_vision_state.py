@@ -228,6 +228,130 @@ def hexdump(data: bytes, start_rva: int) -> str:
     return "\n".join(lines)
 
 
+def scan_vision_byte_writes(image: PeImage) -> list[tuple[int, int, str]]:
+    """Find executable instructions that write a small value to [base+0x63].
+
+    The view-button code proves +0x63 is the native All/Blue/Red state on *some*
+    object. The most useful next static clue is code that writes 0/1/2 to that
+    same displacement. Prefer direct imm8 stores, but also report register-byte
+    stores so nearby code can reveal the value source.
+    """
+
+    hits: list[tuple[int, int, str]] = []
+    for section in image.sections:
+        if not section.executable or section.raw_size < 8:
+            continue
+
+        data = image.data[section.raw_offset : section.raw_offset + section.raw_size]
+        i = 0
+        while i < len(data) - 4:
+            start = i
+            rex = None
+            if 0x40 <= data[i] <= 0x4F:
+                rex = data[i]
+                i += 1
+
+            # C6 /0 ib => mov byte ptr [r/m8], imm8
+            if i < len(data) and data[i] == 0xC6:
+                if i + 3 >= len(data):
+                    break
+                modrm = data[i + 1]
+                mod = modrm >> 6
+                reg = (modrm >> 3) & 7
+                rm = modrm & 7
+                j = i + 2
+                if reg == 0 and mod != 3:
+                    if rm == 4:
+                        if j >= len(data):
+                            break
+                        j += 1  # SIB
+                    if mod == 1 and j + 1 < len(data):
+                        disp = struct.unpack_from("<b", data, j)[0]
+                        imm = data[j + 1]
+                        if disp == 0x63 and imm in (0, 1, 2):
+                            hits.append((
+                                section.rva + start,
+                                imm,
+                                "mov byte [base+0x63], imm8",
+                            ))
+                    elif mod == 2 and j + 4 < len(data):
+                        disp = struct.unpack_from("<i", data, j)[0]
+                        imm = data[j + 4]
+                        if disp == 0x63 and imm in (0, 1, 2):
+                            hits.append((
+                                section.rva + start,
+                                imm,
+                                "mov byte [base+0x63], imm8",
+                            ))
+
+            # 88 /r => mov byte ptr [r/m8], r8
+            if i < len(data) and data[i] == 0x88 and i + 2 < len(data):
+                modrm = data[i + 1]
+                mod = modrm >> 6
+                rm = modrm & 7
+                reg = (modrm >> 3) & 7
+                j = i + 2
+                if mod != 3:
+                    if rm == 4:
+                        if j >= len(data):
+                            break
+                        j += 1
+                    disp = None
+                    if mod == 1 and j < len(data):
+                        disp = struct.unpack_from("<b", data, j)[0]
+                    elif mod == 2 and j + 4 <= len(data):
+                        disp = struct.unpack_from("<i", data, j)[0]
+                    if disp == 0x63:
+                        ext = ((rex or 0) >> 2) & 1
+                        src = reg | (ext << 3)
+                        hits.append((
+                            section.rva + start,
+                            -1,
+                            f"mov byte [base+0x63], r8(src={src})",
+                        ))
+
+            i = start + 1
+
+    return sorted(set(hits))
+
+
+def pdata_runtime_functions(image: PeImage) -> list[tuple[int, int]]:
+    """Return sorted (begin,end) pairs from x64 .pdata when available."""
+
+    pdata = next((s for s in image.sections if s.name == ".pdata"), None)
+    if pdata is None:
+        return []
+
+    out: list[tuple[int, int]] = []
+    data = image.data[pdata.raw_offset : pdata.raw_offset + pdata.raw_size]
+    for i in range(0, len(data) - 11, 12):
+        begin, end, unwind = struct.unpack_from("<III", data, i)
+        if begin == 0 and end == 0 and unwind == 0:
+            continue
+        if begin < end:
+            out.append((begin, end))
+    out.sort()
+    return out
+
+
+def owning_function(
+    runtime_functions: list[tuple[int, int]], rva: int
+) -> tuple[int, int] | None:
+    lo = 0
+    hi = len(runtime_functions)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        begin, end = runtime_functions[mid]
+        if rva < begin:
+            hi = mid
+        elif rva >= end:
+            lo = mid + 1
+        else:
+            return begin, end
+    return None
+
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--exe", required=True, type=Path)
@@ -307,6 +431,55 @@ def main() -> int:
             lines.append(
                 f"disp={disp:+#x} hits={count} anchors={','.join(sorted(labels))}"
             )
+
+
+    lines.append("\n===== NATIVE +0x63 WRITE CANDIDATES =====")
+    runtime_functions = pdata_runtime_functions(image)
+    write_hits = scan_vision_byte_writes(image)
+    if not write_hits:
+        lines.append("<none>")
+    else:
+        grouped: defaultdict[tuple[int, int] | None, list[tuple[int, int, str]]] = defaultdict(list)
+        for hit in write_hits:
+            grouped[owning_function(runtime_functions, hit[0])].append(hit)
+
+        ranked = sorted(
+            grouped.items(),
+            key=lambda item: (
+                -len({value for _, value, _ in item[1] if value >= 0}),
+                -len(item[1]),
+                item[0][0] if item[0] else 0xFFFFFFFF,
+            ),
+        )
+
+        for owner, hits in ranked[:80]:
+            values = sorted({value for _, value, _ in hits if value >= 0})
+            if owner is None:
+                lines.append(f"\nowner=<unknown> values={values} hits={len(hits)}")
+            else:
+                begin, end = owner
+                lines.append(
+                    f"\nowner=0x{begin:08X}..0x{end:08X} "
+                    f"size=0x{end-begin:X} values={values} hits={len(hits)}"
+                )
+                try:
+                    prefix = image.bytes_at(begin, min(64, end - begin))
+                    lines.append("  function first bytes:")
+                    lines.append(hexdump(prefix, begin))
+                except ValueError:
+                    pass
+
+            for insn, value, kind in hits[:40]:
+                value_text = "reg" if value < 0 else str(value)
+                lines.append(
+                    f"  WRITE 0x{insn:08X}: value={value_text} {kind}"
+                )
+                start = max(0, insn - 0x40)
+                try:
+                    block = image.bytes_at(start, 0x90)
+                    lines.append(hexdump(block, start))
+                except ValueError:
+                    pass
 
     lines.append("\n===== CAMERA ACTION ROUTES =====")
     for label in ACTION_ANCHORS:
