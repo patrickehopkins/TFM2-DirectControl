@@ -9,8 +9,8 @@ mod slot_mapping;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 
 use mod_api_stable::{
-    declare_stable_mod, ClientSceneKindV1, LogLevel, StableClient, StableExtension, StableHost,
-    StableMod, TextAlignXV1, TextAlignYV1,
+    declare_stable_mod, ClientSceneKindV1, LogLevel, SceneKindV1, StableClient, StableExtension,
+    StableHost, StableMod, TextAlignXV1, TextAlignYV1,
 };
 use windows_sys::Win32::{
     Foundation::{POINT, RECT},
@@ -46,6 +46,7 @@ const RETURN_HOME_KEY: &str = "B";
 const HOLD_KEY: &str = "H";
 
 static MATCH_SESSION_ACTIVE: AtomicBool = AtomicBool::new(false);
+static MULTIPLAYER_SPEED_LOCK: AtomicBool = AtomicBool::new(false);
 static START_CHORD_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static FINISH_CHORD_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static TEMP_RELEASE_WAS_DOWN: AtomicBool = AtomicBool::new(false);
@@ -153,6 +154,39 @@ impl DirectControlExtension {
             ctx.client_scene_kind(),
             Some(ClientSceneKindV1::Match | ClientSceneKindV1::InGame)
         )
+    }
+
+    fn observe_multiplayer_scene(ctx: &StableClient<'_>) {
+        match ctx.scene_kind() {
+            Some(SceneKindV1::Room | SceneKindV1::Lobby) => {
+                MULTIPLAYER_SPEED_LOCK.store(true, Ordering::Release);
+            }
+            Some(
+                SceneKindV1::Title
+                | SceneKindV1::NewGame
+                | SceneKindV1::DatabaseEdit
+                | SceneKindV1::GameTest,
+            ) => {
+                MULTIPLAYER_SPEED_LOCK.store(false, Ordering::Release);
+            }
+            _ => {}
+        }
+    }
+
+    fn sync_pacing_speed(ctx: &StableClient<'_>, session_active: bool) {
+        if MULTIPLAYER_SPEED_LOCK.load(Ordering::Acquire) {
+            pacing_probe::set_pacing_ticks_per_second(60);
+            return;
+        }
+
+        if !session_active {
+            pacing_probe::set_pacing_ticks_per_second(60);
+            return;
+        }
+
+        if let Some((ticks_per_second, _label)) = pause_probe::selected_speed(ctx) {
+            pacing_probe::set_pacing_ticks_per_second(ticks_per_second);
+        }
     }
 
     fn draw_text_line(ctx: &mut StableClient<'_>, y: f32, text: &str, color: u32) {
@@ -728,9 +762,16 @@ impl DirectControlExtension {
             ctx,
             62.0,
             &format!(
-                "DIRECT CONTROL: {} | start {} | {}",
+                "DIRECT CONTROL: {} | start {} | speed {} @ {}Hz{} | {}",
                 pacing_probe::presentation_phase_label(),
                 if pacing.start_requested { "YES" } else { "no" },
+                pacing_probe::pacing_speed_label(),
+                pacing.pacing_ticks_per_second,
+                if MULTIPLAYER_SPEED_LOCK.load(Ordering::Acquire) {
+                    " | MP 1x LOCK"
+                } else {
+                    ""
+                },
                 pause_note
             ),
             if pause_ui.paused { 0xffd080ff } else { 0x80ffbfff },
@@ -769,6 +810,8 @@ impl DirectControlExtension {
 
 impl StableExtension for DirectControlExtension {
     fn post_render(&self, ctx: &mut StableClient<'_>) {
+        Self::observe_multiplayer_scene(ctx);
+
         let ingame = matches!(ctx.client_scene_kind(), Some(ClientSceneKindV1::InGame));
         let control_scene = Self::control_scene(ctx);
         let session_was_active = MATCH_SESSION_ACTIVE.load(Ordering::Acquire);
@@ -812,6 +855,8 @@ impl StableExtension for DirectControlExtension {
         }
 
         let pause_ui = pause_probe::update(ctx, session_active);
+        Self::sync_pacing_speed(ctx, session_active);
+
         // Once an InGame session has started, any temporary non-InGame match scene is fail-closed:
         // hold Candidate A until the battlefield returns instead of running vanilla AI unseen.
         let presentation_paused = session_active && (!ingame || pause_ui.paused);
