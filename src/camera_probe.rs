@@ -510,6 +510,18 @@ pub fn clear_candidates() {
     base::clear_candidates();
 }
 
+/// Enforce the selected champion's native team vision while manual control is active.
+///
+/// TFM2 encodes spectator vision as 0=All, 1=Blue/team0, 2=Red/team1.
+/// Passing None stops enforcement without changing the game's current view.
+pub fn set_team_vision(team: Option<usize>) {
+    let mode = team.and_then(|team| u8::try_from(team).ok()).and_then(|team| {
+        let mode = team.saturating_add(1);
+        (mode <= 2).then_some(mode)
+    });
+    base::set_vision_mode(mode);
+}
+
 pub fn snapshots() -> Vec<CameraSnapshot> {
     base::snapshots()
 }

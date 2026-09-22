@@ -6,7 +6,7 @@ This file records the current functionality-first scope and implementation prior
 
 **The authoritative first-public-release cut is now `docs/release-week-plan.md`.** The long-form priority list below remains useful design history and backlog detail, but any item below still labeled "pre-release" is superseded by the release-week plan unless that file explicitly keeps it before release.
 
-Current release sequence: **automatic team fog-of-war -> F-key mapping hardening -> synchronized match speeds/death fast-forward -> click-target hitbox polish -> one bounded pregame/startup attempt -> Workshop packaging and release.** Everything else moves behind the first public release unless final testing exposes a core release-breaking regression.
+Current release sequence: **automatic team fog-of-war -> F-key mapping hardening -> synchronized match speeds/death fast-forward -> click-target hitbox polish -> one bounded pregame/startup attempt -> raw-input foreground-focus safety sweep -> diagnostic presentation cleanup -> Workshop packaging and release.** Everything else moves behind the first public release unless final testing exposes a core release-breaking regression.
 
 **Pings/team commands and manual shop control remain explicitly post-release systems.**
 

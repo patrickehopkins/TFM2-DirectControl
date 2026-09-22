@@ -18,8 +18,12 @@ Do these in order unless a newly discovered crash/data-corruption-level regressi
    - When a champion is manually controlled, select that champion's actual simulation team vision.
    - Must work when controlling either side.
    - Do not synthesize configurable spectator hotkeys as the implementation.
-   - The old v0.6.0 native vision byte at camera/view `+0x63` is **not assumed valid on v0.6.1**; revalidate or find the new native state before writing anything.
-   - `End` should return the champion to AI/spectator without forcibly changing fog unless we explicitly choose that behavior later.
+   - **v0.6.1 physical result:** reading `camera_handler_this+0x63` remains `0` for All / Blue / Red, proving the old diagnostic sampled the wrong object.
+   - **v0.6.1 static result:** the same native camera handler at `0x00C2DBE0` loads a nested owner pointer from `this+0x418` and writes `0/1/2` to `owner+0x63` for All / Blue / Red, after checking `owner+0x10 == 0`.
+   - **v0.6.1 team mapping confirmed physically:** Blue = simulation team `0`; Red = simulation team `1`. Automatic fog therefore requests native mode `selected_team + 1`.
+   - Current implementation applies that request after the original camera handler on the existing native camera thread and preserves the native `+0x10 == 0` guard.
+   - **Physically validated on v0.6.1:** selecting Blue forces native vision `1`; selecting Red forces native vision `2`; manual spectator vision changes are overridden while a champion is controlled; `End` stops enforcement and leaves the current native fog state in place.
+   - Known/non-blocking spectator loophole: native follow-selection can still follow an opposing champion and reveal that champion's position through fog. This is accepted for the first release; Direct Control is not intended as an anti-cheat layer.
 
 2. **F-key selection mapping hardening**
    - Keep F1-F10 as the player-facing selection scheme for this release.
@@ -40,6 +44,24 @@ Do these in order unless a newly discovered crash/data-corruption-level regressi
    - When enlarged areas overlap, priority is **Champion > Building/Objective > Creep**.
    - The purpose is to reduce rapid RMB attacks accidentally becoming ground MoveTo orders.
 
+## Input-focus safety sweep before release
+
+The apparent "long pause released control" regression was reproduced and traced to **global raw keyboard polling**, not pause duration itself. `GetAsyncKeyState` sees keys even while another application owns focus, so using `Ctrl+End` while typing in another program can trigger Direct Control's global release in the background.
+
+Current raw-key paths requiring the same foreground-process gate before release:
+
+- render-thread `Ctrl+Home` start/release chord;
+- render-thread `Ctrl+End` global release chord;
+- render-thread `End` temporary release;
+- render-thread F1-F10 champion selection;
+- worker-thread `Ctrl+Home` prematch escape path, which cannot rely on `post_render` and therefore needs its own foreground-process check.
+
+Mouse/RMB/LMB and MMB/wheel code already verifies that the TFM2 process owns the foreground window before consuming raw Win32 input. A/B/Q/W/R/B/H/Escape use the stable SDK's contextual key input rather than these global raw keyboard polls.
+
+**Pre-release requirement:** add one shared foreground-focus test (or equivalent safe helper) to every raw keyboard path, then physically verify that Direct Control does nothing when the user presses those shortcuts while TFM2 is unfocused.
+
+The pause/session hardening added during investigation physically passed and may remain as defensive protection, but it was not the root cause of the observed releases.
+
 ## Pregame / pre-simulation issue
 
 Make **one bounded pre-release attempt** after the immediate buglist.
@@ -55,6 +77,17 @@ Rules for this attempt:
 - the first public release may therefore retain a known amount of startup pre-simulation.
 
 This issue is desired before release, but it is **not allowed to become a release blocker**.
+
+## Diagnostic presentation cleanup
+
+Do one final cleanup pass immediately before packaging:
+
+- remove or disable always-on development diagnostics, probe counters, temporary native-field readouts, and log spam that a Workshop subscriber does not need;
+- remove purely diagnostic cursor/world markers or debug panels that are not part of the intended player-facing control/targeting UI;
+- preserve concise user-facing control feedback, targeting/range indicators that are part of gameplay, and actionable error logging;
+- keep deep diagnostics in source behind an explicit development/debug switch where practical rather than deleting useful investigation tools.
+
+This is presentation cleanup, not permission to refactor validated control systems before release.
 
 ## Packaging / Workshop release path
 
@@ -73,7 +106,7 @@ The uploader already knows how to stage native Rust mods and excludes `src/`, `t
 
 ## Everything else moves post-release
 
-After the four immediate bugs and the bounded pregame attempt, **stop adding pre-release scope**. Package and ship.
+After the four immediate bugs, the bounded pregame attempt, the input-focus safety sweep, and the diagnostic presentation cleanup, **stop adding pre-release scope**. Package and ship.
 
 The following previously listed pre-release work is now post-release unless it turns into a concrete release-breaking regression during final testing:
 
