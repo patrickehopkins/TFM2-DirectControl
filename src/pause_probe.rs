@@ -19,11 +19,11 @@ use mod_api_stable::StableClient;
 
 const MAX_UI_NODES: usize = 2_000;
 const SPEED_BUTTONS: [(&str, u64, &str); 5] = [
-    ("speed_buttons.speed05x", 30, "0.5x"),
-    ("speed_buttons.speed1x", 60, "1x"),
-    ("speed_buttons.speed15x", 90, "1.5x"),
-    ("speed_buttons.speed2x", 120, "2x"),
-    ("speed_buttons.speed3x", 180, "3x"),
+    ("ingame.speed_buttons.speed05x", 30, "0.5x"),
+    ("ingame.speed_buttons.speed1x", 60, "1x"),
+    ("ingame.speed_buttons.speed15x", 90, "1.5x"),
+    ("ingame.speed_buttons.speed2x", 120, "2x"),
+    ("ingame.speed_buttons.speed3x", 180, "3x"),
 ];
 
 #[derive(Debug, Clone)]
