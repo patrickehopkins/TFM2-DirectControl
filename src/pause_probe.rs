@@ -35,7 +35,11 @@ pub struct PauseUiSnapshot {
 
 pub fn reset() {}
 
-pub fn update(ctx: &StableClient<'_>, interactive_match: bool) -> PauseUiSnapshot {
+pub fn update(
+    ctx: &StableClient<'_>,
+    interactive_match: bool,
+    use_timeline_speed_state: bool,
+) -> PauseUiSnapshot {
     if !interactive_match {
         return PauseUiSnapshot {
             paused: false,
@@ -59,9 +63,11 @@ pub fn update(ctx: &StableClient<'_>, interactive_match: bool) -> PauseUiSnapsho
         };
     }
 
-    if let Some(snapshot) = timeline_pause_state(ctx) {
-        if snapshot.paused {
-            return snapshot;
+    if use_timeline_speed_state {
+        if let Some(snapshot) = timeline_pause_state(ctx) {
+            if snapshot.paused {
+                return snapshot;
+            }
         }
     }
 
