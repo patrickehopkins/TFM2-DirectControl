@@ -2,9 +2,13 @@
 
 This file records the current functionality-first scope and implementation priority so deferred systems do not drift back into the critical path.
 
-## Release boundary
+## Release-week override
 
-**Pings/team commands are the release boundary.** The intent is to ship the first public Direct Control release after the control/QoL work immediately before Pings is complete and validated, rather than holding release for the potentially larger ping-behavior subsystem. Unless explicitly stated otherwise, any new pre-release jobs added from this point should be inserted immediately before Pings/team commands.
+**The authoritative first-public-release cut is now `docs/release-week-plan.md`.** The long-form priority list below remains useful design history and backlog detail, but any item below still labeled "pre-release" is superseded by the release-week plan unless that file explicitly keeps it before release.
+
+Current release sequence: **automatic team fog-of-war -> F-key mapping hardening -> synchronized match speeds/death fast-forward -> click-target hitbox polish -> one bounded pregame/startup attempt -> Workshop packaging and release.** Everything else moves behind the first public release unless final testing exposes a core release-breaking regression.
+
+**Pings/team commands and manual shop control remain explicitly post-release systems.**
 
 ## Implementation priority
 
