@@ -32,6 +32,10 @@ const UI_FALLBACK_H: f32 = 1080.0;
 const CURSOR_WORLD_COLOR: u32 = 0xffd040ff;
 const SKILL_YELLOW: u32 = 0xffd04070;
 const SKILL_SKY_BLUE: u32 = 0x66ccff20;
+const PICK_OVERLAY_ENEMY_CHAMPION: u32 = 0xc838385c;
+const PICK_OVERLAY_ALLY_CHAMPION: u32 = 0x60e87854;
+const PICK_OVERLAY_ENEMY_CHAMPION_CORE: u32 = 0xe0484868;
+const PICK_OVERLAY_ALLY_CHAMPION_CORE: u32 = 0x78f09060;
 const PICK_OVERLAY_ENEMY: u32 = 0x8f202038;
 const PICK_OVERLAY_ALLY: u32 = 0x48b86030;
 const PICK_OVERLAY_ENEMY_CREEP: u32 = 0x8f202024;
@@ -557,23 +561,44 @@ impl DirectControlExtension {
                 continue;
             }
 
-            let is_creep = entity.kind == control::EntityKind::Minion;
             let friendly = entity.team == controlled_team;
-            let color = match (friendly, is_creep) {
-                (true, true) => PICK_OVERLAY_ALLY_CREEP,
-                (true, false) => PICK_OVERLAY_ALLY,
-                (false, true) => PICK_OVERLAY_ENEMY_CREEP,
-                (false, false) => PICK_OVERLAY_ENEMY,
+            let color = match entity.kind {
+                control::EntityKind::Champion if friendly => PICK_OVERLAY_ALLY_CHAMPION,
+                control::EntityKind::Champion => PICK_OVERLAY_ENEMY_CHAMPION,
+                control::EntityKind::Minion if friendly => PICK_OVERLAY_ALLY_CREEP,
+                control::EntityKind::Minion => PICK_OVERLAY_ENEMY_CREEP,
+                _ if friendly => PICK_OVERLAY_ALLY,
+                _ => PICK_OVERLAY_ENEMY,
             };
+
+            let world_x = entity.x as f32 / SIM_UNITS_PER_WORLD_UNIT;
+            let world_y = entity.y as f32 / SIM_UNITS_PER_WORLD_UNIT;
+            let world_radius = radius_sim as f32 / SIM_UNITS_PER_WORLD_UNIT;
 
             ctx.draw_circle(
                 "Game",
-                entity.x as f32 / SIM_UNITS_PER_WORLD_UNIT,
-                entity.y as f32 / SIM_UNITS_PER_WORLD_UNIT,
-                radius_sim as f32 / SIM_UNITS_PER_WORLD_UNIT,
+                world_x,
+                world_y,
+                world_radius,
                 10_000,
                 color,
             );
+
+            if entity.kind == control::EntityKind::Champion {
+                let core_color = if friendly {
+                    PICK_OVERLAY_ALLY_CHAMPION_CORE
+                } else {
+                    PICK_OVERLAY_ENEMY_CHAMPION_CORE
+                };
+                ctx.draw_circle(
+                    "Game",
+                    world_x,
+                    world_y,
+                    world_radius * 0.62,
+                    10_001,
+                    core_color,
+                );
+            }
         }
     }
 
