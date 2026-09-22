@@ -1,27 +1,25 @@
 #!/usr/bin/env python3
 """Read-only native-target relocation probe for Teamfight Manager 2 updates.
 
-This is the second-stage probe used when a new game build no longer matches the
-physically validated v0.6.0 RVAs.
+This revision uses the PE's x64 unwind table (.pdata) so we only treat real
+function starts as relocation candidates. That avoids the huge false-positive
+set produced by scanning for a common Rust prologue anywhere in .text.
 
-It searches the current executable for two structural invariants that survived
-the v0.5.8 -> v0.6.0 migration:
+Known Direct Control invariants from v0.5.8 and physically validated v0.6.0:
+- the three watched/client simulation jobs use the same 12-byte prologue;
+- A/B/C were exactly 0xC10 apart in both builds;
+- all three call one common, comparatively large simulation wrapper;
+- the spectator camera handler uses the same 12-byte prologue;
+- v0.6.0 camera fields were zoom +E0, center +E4/+E8, extents +EC/+F0,
+  mode +100, pan +428/+42C.
 
-1. The three client simulation jobs share the same 12-byte whole-instruction
-   prologue and were laid out exactly 0xC10 bytes apart in both known builds.
-   Each job calls the same game-core simulation wrapper.
-
-2. The spectator-camera handler shares that prologue and contains a distinctive
-   cluster of camera-field instructions. The first pass looks for the exact
-   v0.6.0 field layout; a fallback reports decoded displacement candidates if
-   the object layout changed again.
-
-No game files or process memory are modified. This script only reads the PE.
+No game files or process memory are modified.
 """
 
 from __future__ import annotations
 
 import argparse
+import bisect
 import hashlib
 import struct
 from dataclasses import dataclass
@@ -38,7 +36,6 @@ EXPECTED_PROLOGUE = bytes.fromhex(
 )
 SIM_STRIDE = 0xC10
 SIM_SCAN_BYTES = 0x300
-CAMERA_SCAN_BYTES = 0x2200
 
 CAMERA_SIGNATURES = {
     "zoom +0xE0": bytes.fromhex("F3 0F 10 86 E0 00 00 00"),
@@ -49,9 +46,7 @@ CAMERA_SIGNATURES = {
     "pan Y write +0x42C": bytes.fromhex("C7 86 2C 04 00 00"),
 }
 
-# Generic forms used only as fallback diagnostics when the exact v0.6.0 layout
-# no longer matches. Offsets are decoded from disp32.
-CAMERA_GENERIC_FORMS = {
+GENERIC_CAMERA_FORMS = {
     "movss [rsi+disp32]": bytes.fromhex("F3 0F 10 86"),
     "movsd [rsi+disp32]": bytes.fromhex("F2 0F 10 86"),
     "movzx r12d,[rsi+disp32]": bytes.fromhex("44 0F B6 A6"),
@@ -76,6 +71,17 @@ class Section:
     @property
     def executable(self) -> bool:
         return bool(self.characteristics & 0x20000000)
+
+
+@dataclass(frozen=True)
+class RuntimeFunction:
+    begin: int
+    end: int
+    unwind: int
+
+    @property
+    def size(self) -> int:
+        return self.end - self.begin
 
 
 class PeImage:
@@ -114,6 +120,8 @@ class PeImage:
                 )
             )
         self.sections = sections
+        self.runtime_functions = self._load_runtime_functions()
+        self._runtime_begins = [fn.begin for fn in self.runtime_functions]
 
     def rva_to_offset(self, rva: int) -> int:
         for section in self.sections:
@@ -123,12 +131,6 @@ class PeImage:
                     raise ValueError(f"RVA 0x{rva:X} is in zero-filled section tail")
                 return section.raw_offset + delta
         raise ValueError(f"RVA 0x{rva:X} is outside mapped sections")
-
-    def offset_to_rva(self, offset: int) -> int:
-        for section in self.sections:
-            if section.raw_offset <= offset < section.raw_offset + section.raw_size:
-                return section.rva + (offset - section.raw_offset)
-        raise ValueError(f"file offset 0x{offset:X} is outside mapped sections")
 
     def bytes_at(self, rva: int, size: int) -> bytes:
         offset = self.rva_to_offset(rva)
@@ -140,15 +142,45 @@ class PeImage:
             for section in self.sections
         )
 
+    def _load_runtime_functions(self) -> list[RuntimeFunction]:
+        pdata = next((s for s in self.sections if s.name == ".pdata"), None)
+        if pdata is None:
+            return []
+
+        block = self.data[pdata.raw_offset : pdata.raw_offset + pdata.raw_size]
+        out: list[RuntimeFunction] = []
+        for offset in range(0, len(block) - 11, 12):
+            begin, end, unwind = struct.unpack_from("<III", block, offset)
+            if begin == 0 and end == 0 and unwind == 0:
+                continue
+            if begin >= end or not self.is_executable_rva(begin):
+                continue
+            out.append(RuntimeFunction(begin, end, unwind))
+
+        # Rust/LLVM can emit duplicate/chained entries. Keep the widest entry per begin.
+        by_begin: dict[int, RuntimeFunction] = {}
+        for fn in out:
+            prior = by_begin.get(fn.begin)
+            if prior is None or fn.end > prior.end:
+                by_begin[fn.begin] = fn
+        return sorted(by_begin.values(), key=lambda fn: fn.begin)
+
+    def runtime_function_at(self, rva: int) -> RuntimeFunction | None:
+        if not self.runtime_functions:
+            return None
+        index = bisect.bisect_right(self._runtime_begins, rva) - 1
+        if index < 0:
+            return None
+        fn = self.runtime_functions[index]
+        return fn if fn.begin <= rva < fn.end else None
+
 
 def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
 def fmt_bytes(data: bytes | None) -> str:
-    if data is None:
-        return "<unmapped>"
-    return " ".join(f"{byte:02X}" for byte in data)
+    return "<unmapped>" if data is None else " ".join(f"{byte:02X}" for byte in data)
 
 
 def safe_bytes(image: PeImage, rva: int, size: int) -> bytes | None:
@@ -159,25 +191,13 @@ def safe_bytes(image: PeImage, rva: int, size: int) -> bytes | None:
     return data if len(data) == size else None
 
 
-def find_all_executable(image: PeImage, needle: bytes) -> list[int]:
-    out: list[int] = []
-    for section in image.sections:
-        if not section.executable or section.raw_size < len(needle):
-            continue
-        block = image.data[
-            section.raw_offset : section.raw_offset + section.raw_size
-        ]
-        start = 0
-        while True:
-            index = block.find(needle, start)
-            if index < 0:
-                break
-            out.append(section.rva + index)
-            start = index + 1
-    return sorted(out)
+def function_has_prologue(image: PeImage, fn: RuntimeFunction) -> bool:
+    return safe_bytes(image, fn.begin, len(EXPECTED_PROLOGUE)) == EXPECTED_PROLOGUE
 
 
-def rel32_calls(image: PeImage, start_rva: int, size: int) -> list[tuple[int, int]]:
+def rel32_calls(
+    image: PeImage, start_rva: int, size: int
+) -> list[tuple[int, int]]:
     block = safe_bytes(image, start_rva, size)
     if block is None:
         return []
@@ -202,89 +222,103 @@ def call_target_counts(
     return counts
 
 
-def strict_simulation_triples(
-    image: PeImage, prologues: list[int]
-) -> list[tuple[tuple[int, int, int], list[int]]]:
-    prologue_set = set(prologues)
-    out: list[tuple[tuple[int, int, int], list[int]]] = []
+def nearest_old_delta(new_rva: int, old_rva: int) -> str:
+    delta = new_rva - old_rva
+    sign = "+" if delta >= 0 else "-"
+    return f"{sign}0x{abs(delta):X}"
 
-    for a in prologues:
-        b = a + SIM_STRIDE
-        c = b + SIM_STRIDE
-        if b not in prologue_set or c not in prologue_set:
+
+def find_executable_occurrences(image: PeImage, needle: bytes) -> list[int]:
+    out: list[int] = []
+    for section in image.sections:
+        if not section.executable or section.raw_size < len(needle):
+            continue
+        block = image.data[
+            section.raw_offset : section.raw_offset + section.raw_size
+        ]
+        start = 0
+        while True:
+            index = block.find(needle, start)
+            if index < 0:
+                break
+            out.append(section.rva + index)
+            start = index + 1
+    return out
+
+
+def simulation_candidates(
+    image: PeImage,
+) -> list[tuple[tuple[RuntimeFunction, RuntimeFunction, RuntimeFunction], list[int]]]:
+    starts = {
+        fn.begin: fn
+        for fn in image.runtime_functions
+        if function_has_prologue(image, fn)
+    }
+    out = []
+
+    for a_rva, a in sorted(starts.items()):
+        b = starts.get(a_rva + SIM_STRIDE)
+        c = starts.get(a_rva + 2 * SIM_STRIDE)
+        if b is None or c is None:
             continue
 
         maps = [
-            call_target_counts(image, a, SIM_SCAN_BYTES),
-            call_target_counts(image, b, SIM_SCAN_BYTES),
-            call_target_counts(image, c, SIM_SCAN_BYTES),
+            call_target_counts(image, a.begin, min(a.size, SIM_SCAN_BYTES)),
+            call_target_counts(image, b.begin, min(b.size, SIM_SCAN_BYTES)),
+            call_target_counts(image, c.begin, min(c.size, SIM_SCAN_BYTES)),
         ]
         common = sorted(set(maps[0]) & set(maps[1]) & set(maps[2]))
         if common:
             out.append(((a, b, c), common))
 
+    def score(item):
+        (a, b, c), common = item
+        # Prefer triples whose functions nearly fill their 0xC10 slots, as the
+        # validated jobs did, and whose common target includes a large function.
+        fill = a.size + b.size + c.size
+        largest_target = max(
+            (
+                image.runtime_function_at(target).size
+                if image.runtime_function_at(target) is not None
+                else 0
+            )
+            for target in common
+        )
+        proximity_penalty = abs(a.begin - V060_CANDIDATES[0])
+        return (-largest_target, -fill, proximity_penalty, a.begin)
+
+    out.sort(key=score)
     return out
 
 
-def fuzzy_simulation_triples(
-    image: PeImage, prologues: list[int]
-) -> list[tuple[int, tuple[int, int, int], list[int]]]:
-    """Fallback if the exact 0xC10 spacing changed.
+def camera_function_scores(
+    image: PeImage,
+) -> list[tuple[int, RuntimeFunction, dict[str, list[int]]]]:
+    grouped: dict[int, dict[str, list[int]]] = {}
 
-    Search nearby prologue triples with roughly the historical spacing and require
-    at least one common executable rel32 target from all three functions.
-    """
+    for label, signature in CAMERA_SIGNATURES.items():
+        for occurrence in find_executable_occurrences(image, signature):
+            fn = image.runtime_function_at(occurrence)
+            if fn is None or not function_has_prologue(image, fn):
+                continue
+            grouped.setdefault(fn.begin, {}).setdefault(label, []).append(
+                occurrence - fn.begin
+            )
 
-    out: list[tuple[int, tuple[int, int, int], list[int]]] = []
-    calls_cache: dict[int, dict[int, int]] = {}
+    scored: list[tuple[int, RuntimeFunction, dict[str, list[int]]]] = []
+    functions = {fn.begin: fn for fn in image.runtime_functions}
+    for begin, hits in grouped.items():
+        fn = functions[begin]
+        scored.append((len(hits), fn, hits))
 
-    def targets(rva: int) -> dict[int, int]:
-        if rva not in calls_cache:
-            calls_cache[rva] = call_target_counts(image, rva, SIM_SCAN_BYTES)
-        return calls_cache[rva]
-
-    for ai, a in enumerate(prologues):
-        b_candidates = [
-            b
-            for b in prologues[ai + 1 :]
-            if 0xA80 <= b - a <= 0xDA0
-        ]
-        for b in b_candidates:
-            c_candidates = [
-                c
-                for c in prologues
-                if c > b and 0xA80 <= c - b <= 0xDA0
-            ]
-            for c in c_candidates:
-                common = sorted(
-                    set(targets(a)) & set(targets(b)) & set(targets(c))
-                )
-                if not common:
-                    continue
-                penalty = abs((b - a) - SIM_STRIDE) + abs((c - b) - SIM_STRIDE)
-                out.append((penalty, (a, b, c), common))
-
-    out.sort(key=lambda item: (item[0], item[1]))
-    return out[:20]
-
-
-def camera_exact_scores(
-    image: PeImage, prologues: list[int]
-) -> list[tuple[int, int, dict[str, int]]]:
-    out: list[tuple[int, int, dict[str, int]]] = []
-    for rva in prologues:
-        body = safe_bytes(image, rva, CAMERA_SCAN_BYTES)
-        if body is None:
-            continue
-        hits: dict[str, int] = {}
-        for label, signature in CAMERA_SIGNATURES.items():
-            where = body.find(signature)
-            if where >= 0:
-                hits[label] = where
-        if hits:
-            out.append((len(hits), rva, hits))
-    out.sort(key=lambda item: (-item[0], abs(item[1] - V060_CAMERA_RVA)))
-    return out
+    scored.sort(
+        key=lambda item: (
+            -item[0],
+            abs(item[1].begin - V060_CAMERA_RVA),
+            -item[1].size,
+        )
+    )
+    return scored
 
 
 def generic_disp_hits(block: bytes, prefix: bytes) -> list[tuple[int, int]]:
@@ -297,47 +331,31 @@ def generic_disp_hits(block: bytes, prefix: bytes) -> list[tuple[int, int]]:
         disp_at = index + len(prefix)
         if disp_at + 4 <= len(block):
             disp = struct.unpack_from("<i", block, disp_at)[0]
-            # Camera object fields are small positive offsets. This bound keeps the
-            # fallback report readable without asserting a particular layout.
             if 0 <= disp <= 0x1000:
                 out.append((index, disp))
         start = index + 1
     return out
 
 
-def camera_generic_scores(
-    image: PeImage, prologues: list[int]
-) -> list[tuple[int, int, dict[str, list[tuple[int, int]]]]]:
-    out: list[tuple[int, int, dict[str, list[tuple[int, int]]]]] = []
-    for rva in prologues:
-        body = safe_bytes(image, rva, CAMERA_SCAN_BYTES)
-        if body is None:
+def emit_camera_generic(
+    lines: list[str], image: PeImage, fn: RuntimeFunction
+) -> None:
+    body = safe_bytes(image, fn.begin, fn.size)
+    if body is None:
+        return
+    lines.append("  generic decoded camera-like field accesses:")
+    any_hit = False
+    for label, prefix in GENERIC_CAMERA_FORMS.items():
+        hits = generic_disp_hits(body, prefix)
+        if not hits:
             continue
-
-        decoded: dict[str, list[tuple[int, int]]] = {}
-        nonempty = 0
-        total_hits = 0
-        for label, prefix in CAMERA_GENERIC_FORMS.items():
-            hits = generic_disp_hits(body, prefix)
-            if hits:
-                decoded[label] = hits[:24]
-                nonempty += 1
-                total_hits += min(len(hits), 24)
-
-        # Requiring several different instruction forms filters generic large
-        # Rust functions that happen to touch a few [rsi+disp] fields.
-        if nonempty >= 4:
-            score = nonempty * 100 + min(total_hits, 99)
-            out.append((score, rva, decoded))
-
-    out.sort(key=lambda item: (-item[0], abs(item[1] - V060_CAMERA_RVA)))
-    return out[:20]
-
-
-def nearest_old_delta(new_rva: int, old_rva: int) -> str:
-    delta = new_rva - old_rva
-    sign = "+" if delta >= 0 else "-"
-    return f"{sign}0x{abs(delta):X}"
+        any_hit = True
+        rendered = ", ".join(
+            f"+0x{where:X}->disp 0x{disp:X}" for where, disp in hits[:32]
+        )
+        lines.append(f"    {label}: {rendered}")
+    if not any_hit:
+        lines.append("    <none>")
 
 
 def main() -> int:
@@ -353,156 +371,134 @@ def main() -> int:
 
     image = PeImage(args.exe.resolve())
     digest = sha256(image.data)
-    prologues = find_all_executable(image, EXPECTED_PROLOGUE)
+    prologue_functions = [
+        fn for fn in image.runtime_functions if function_has_prologue(image, fn)
+    ]
 
     lines: list[str] = [
-        "TFM2 DIRECT CONTROL - NATIVE TARGET RELOCATION REPORT",
+        "TFM2 DIRECT CONTROL - NATIVE TARGET RELOCATION REPORT (PDATA)",
         f"Executable: {image.path}",
         f"SHA-256: {digest}",
         f"PE timestamp: 0x{image.timestamp:08X}",
         f"Image size: 0x{image.image_size:08X}",
         f"Image base: 0x{image.image_base:X}",
-        f"Matching 12-byte function prologues: {len(prologues)}",
+        f"Runtime functions from .pdata: {len(image.runtime_functions)}",
+        f"Runtime function starts with Direct-Control prologue: {len(prologue_functions)}",
         "",
         "Read-only static analysis. No game files or process memory were modified.",
         "",
         "===== SIMULATION JOB RELOCATION =====",
         (
-            "Historical invariant: A/B/C were exactly 0xC10 apart in both v0.5.8 "
-            "and v0.6.0, and all called one common simulation wrapper."
+            "Only real .pdata function starts are considered. Historical invariant: "
+            "A/B/C starts are exactly 0xC10 apart and all call one common wrapper."
         ),
     ]
 
-    strict = strict_simulation_triples(image, prologues)
-    if strict:
-        for index, (triple, common) in enumerate(strict[:20], 1):
+    sim = simulation_candidates(image)
+    if not sim:
+        lines.append("SIMULATION RESULT: <no strict real-function triple found>")
+    else:
+        for index, (triple, common) in enumerate(sim[:20], 1):
             a, b, c = triple
             lines.append("")
             lines.append(
-                f"STRICT CANDIDATE #{index}: "
-                f"A=0x{a:08X} B=0x{b:08X} C=0x{c:08X}"
+                f"SIM #{index}: "
+                f"A=0x{a.begin:08X} B=0x{b.begin:08X} C=0x{c.begin:08X}"
             )
             lines.append(
-                f"  deltas from v0.6.0: "
-                f"A {nearest_old_delta(a, V060_CANDIDATES[0])}, "
-                f"B {nearest_old_delta(b, V060_CANDIDATES[1])}, "
-                f"C {nearest_old_delta(c, V060_CANDIDATES[2])}"
+                f"  function sizes A/B/C = "
+                f"0x{a.size:X}/0x{b.size:X}/0x{c.size:X}"
             )
             lines.append(
-                "  first 32 bytes A: "
-                + fmt_bytes(safe_bytes(image, a, 32))
+                f"  deltas from v0.6.0 = "
+                f"{nearest_old_delta(a.begin, V060_CANDIDATES[0])}/"
+                f"{nearest_old_delta(b.begin, V060_CANDIDATES[1])}/"
+                f"{nearest_old_delta(c.begin, V060_CANDIDATES[2])}"
             )
-            lines.append("  common executable rel32 call targets:")
+            lines.append(
+                "  first 48 bytes A: "
+                + fmt_bytes(safe_bytes(image, a.begin, 48))
+            )
+            lines.append("  common rel32 targets:")
+            ranked_targets = []
             for target in common:
+                target_fn = image.runtime_function_at(target)
+                size = target_fn.size if target_fn is not None else 0
+                ranked_targets.append((size, target, target_fn))
+            ranked_targets.sort(reverse=True)
+
+            for size, target, target_fn in ranked_targets:
                 counts = [
-                    call_target_counts(image, rva, SIM_SCAN_BYTES).get(target, 0)
-                    for rva in triple
+                    call_target_counts(image, fn.begin, min(fn.size, SIM_SCAN_BYTES)).get(
+                        target, 0
+                    )
+                    for fn in triple
                 ]
-                lines.append(
-                    f"    0x{target:08X} "
-                    f"(calls A/B/C={counts[0]}/{counts[1]}/{counts[2]}, "
-                    f"delta from old wrapper {nearest_old_delta(target, V060_WRAPPER_RVA)})"
+                owner = (
+                    f"fn 0x{target_fn.begin:08X}..0x{target_fn.end:08X}"
+                    if target_fn is not None
+                    else "<no pdata owner>"
                 )
                 lines.append(
-                    "      target bytes: "
-                    + fmt_bytes(safe_bytes(image, target, 32))
-                )
-    else:
-        lines.append("")
-        lines.append("No strict 0xC10 triple with a common call target was found.")
-        lines.append("Trying fuzzy historical spacing...")
-        fuzzy = fuzzy_simulation_triples(image, prologues)
-        if not fuzzy:
-            lines.append("FUZZY RESULT: <none>")
-        else:
-            for index, (penalty, triple, common) in enumerate(fuzzy[:10], 1):
-                a, b, c = triple
-                lines.append(
-                    f"FUZZY #{index}: penalty=0x{penalty:X} "
-                    f"A=0x{a:08X} B=0x{b:08X} C=0x{c:08X} "
-                    f"gaps=0x{b-a:X}/0x{c-b:X}"
+                    f"    0x{target:08X} calls={counts[0]}/{counts[1]}/{counts[2]} "
+                    f"owner={owner} size=0x{size:X} "
+                    f"delta-old-wrapper={nearest_old_delta(target, V060_WRAPPER_RVA)}"
                 )
                 lines.append(
-                    "  common targets: "
-                    + ", ".join(f"0x{target:08X}" for target in common)
+                    "      bytes: " + fmt_bytes(safe_bytes(image, target, 48))
                 )
 
     lines.extend(
         [
             "",
             "===== CAMERA HANDLER RELOCATION =====",
-            "First rank: exact v0.6.0 camera-field signatures inside each matching prologue.",
-        ]
-    )
-
-    exact_camera = camera_exact_scores(image, prologues)
-    if not exact_camera:
-        lines.append("Exact-layout candidates: <none>")
-    else:
-        for index, (score, rva, hits) in enumerate(exact_camera[:20], 1):
-            lines.append("")
-            lines.append(
-                f"CAMERA EXACT #{index}: score={score}/6 RVA=0x{rva:08X} "
-                f"(delta from v0.6.0 {nearest_old_delta(rva, V060_CAMERA_RVA)})"
-            )
-            for label in CAMERA_SIGNATURES:
-                if label in hits:
-                    lines.append(f"  PASS {label:24s} @ +0x{hits[label]:X}")
-                else:
-                    lines.append(f"  ---- {label}")
-            lines.append(
-                "  first 32 bytes: "
-                + fmt_bytes(safe_bytes(image, rva, 32))
-            )
-
-    if not exact_camera or exact_camera[0][0] < len(CAMERA_SIGNATURES):
-        lines.extend(
-            [
-                "",
-                "===== CAMERA GENERIC DISPLACEMENT FALLBACK =====",
-                (
-                    "The exact old field cluster was not uniquely complete. "
-                    "These are diagnostic candidates only; do not patch from them blindly."
-                ),
-            ]
-        )
-        generic_camera = camera_generic_scores(image, prologues)
-        if not generic_camera:
-            lines.append("<none>")
-        else:
-            for index, (score, rva, decoded) in enumerate(generic_camera[:10], 1):
-                lines.append("")
-                lines.append(
-                    f"CAMERA GENERIC #{index}: score={score} RVA=0x{rva:08X} "
-                    f"(delta from v0.6.0 {nearest_old_delta(rva, V060_CAMERA_RVA)})"
-                )
-                for label, hits in decoded.items():
-                    rendered = ", ".join(
-                        f"+0x{where:X}->disp 0x{disp:X}" for where, disp in hits
-                    )
-                    lines.append(f"  {label}: {rendered}")
-
-    lines.extend(
-        [
-            "",
-            "===== CROSS-CHECK =====",
             (
-                "If the top simulation triple and top complete camera candidate moved by "
-                "the same or very similar RVA delta, that is additional evidence of a "
-                "layout-preserving code relocation. It is not a substitute for runtime validation."
+                "Exact camera signatures are first located globally, then attributed to "
+                "their real .pdata owning function. This removes overlapping-window "
+                "false positives from the previous probe."
             ),
         ]
     )
 
-    if strict and exact_camera:
-        sim_delta = strict[0][0][0] - V060_CANDIDATES[0]
-        cam_delta = exact_camera[0][1] - V060_CAMERA_RVA
-        lines.append(f"Top simulation A delta: {sim_delta:+#x}")
-        lines.append(f"Top camera delta:       {cam_delta:+#x}")
-        lines.append(
-            "Delta agreement: "
-            + ("EXACT" if sim_delta == cam_delta else "different")
-        )
+    camera = camera_function_scores(image)
+    if not camera:
+        lines.append("CAMERA RESULT: <no prologue-matching owner for known signatures>")
+    else:
+        for index, (score, fn, hits) in enumerate(camera[:12], 1):
+            lines.append("")
+            lines.append(
+                f"CAMERA #{index}: score={score}/6 "
+                f"RVA=0x{fn.begin:08X} end=0x{fn.end:08X} size=0x{fn.size:X} "
+                f"delta-old={nearest_old_delta(fn.begin, V060_CAMERA_RVA)}"
+            )
+            for label in CAMERA_SIGNATURES:
+                offsets = hits.get(label)
+                if offsets:
+                    lines.append(
+                        f"  PASS {label:24s} @ "
+                        + ", ".join(f"+0x{offset:X}" for offset in offsets[:8])
+                    )
+                else:
+                    lines.append(f"  ---- {label}")
+            lines.append(
+                "  first 48 bytes: " + fmt_bytes(safe_bytes(image, fn.begin, 48))
+            )
+            if index <= 3:
+                emit_camera_generic(lines, image, fn)
+
+    lines.extend(
+        [
+            "",
+            "===== INTERPRETATION =====",
+            (
+                "A simulation result is strong when one real-function triple dominates "
+                "and one common call target owns a much larger function than incidental "
+                "helpers. A camera result is strong when one real owning function contains "
+                "five or six of the known field signatures. Missing mode +0x100 alone may "
+                "mean that field moved or its instruction encoding changed; do not guess it."
+            ),
+        ]
+    )
 
     output = args.output.resolve()
     output.write_text("\n".join(lines), encoding="utf-8")
