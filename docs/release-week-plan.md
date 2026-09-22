@@ -27,9 +27,9 @@ Do these in order unless a newly discovered crash/data-corruption-level regressi
 
 2. **F-key selection mapping hardening**
    - Keep F1-F10 as the player-facing selection scheme for this release.
-   - Verify native role ordering and investigate piggy-backing the game's Follow Own / Follow Enemy role tracking.
-   - A/B test any native mapping against the currently working UI-card/name mapper.
-   - Keep the existing mapper if the native route is less reliable.
+   - Native Follow Own / Follow Enemy actions were investigated, but they are role-oriented (top/jungle/mid/bottom/support) rather than a direct stable-athlete-id mapping. Adding a new native follow-target dependency is not justified for the first release.
+   - The existing visible-card -> stable athlete-id route is now hardened to build the ten-card roster coherently, require unambiguous athlete-name matches, reject duplicate athlete assignments, cache the mapping per match, and revalidate a cached card before reuse.
+   - **Physical validation pending:** confirm F1-F10 still select exactly the ten visible cards on both sides, including after pause/resume and after UI/layout changes such as Match Info/wide view.
 
 3. **Synchronized match speeds + death fast-forward**
    - Presentation rate and Candidate-A simulation pacing must change together.
