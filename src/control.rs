@@ -99,6 +99,7 @@ static TARGET_DROP_VISION_COUNT: AtomicU64 = AtomicU64::new(0);
 static TARGET_DROP_DEAD_COUNT: AtomicU64 = AtomicU64::new(0);
 static TARGET_DROP_INVALID_COUNT: AtomicU64 = AtomicU64::new(0);
 static LAST_MANUAL_TICK: AtomicU64 = AtomicU64::new(NO_TICK);
+static LAST_CLICK_TARGET_OVERLAY_TICK: AtomicU64 = AtomicU64::new(NO_TICK);
 static CLICK_TARGET_OVERLAY: OnceLock<Mutex<Vec<ClickableEntityGeometry>>> = OnceLock::new();
 
 fn click_target_overlay_storage() -> &'static Mutex<Vec<ClickableEntityGeometry>> {
@@ -111,14 +112,20 @@ fn clear_click_target_overlay() {
     }
 }
 
-fn publish_click_target_overlay(ctx: &mut StableAiContext<'_>) {
-    let controlled_team = ctx.team();
+fn refresh_click_target_overlay(ctx: &mut StableAiContext<'_>, tick: u64) {
+    if LAST_CLICK_TARGET_OVERLAY_TICK.load(Ordering::Acquire) == tick {
+        return;
+    }
+    let Some(controlled_team) = selected_team() else {
+        return;
+    };
     let Some(sim) = ctx.sim() else {
         return;
     };
     let next = visible_targetable_entities(&sim, controlled_team);
     if let Ok(mut snapshot) = click_target_overlay_storage().lock() {
         *snapshot = next;
+        LAST_CLICK_TARGET_OVERLAY_TICK.store(tick, Ordering::Release);
     }
 }
 
@@ -307,6 +314,7 @@ pub fn reset() {
     TARGET_DROP_DEAD_COUNT.store(0, Ordering::Release);
     TARGET_DROP_INVALID_COUNT.store(0, Ordering::Release);
     LAST_MANUAL_TICK.store(NO_TICK, Ordering::Release);
+    LAST_CLICK_TARGET_OVERLAY_TICK.store(NO_TICK, Ordering::Release);
 }
 
 pub fn selected_athlete() -> Option<usize> {
@@ -332,6 +340,7 @@ pub fn select_athlete(athlete_id: usize) {
     clear_move_target();
     clear_last_self_position();
     clear_click_target_overlay();
+    LAST_CLICK_TARGET_OVERLAY_TICK.store(NO_TICK, Ordering::Release);
     skill_targeting::on_selection_changed();
     SELECTED_ATHLETE.store(athlete_id, Ordering::Release);
     SELECT_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -755,14 +764,21 @@ fn active_manual_input(
 /// that losing its acquired target resumes the original attack-move destination and permits a new
 /// in-range target to be acquired later.
 pub fn manual_input_for(ctx: &mut StableAiContext<'_>, tick: u64) -> Option<InputV1> {
+    // Keep the visual click-target snapshot alive even while the selected champion is dead.
+    // Any player's paced AI callback can supply StableSim; visibility still uses the selected
+    // champion's authoritative team, and the tick guard limits this to one refresh per sim tick.
+    refresh_click_target_overlay(ctx, tick);
+
     if selected_athlete() != Some(ctx.athlete_id()) {
         return None;
     }
 
     // Resolve the selected champion's actual simulation side rather than inferring it from
-    // F-key position or the user's starting team. This is consumed by the spectator fog helper.
+    // F-key position or the user's starting team. This is consumed by spectator fog and the
+    // click-target overlay. A newly selected champion publishes its team before the second
+    // refresh so the overlay appears immediately rather than waiting for the next tick.
     SELECTED_TEAM.store(ctx.team(), Ordering::Release);
-    publish_click_target_overlay(ctx);
+    refresh_click_target_overlay(ctx, tick);
 
     let self_position = current_champion_position(ctx);
     if let Some((x, y)) = self_position {
