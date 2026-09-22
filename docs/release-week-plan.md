@@ -56,6 +56,17 @@ Rules for this attempt:
 
 This issue is desired before release, but it is **not allowed to become a release blocker**.
 
+## Diagnostic presentation cleanup
+
+Do one final cleanup pass immediately before packaging:
+
+- remove or disable always-on development diagnostics, probe counters, temporary native-field readouts, and log spam that a Workshop subscriber does not need;
+- remove purely diagnostic cursor/world markers or debug panels that are not part of the intended player-facing control/targeting UI;
+- preserve concise user-facing control feedback, targeting/range indicators that are part of gameplay, and actionable error logging;
+- keep deep diagnostics in source behind an explicit development/debug switch where practical rather than deleting useful investigation tools.
+
+This is presentation cleanup, not permission to refactor validated control systems before release.
+
 ## Packaging / Workshop release path
 
 Workshop packaging is part of the release task, not a new engineering subsystem.
@@ -73,7 +84,7 @@ The uploader already knows how to stage native Rust mods and excludes `src/`, `t
 
 ## Everything else moves post-release
 
-After the four immediate bugs and the bounded pregame attempt, **stop adding pre-release scope**. Package and ship.
+After the four immediate bugs, the bounded pregame attempt, and the diagnostic presentation cleanup, **stop adding pre-release scope**. Package and ship.
 
 The following previously listed pre-release work is now post-release unless it turns into a concrete release-breaking regression during final testing:
 
