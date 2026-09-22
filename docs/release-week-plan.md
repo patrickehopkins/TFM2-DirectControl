@@ -37,6 +37,8 @@ Do these in order unless a newly discovered crash/data-corruption-level regressi
    - Re-anchor pacing immediately whenever the rate changes.
    - Do not allow ordinary replay seeking/highlight behavior to separate presentation from the live simulation.
    - Preferred Highlight replacement: while the controlled champion is dead, temporarily fast-forward both clocks together, then restore the previous ordinary speed on respawn, release, or selection of a living champion.
+   - **Multiplayer hard rule:** every Direct Control feature that can alter match speed is disabled in multiplayer. Multiplayer remains locked to 1x/60 ticks per wall-clock second; ordinary speed changes and death fast-forward must not take effect there.
+   - For this release, multiplayer detection should remain narrow and conservative. The stable API has no explicit `is_multiplayer()` accessor; latch multiplayer when the management scene passes through `Room` or `Lobby`, and keep the speed policy at 1x for the resulting match. Broader multiplayer compatibility is a separate later discussion.
 
 4. **Click-target hitbox/selectability polish**
    - Enlarge only clickable/selectable geometry; never alter pathing or collision.
