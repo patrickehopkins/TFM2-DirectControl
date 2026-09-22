@@ -4,7 +4,7 @@ This document records issues that are intentionally **not** blocking continued c
 
 ## Startup pre-simulation
 
-Status: **shelved for later polish**.
+Status: **one bounded pre-release attempt remains; defer and ship if unresolved**.
 
 Teamfight Manager 2 requires some Candidate-A simulation progress before the Start Match transition can complete. Two startup-gating experiments were physically rejected:
 
@@ -13,9 +13,9 @@ Teamfight Manager 2 requires some Candidate-A simulation progress before the Sta
 
 The current fail-safe startup gate releases into the proven 60 Hz pacer after a short bounded hold. This avoids hangs, but the game still begins with some pre-simulated lead and can visibly progress before the player would ideally have made manual-control decisions.
 
-This is annoying and visually inelegant, but it does **not** block live control once the match is running. Do not spend further implementation time on startup separation until higher-priority gameplay commands are working.
+This is annoying and visually inelegant, but it does **not** block live control once the match is running. The release-week plan allows one bounded attempt after the immediate buglist, preferably reusing a clean readiness/startup result from the Flame Simulator investigation. If that attempt does not produce a clean fix, document the remaining lead and ship the first public release anyway.
 
-A future polish pass may probe a small startup runway (for example 2/5/10+ complete ticks) or identify a later readiness boundary where the loader no longer depends synchronously on Candidate A.
+Post-release work may probe a later readiness boundary where the loader no longer depends synchronously on Candidate A. Do not allow startup work to destabilize the already-validated real-time pacing path.
 
 ## Cursor/world marker origin offset
 
@@ -29,11 +29,11 @@ This must be corrected before precise actor/entity hit testing is considered pro
 
 ## Playback-speed controls during live pacing
 
-Status: **deferred**.
+Status: **immediate release-week buglist**.
 
 While Candidate A is held near 60 Hz, the game's normal 0.5x/1x/1.5x/2x/3x replay controls do not meaningfully change live presentation speed. The UI may remember/display another speed, but the visible match effectively hugs the live simulation edge at about 1x.
 
-For the initial direct-control version, 1x is the intended live-control rate. Variable-speed live control should later change the Candidate-A pacer rate itself rather than relying on the replay-speed UI.
+Before the first public release, Direct Control should synchronize the presentation rate and Candidate-A pacer rate together. The same work includes the preferred death-timer fast-forward behavior. Broader playback-desync watchdog/settings polish may move post-release under `docs/release-week-plan.md`.
 
 ## Persistent MoveTo state
 
