@@ -24,30 +24,42 @@ struct SimulationLayout {
     pe_timestamp: u32,
     image_size: u32,
     candidate_rvas: [usize; 3],
-    core_wrapper_rva: usize,
+    core_wrapper_rva: Option<usize>,
     /// v0.5.8 has a separate runner function. In v0.6.0 the equivalent body is
     /// inlined into the enlarged wrapper, so this is a verified body anchor.
-    core_runner_anchor_rva: usize,
+    /// New builds leave these diagnostics absent until they are independently relocated.
+    core_runner_anchor_rva: Option<usize>,
 }
 
 const BUILD_0_5_8: SimulationLayout = SimulationLayout {
     pe_timestamp: 0x6A97_8218,
     image_size: 0x04A1_D000,
     candidate_rvas: [0x00B1_CF10, 0x00B1_DB20, 0x00B1_E730],
-    core_wrapper_rva: 0x0180_EAA0,
-    core_runner_anchor_rva: 0x0181_3FB0,
+    core_wrapper_rva: Some(0x0180_EAA0),
+    core_runner_anchor_rva: Some(0x0181_3FB0),
 };
 
 const BUILD_0_6_0: SimulationLayout = SimulationLayout {
     pe_timestamp: 0x6AAA_07D1,
     image_size: 0x0522_8000,
     candidate_rvas: [0x00AC_2AE0, 0x00AC_36F0, 0x00AC_4300],
-    core_wrapper_rva: 0x016D_2740,
-    core_runner_anchor_rva: 0x016D_3880,
+    core_wrapper_rva: Some(0x016D_2740),
+    core_runner_anchor_rva: Some(0x016D_3880),
+};
+
+const BUILD_0_6_1: SimulationLayout = SimulationLayout {
+    pe_timestamp: 0x6AB1_D950,
+    image_size: 0x0526_4000,
+    candidate_rvas: [0x00B8_CB20, 0x00B8_D730, 0x00B8_E340],
+    // The .pdata relocation report strongly identifies the A/B/C job triple but leaves
+    // two unusually large shared callees. These anchors are diagnostic-only, so do not
+    // guess between them before a separate wrapper relocation proves their identity.
+    core_wrapper_rva: None,
+    core_runner_anchor_rva: None,
 };
 
 fn known_layout(timestamp: u32, image_size: u32) -> Option<&'static SimulationLayout> {
-    [&BUILD_0_5_8, &BUILD_0_6_0]
+    [&BUILD_0_5_8, &BUILD_0_6_0, &BUILD_0_6_1]
         .into_iter()
         .find(|layout| layout.pe_timestamp == timestamp && layout.image_size == image_size)
 }
@@ -216,11 +228,17 @@ pub fn core_signatures() -> Result<CoreSignatureSnapshot, String> {
         }
         let base = module_base.cast::<u8>();
         let layout = ACTIVE_LAYOUT.get().copied().unwrap_or(&BUILD_0_6_0);
+        let wrapper_rva = layout.core_wrapper_rva.ok_or_else(|| {
+            "core simulation wrapper has not been independently relocated for this build".to_owned()
+        })?;
+        let runner_rva = layout.core_runner_anchor_rva.ok_or_else(|| {
+            "core simulation runner anchor has not been independently relocated for this build".to_owned()
+        })?;
         Ok(CoreSignatureSnapshot {
-            wrapper_rva: layout.core_wrapper_rva,
-            wrapper_bytes: format_bytes(base.add(layout.core_wrapper_rva), INSPECT_BYTES),
-            runner_rva: layout.core_runner_anchor_rva,
-            runner_bytes: format_bytes(base.add(layout.core_runner_anchor_rva), INSPECT_BYTES),
+            wrapper_rva,
+            wrapper_bytes: format_bytes(base.add(wrapper_rva), INSPECT_BYTES),
+            runner_rva,
+            runner_bytes: format_bytes(base.add(runner_rva), INSPECT_BYTES),
         })
     }
 }

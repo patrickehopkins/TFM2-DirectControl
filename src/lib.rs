@@ -35,6 +35,8 @@ const SKILL_SKY_BLUE: u32 = 0x66ccff20;
 const VK_F1_CODE: i32 = 0x70;
 const PLAYER_SLOT_COUNT: usize = 10;
 const SIM_UNITS_PER_WORLD_UNIT: f32 = 1000.0;
+const MAP_WORLD_MIN: f32 = 0.0;
+const MAP_WORLD_MAX: f32 = 960.0;
 
 const ATTACK_MOVE_KEY: &str = "A";
 const SKILL_Q_KEY: &str = "Q";
@@ -276,10 +278,11 @@ impl DirectControlExtension {
         }
     }
 
-    fn cursor_world(
+    fn cursor_world_impl(
         ctx: &StableClient<'_>,
         mouse: MouseSnapshot,
         camera: camera_probe::CameraSnapshot,
+        clamp_to_map: bool,
     ) -> Option<CursorWorld> {
         if !mouse.valid {
             return None;
@@ -309,11 +312,23 @@ impl DirectControlExtension {
 
         let dx = mouse.ui_x - origin_ui_x;
         let dy = mouse.ui_y - origin_ui_y;
-        let world_x = camera.center_x + dx * (camera.extent_a / game_w);
-        let world_y = camera.center_y + dy * (camera.extent_b / game_h);
-        if !world_x.is_finite() || !world_y.is_finite() || world_x < 0.0 || world_y < 0.0 {
+        let raw_world_x = camera.center_x + dx * (camera.extent_a / game_w);
+        let raw_world_y = camera.center_y + dy * (camera.extent_b / game_h);
+        if !raw_world_x.is_finite() || !raw_world_y.is_finite() {
             return None;
         }
+
+        let (world_x, world_y) = if clamp_to_map {
+            (
+                raw_world_x.clamp(MAP_WORLD_MIN, MAP_WORLD_MAX),
+                raw_world_y.clamp(MAP_WORLD_MIN, MAP_WORLD_MAX),
+            )
+        } else {
+            if raw_world_x < 0.0 || raw_world_y < 0.0 {
+                return None;
+            }
+            (raw_world_x, raw_world_y)
+        };
 
         let sim_x_f = world_x * SIM_UNITS_PER_WORLD_UNIT;
         let sim_y_f = world_y * SIM_UNITS_PER_WORLD_UNIT;
@@ -331,6 +346,26 @@ impl DirectControlExtension {
             sim_y: sim_y_f.round() as u64,
             marker_units_per_px,
         })
+    }
+
+    fn cursor_world(
+        ctx: &StableClient<'_>,
+        mouse: MouseSnapshot,
+        camera: camera_probe::CameraSnapshot,
+    ) -> Option<CursorWorld> {
+        Self::cursor_world_impl(ctx, mouse, camera, false)
+    }
+
+    fn movement_cursor_world(
+        ctx: &StableClient<'_>,
+        mouse: MouseSnapshot,
+        camera: camera_probe::CameraSnapshot,
+    ) -> Option<CursorWorld> {
+        // An off-map movement click expresses direction, not permission to leave the map.
+        // Clamp only the requested destination into the legal 0..960 world square. TFM2 still
+        // receives its ordinary MoveTo/attack-move request, so native pathing, terrain, entity
+        // collision, and champion radius remain authoritative.
+        Self::cursor_world_impl(ctx, mouse, camera, true)
     }
 
     fn best_camera() -> Option<camera_probe::CameraSnapshot> {
@@ -388,7 +423,7 @@ impl DirectControlExtension {
             let Some(camera) = Self::best_camera() else {
                 return false;
             };
-            let Some(cursor) = Self::cursor_world(ctx, mouse, camera) else {
+            let Some(cursor) = Self::movement_cursor_world(ctx, mouse, camera) else {
                 return false;
             };
 
@@ -456,7 +491,7 @@ impl DirectControlExtension {
         let Some(camera) = Self::best_camera() else {
             return;
         };
-        let Some(cursor) = Self::cursor_world(ctx, mouse, camera) else {
+        let Some(cursor) = Self::movement_cursor_world(ctx, mouse, camera) else {
             return;
         };
 
@@ -645,6 +680,13 @@ impl DirectControlExtension {
             .selected_athlete
             .map(|id| id.to_string())
             .unwrap_or_else(|| "none".to_owned());
+        let selected_team = control::selected_team()
+            .map(|team| team.to_string())
+            .unwrap_or_else(|| "?".to_owned());
+        let native_vision = Self::best_camera()
+            .and_then(|camera| camera.vision_mode)
+            .map(|mode| mode.to_string())
+            .unwrap_or_else(|| "?".to_owned());
         let order = if control_state.selected_athlete.is_none() {
             "AI / spectator".to_owned()
         } else if control_state.returning {
@@ -696,7 +738,9 @@ impl DirectControlExtension {
         Self::draw_text_line(
             ctx,
             84.0,
-            &format!("SELECTED: athlete {selected} | ORDER: {order}"),
+            &format!(
+                "SELECTED: athlete {selected} | team {selected_team} | native vision {native_vision} | ORDER: {order}"
+            ),
             0xffffffff,
         );
         Self::draw_text_line(
