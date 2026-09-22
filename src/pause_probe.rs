@@ -18,12 +18,12 @@
 use mod_api_stable::StableClient;
 
 const MAX_UI_NODES: usize = 2_000;
-const SPEED_BUTTON_PATHS: [&str; 5] = [
-    "speed_buttons.speed05x",
-    "speed_buttons.speed1x",
-    "speed_buttons.speed15x",
-    "speed_buttons.speed2x",
-    "speed_buttons.speed3x",
+const SPEED_BUTTONS: [(&str, u64, &str); 5] = [
+    ("speed_buttons.speed05x", 30, "0.5x"),
+    ("speed_buttons.speed1x", 60, "1x"),
+    ("speed_buttons.speed15x", 90, "1.5x"),
+    ("speed_buttons.speed2x", 120, "2x"),
+    ("speed_buttons.speed3x", 180, "3x"),
 ];
 
 #[derive(Debug, Clone)]
@@ -73,12 +73,19 @@ pub fn update(ctx: &StableClient<'_>, interactive_match: bool) -> PauseUiSnapsho
     }
 }
 
+pub fn selected_speed(ctx: &StableClient<'_>) -> Option<(u64, &'static str)> {
+    SPEED_BUTTONS.iter().find_map(|(path, ticks_per_second, label)| {
+        matches!(ctx.ui_selectable_selected(path), Some(true))
+            .then_some((*ticks_per_second, *label))
+    })
+}
+
 fn timeline_pause_state(ctx: &StableClient<'_>) -> Option<PauseUiSnapshot> {
     let mut recognized = 0usize;
     let mut selected = 0usize;
     let mut selected_name: Option<&str> = None;
 
-    for path in SPEED_BUTTON_PATHS {
+    for (path, _, _) in SPEED_BUTTONS {
         let Some(is_selected) = ctx.ui_selectable_selected(path) else {
             continue;
         };
