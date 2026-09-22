@@ -36,7 +36,6 @@ const PICK_OVERLAY_ENEMY: u32 = 0x8f202038;
 const PICK_OVERLAY_ALLY: u32 = 0x48b86030;
 const PICK_OVERLAY_ENEMY_CREEP: u32 = 0x8f202024;
 const PICK_OVERLAY_ALLY_CREEP: u32 = 0x48b86020;
-const PICK_OVERLAY_Z: i32 = 99_940;
 const VK_F1_CODE: i32 = 0x70;
 const PLAYER_SLOT_COUNT: usize = 10;
 const SIM_UNITS_PER_WORLD_UNIT: f32 = 1000.0;
@@ -572,7 +571,7 @@ impl DirectControlExtension {
                 entity.x as f32 / SIM_UNITS_PER_WORLD_UNIT,
                 entity.y as f32 / SIM_UNITS_PER_WORLD_UNIT,
                 radius_sim as f32 / SIM_UNITS_PER_WORLD_UNIT,
-                PICK_OVERLAY_Z,
+                99_940,
                 color,
             );
         }
@@ -703,8 +702,6 @@ impl DirectControlExtension {
         let Some(camera) = Self::best_camera() else {
             return;
         };
-
-        Self::draw_click_target_overlays(ctx, camera);
 
         if let Some(cursor) = Self::cursor_world(ctx, mouse, camera) {
             ctx.draw_set_camera(
@@ -850,6 +847,22 @@ impl DirectControlExtension {
 }
 
 impl StableExtension for DirectControlExtension {
+    fn pre_render(&self, ctx: &mut StableClient<'_>) {
+        if !matches!(ctx.client_scene_kind(), Some(ClientSceneKindV1::InGame)) {
+            return;
+        }
+        if camera_probe::ensure_installed().is_err() {
+            return;
+        }
+        let Some(camera) = Self::best_camera() else {
+            return;
+        };
+
+        // Stable API pre-render commands are composed beneath the game's own draw commands,
+        // so these translucent selection regions read as ground markers rather than sprite tint.
+        Self::draw_click_target_overlays(ctx, camera);
+    }
+
     fn post_render(&self, ctx: &mut StableClient<'_>) {
         let ingame = matches!(ctx.client_scene_kind(), Some(ClientSceneKindV1::InGame));
         let control_scene = Self::control_scene(ctx);
