@@ -69,6 +69,7 @@ static LAST_RENDER_HEARTBEAT_MS: AtomicU64 = AtomicU64::new(0);
 static PRESENTATION_PHASE: AtomicU8 = AtomicU8::new(PHASE_WAITING_START);
 static PACER_ORIGIN_TICK: AtomicU64 = AtomicU64::new(NO_TICK);
 static PACER_ORIGIN_MS: AtomicU64 = AtomicU64::new(0);
+static PACING_TICKS_PER_SECOND: AtomicU64 = AtomicU64::new(60);
 static MANUAL_FINISH_REQUESTED: AtomicBool = AtomicBool::new(false);
 static SAFETY_FAIL_OPEN: AtomicBool = AtomicBool::new(false);
 static PACER_WAIT_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -90,6 +91,7 @@ pub struct PacingProbeSnapshot {
     pub seen_player_mask: u64,
     pub pacer_origin_tick: Option<u64>,
     pub pacer_elapsed_ms: u64,
+    pub pacing_ticks_per_second: u64,
     pub start_requested: bool,
     pub start_auto_released: bool,
     pub manual_finish_requested: bool,
@@ -144,6 +146,7 @@ pub fn prepare_next_match() {
     INTERACTIVE_MATCH.store(false, Ordering::Release);
     ACTIVE_JOB_CONTEXT.store(0, Ordering::Release);
     ACTIVE_JOB_ENTRY.store(0, Ordering::Release);
+    PACING_TICKS_PER_SECOND.store(60, Ordering::Release);
     reset_job_runtime();
 }
 
@@ -159,7 +162,37 @@ fn observe_candidate_job(probe: simulation_probe::SimulationProbeSnapshot) {
     reset_job_runtime();
 }
 
-/// Starts the held Candidate-A simulation and re-anchors the 60 Hz wall-clock pacer.
+/// Updates Candidate-A's wall-clock pacing rate. Ordinary TFM2 match speeds map to
+/// 30/60/90/120/180 simulation ticks per wall-clock second.
+pub fn set_pacing_ticks_per_second(ticks_per_second: u64) {
+    let normalized = match ticks_per_second {
+        30 | 60 | 90 | 120 | 180 => ticks_per_second,
+        _ => 60,
+    };
+
+    let previous = PACING_TICKS_PER_SECOND.swap(normalized, Ordering::AcqRel);
+    if previous != normalized {
+        // Never turn time spent at the old rate into catch-up/slow-down budget.
+        reanchor_pacer();
+    }
+}
+
+pub fn pacing_ticks_per_second() -> u64 {
+    PACING_TICKS_PER_SECOND.load(Ordering::Acquire)
+}
+
+pub fn pacing_speed_label() -> &'static str {
+    match pacing_ticks_per_second() {
+        30 => "0.5x",
+        60 => "1x",
+        90 => "1.5x",
+        120 => "2x",
+        180 => "3x",
+        _ => "1x",
+    }
+}
+
+/// Starts the held Candidate-A simulation and re-anchors the active wall-clock pacer.
 pub fn request_start_simulation() {
     if manual_control_released() {
         return;
@@ -276,6 +309,7 @@ pub fn snapshot() -> PacingProbeSnapshot {
         } else {
             now_ms.saturating_sub(pacer_origin_ms)
         },
+        pacing_ticks_per_second: PACING_TICKS_PER_SECOND.load(Ordering::Acquire),
         start_requested: START_REQUESTED.load(Ordering::Acquire),
         start_auto_released: START_AUTO_RELEASED.load(Ordering::Acquire),
         manual_finish_requested: MANUAL_FINISH_REQUESTED.load(Ordering::Acquire),
@@ -443,12 +477,23 @@ fn pace_candidate_a(tick: u64) {
         return;
     }
 
+    let pacing_ticks_per_second = PACING_TICKS_PER_SECOND.load(Ordering::Acquire).max(1);
     let sim_delta_ticks = tick.saturating_sub(origin_tick);
-    let target_elapsed_ms = sim_delta_ticks.saturating_mul(1_000) / 60;
+    let target_elapsed_ms =
+        sim_delta_ticks.saturating_mul(1_000) / pacing_ticks_per_second;
     let callback_wait_start_ms = now_ms;
 
     loop {
         if manual_control_released() {
+            return;
+        }
+
+        // The render thread re-anchors whenever the native speed selection changes. Do not
+        // continue sleeping against a stale origin/rate inside an already-running callback.
+        if PACING_TICKS_PER_SECOND.load(Ordering::Acquire) != pacing_ticks_per_second
+            || PACER_ORIGIN_TICK.load(Ordering::Acquire) != origin_tick
+            || PACER_ORIGIN_MS.load(Ordering::Acquire) != origin_ms
+        {
             return;
         }
 
