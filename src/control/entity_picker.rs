@@ -23,6 +23,16 @@ pub enum EntityKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClickableEntityGeometry {
+    pub id: usize,
+    pub team: usize,
+    pub x: u64,
+    pub y: u64,
+    pub collision_radius: usize,
+    pub kind: EntityKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TeamRelation {
     Hostile,
     Friendly,
@@ -78,6 +88,15 @@ fn pick_padding_px(kind: EntityKind) -> u64 {
     }
 }
 
+pub fn effective_pick_radius(
+    kind: EntityKind,
+    collision_radius: usize,
+    sim_units_per_px: u64,
+) -> u64 {
+    let collision_radius = u64::try_from(collision_radius).unwrap_or(u64::MAX);
+    collision_radius.saturating_add(pick_padding_px(kind).saturating_mul(sim_units_per_px))
+}
+
 fn score_candidate(
     id: usize,
     kind: EntityKind,
@@ -103,9 +122,7 @@ fn score_candidate(
         return None;
     }
 
-    let collision_radius = u64::try_from(collision_radius).unwrap_or(u64::MAX);
-    let padding = pick_padding_px(kind).saturating_mul(sim_units_per_px);
-    let effective_radius = collision_radius.saturating_add(padding);
+    let effective_radius = effective_pick_radius(kind, collision_radius, sim_units_per_px);
     let dx = x.abs_diff(click_x) as u128;
     let dy = y.abs_diff(click_y) as u128;
     let distance_sq = dx * dx + dy * dy;
@@ -127,6 +144,48 @@ fn score_is_better(candidate: CandidateScore, current: CandidateScore) -> bool {
                     && (candidate.effective_radius < current.effective_radius
                         || (candidate.effective_radius == current.effective_radius
                             && candidate.id < current.id)))))
+}
+
+pub fn visible_targetable_entities(
+    sim: &StableSim<'_>,
+    controlled_team: usize,
+) -> Vec<ClickableEntityGeometry> {
+    let mut entities = Vec::new();
+
+    for index in 0..sim.entity_count() {
+        let Some(entity) = sim.entity_at(index) else {
+            continue;
+        };
+        let id = entity.id();
+        if !entity.is_alive()
+            || !entity.is_targetable()
+            || !sim.is_visible(controlled_team, id)
+        {
+            continue;
+        }
+
+        let kind = if entity.is_champion() {
+            EntityKind::Champion
+        } else if entity.is_tower() {
+            EntityKind::Tower
+        } else if entity.is_minion() {
+            EntityKind::Minion
+        } else {
+            EntityKind::Other
+        };
+        let (x, y) = entity.pos();
+
+        entities.push(ClickableEntityGeometry {
+            id,
+            team: entity.team(),
+            x,
+            y,
+            collision_radius: entity.radius(),
+            kind,
+        });
+    }
+
+    entities
 }
 
 pub fn pick_entity(
