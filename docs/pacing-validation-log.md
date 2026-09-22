@@ -54,7 +54,7 @@ origin tick 10 | tick 36039 | elapsed 600438 ms | safety fail-open no
 
 Observed simulation delta was `36029` ticks. Exact 60 Hz over 600.438 seconds predicts ~`36026` ticks, so the simulator was only about three ticks (~50 ms) ahead after ten minutes. The fixed worker thread id within the match is expected; different matches use different worker ids.
 
-The user tested the game's normal playback-speed controls during paced simulation. The UI retained its chosen 3x/0.5x/etc. state, but actual presentation remained effectively at 1x while Candidate A was live. This is desirable for the first direct-control version. True variable-speed live control is explicitly deferred.
+The user tested the game's normal playback-speed controls during paced simulation. The UI retained its chosen 3x/0.5x/etc. state, but actual presentation remained effectively at 1x while Candidate A was live. That was desirable for the first direct-control baseline; synchronized variable-speed live control is now the subject of Stage 6 below.
 
 ## Stage 3C — Ctrl+End irreversible finish release
 
@@ -123,6 +123,20 @@ Status: **PASS — physically validated 2026-09-10**.
 Visible F1-F10 cards are now resolved to stable athlete identities rather than assuming any team, side, or internal player-id ordering. Physical testing selected `misutaaa` with F3; diagnostics resolved the visible card to athlete 2, manual-input returns advanced for athlete 2, and the visibly selected/controlled champion was the intended character before and after pause/resume.
 
 This preserves the project's team-neutral design: direct control does not need to know which side belongs to the player.
+
+## Stage 6A — synchronized ordinary match speeds
+
+Status: **IMPLEMENTED / awaiting physical validation**.
+
+The stable client UI already exposes the five ordinary native match-speed selectors. Direct Control now reads the game's selected 0.5x/1x/1.5x/2x/3x state and maps Candidate-A pacing to 30/60/90/120/180 simulation ticks per wall-clock second. A rate change immediately re-anchors the pacer so time accumulated under one rate never becomes catch-up or slow-down budget under another.
+
+This intentionally keeps the game's own presentation controls authoritative. Clicking a native speed button or using a shortcut that changes the native selected speed should therefore change presentation and Candidate-A pacing together without a second Direct Control speed UI.
+
+The debug overlay reports both the interpreted speed label and pacing Hz so physical testing can verify the selected-state bridge directly.
+
+**Multiplayer hard rule:** Direct Control latches multiplayer after seeing the stable management `Room` or `Lobby` scene. While latched, the mod ignores timeline speed-selector state and fixes Candidate-A pacing at 60 Hz / 1x. The native game's own multiplayer speed restrictions remain authoritative; Direct Control does not add or honor any speed-changing behavior there.
+
+Highlight/death fast-forward is deliberately not part of Stage 6A. Highlight is not treated as an ordinary fixed-rate selector and will be implemented only after the five ordinary rates pass together.
 
 ## Current merge baseline
 
