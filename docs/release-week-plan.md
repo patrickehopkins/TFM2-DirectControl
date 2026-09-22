@@ -29,20 +29,15 @@ Do these in order unless a newly discovered crash/data-corruption-level regressi
    - Keep F1-F10 as the player-facing selection scheme for this release.
    - Native Follow Own / Follow Enemy actions were investigated, but they are role-oriented (top/jungle/mid/bottom/support) rather than a direct stable-athlete-id mapping. Adding a new native follow-target dependency is not justified for the first release.
    - The existing visible-card -> stable athlete-id route is now hardened to build the ten-card roster coherently, require unambiguous athlete-name matches, reject duplicate athlete assignments, cache the mapping per match, and revalidate a cached card before reuse.
-   - **Physical validation pending:** confirm F1-F10 still select exactly the ten visible cards on both sides, including after pause/resume and after UI/layout changes such as Match Info/wide view.
+   - **Physically validated on v0.6.1:** F1-F10 continued selecting the intended visible champions across both teams and remained correct through pause/resume and UI-layout changes.
 
-3. **Synchronized match speeds + death fast-forward**
-   - Presentation rate and Candidate-A simulation pacing must change together.
-   - Preserve the requested ordinary rates where practical: 0.5x/1x/1.5x/2x/3x mapped to approximately 30/60/90/120/180 simulation ticks per wall-clock second.
-   - Re-anchor pacing immediately whenever the rate changes.
-   - Do not allow ordinary replay seeking/highlight behavior to separate presentation from the live simulation.
-   - Preferred Highlight replacement: while the controlled champion is dead, temporarily fast-forward both clocks together, then restore the previous ordinary speed on respawn, release, or selection of a living champion.
-
-4. **Click-target hitbox/selectability polish**
+3. **Click-target hitbox/selectability polish**
    - Enlarge only clickable/selectable geometry; never alter pathing or collision.
    - Give towers/final objective substantial forgiveness, champions modest forgiveness, and creeps only enough to remain usable.
    - When enlarged areas overlap, priority is **Champion > Building/Objective > Creep**.
    - The purpose is to reduce rapid RMB attacks accidentally becoming ground MoveTo orders.
+   - Current implementation uses live camera scale rather than fixed simulation padding: +12 px champion, +28 px tower, +24 px other targetable objective/building-like entity, +5 px minion. Minimap commands retain exact collision geometry.
+   - **Physical validation pending.**
 
 ## Input-focus safety sweep before release
 
@@ -110,6 +105,11 @@ After the four immediate bugs, the bounded pregame attempt, the input-focus safe
 
 The following previously listed pre-release work is now post-release unless it turns into a concrete release-breaking regression during final testing:
 
+- synchronized ordinary match speeds and controlled-champion death fast-forward;
+  - release-week experiment was rejected after the native presentation speeds failed to stay usefully synchronized with the live Direct Control simulation;
+  - Highlight did expose useful death/respawn behavior, but without a reliable operator-visible way to know when simulation authority has been released, changing time scale makes the control model harder to reason about;
+  - preserve the proven 1x/60 Hz release baseline and revisit the entire speed system after the first public release;
+  - **multiplayer invariant remains locked:** if speed features return later, every Direct Control speed-changing feature must remain non-functional in multiplayer and multiplayer must stay at 1x.
 - skill cooldown/readiness HUD and explicit red unavailable feedback;
 - dynamic max-range skill radii / ray clipping;
 - first-class Direct Control keybind settings and shortcut-mode separation;
