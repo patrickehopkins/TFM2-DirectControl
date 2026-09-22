@@ -18,9 +18,10 @@ Do these in order unless a newly discovered crash/data-corruption-level regressi
    - When a champion is manually controlled, select that champion's actual simulation team vision.
    - Must work when controlling either side.
    - Do not synthesize configurable spectator hotkeys as the implementation.
-   - **v0.6.1 physical result:** the old camera/view `+0x63` candidate remains `0` for All / Blue / Red and is rejected. It must not be written or treated as vision state.
-   - **v0.6.1 team mapping confirmed physically:** Blue = simulation team `0`; Red = simulation team `1`.
-   - Current next step: use the focused read-only native vision/action scanner to relocate the All/Blue/Red state or a binding-independent action route.
+   - **v0.6.1 physical result:** reading `camera_handler_this+0x63` remains `0` for All / Blue / Red, proving the old diagnostic sampled the wrong object.
+   - **v0.6.1 static result:** the same native camera handler at `0x00C2DBE0` loads a nested owner pointer from `this+0x418` and writes `0/1/2` to `owner+0x63` for All / Blue / Red, after checking `owner+0x10 == 0`.
+   - **v0.6.1 team mapping confirmed physically:** Blue = simulation team `0`; Red = simulation team `1`. Automatic fog therefore requests native mode `selected_team + 1`.
+   - Current implementation applies that request after the original camera handler on the existing native camera thread and preserves the native `+0x10 == 0` guard. **Physical validation pending.**
    - `End` should return the champion to AI/spectator without forcibly changing fog unless we explicitly choose that behavior later.
 
 2. **F-key selection mapping hardening**
