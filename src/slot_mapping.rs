@@ -1,15 +1,25 @@
 //! Team-neutral translation from the visible F1-F10 player cards to stable athlete ids.
 //!
-//! The match UI orders ten cards and labels them with `(F1)` ... `(F10)`, but runtime testing
-//! proved that this visible order is not the same as Candidate A's internal `player_id` order.
-//! StableClient can resolve management athlete ids to names, so we match the visible card text to
-//! the athlete name and then control by `StableAiContext::athlete_id()` on the simulation thread.
+//! Runtime testing proved that visible card order is not Candidate A's internal `player_id` order.
+//! Keep F1-F10 defined by the visible cards, but resolve the whole ten-card roster coherently:
+//!
+//! visible F-key card -> displayed athlete identity -> stable athlete id
+//!
+//! The mapping is cached per match and revalidated against the live UI before reuse. A rebuild scans
+//! the UI once, requires an unambiguous athlete-name match for every visible slot, and rejects any
+//! mapping that assigns one athlete to multiple F-keys. This is intentionally preferred over the
+//! native Follow Own/Enemy action registry: those actions are role-oriented (top/jungle/mid/etc.)
+//! and do not directly expose the stable athlete id required by the control layer.
 
-use std::sync::Mutex;
+use std::{
+    collections::HashSet,
+    sync::Mutex,
+};
 
 use mod_api_stable::StableClient;
 
 const MAX_UI_NODES: usize = 2_000;
+const SLOT_COUNT: usize = 10;
 
 #[derive(Debug, Clone, Default)]
 pub struct SlotMappingSnapshot {
@@ -21,6 +31,19 @@ pub struct SlotMappingSnapshot {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct CachedSlot {
+    card_text: String,
+    card_path: String,
+    athlete_name: String,
+    athlete_id: usize,
+}
+
+#[derive(Debug, Default)]
+struct MappingCache {
+    slots: Vec<Option<CachedSlot>>,
+}
+
 static LAST: Mutex<SlotMappingSnapshot> = Mutex::new(SlotMappingSnapshot {
     fkey_slot: None,
     card_text: None,
@@ -30,9 +53,14 @@ static LAST: Mutex<SlotMappingSnapshot> = Mutex::new(SlotMappingSnapshot {
     error: None,
 });
 
+static CACHE: Mutex<MappingCache> = Mutex::new(MappingCache { slots: Vec::new() });
+
 pub fn reset() {
     if let Ok(mut state) = LAST.lock() {
         *state = SlotMappingSnapshot::default();
+    }
+    if let Ok(mut cache) = CACHE.lock() {
+        cache.slots.clear();
     }
 }
 
@@ -44,62 +72,58 @@ pub fn snapshot() -> SlotMappingSnapshot {
 }
 
 pub fn resolve_fkey(ctx: &StableClient<'_>, fkey_slot: usize) -> Option<usize> {
-    let key_suffix = format!("(F{})", fkey_slot + 1);
-    let (card_text, card_path) = match find_card_text(ctx, &key_suffix) {
-        Some(found) => found,
-        None => {
-            publish(SlotMappingSnapshot {
-                fkey_slot: Some(fkey_slot),
-                error: Some(format!("no visible player-card text containing {key_suffix}")),
-                ..Default::default()
-            });
+    if fkey_slot >= SLOT_COUNT {
+        publish_error(fkey_slot, format!("F-key slot {} is outside F1-F10", fkey_slot + 1));
+        return None;
+    }
+
+    if let Some(cached) = cached_slot_if_valid(ctx, fkey_slot) {
+        publish_success(fkey_slot, &cached);
+        return Some(cached.athlete_id);
+    }
+
+    let rebuilt = match rebuild_mapping(ctx) {
+        Ok(rebuilt) => rebuilt,
+        Err(error) => {
+            publish_error(fkey_slot, error);
             return None;
         }
     };
 
-    let card_lower = card_text.to_ascii_lowercase();
-    let mut best: Option<(usize, String)> = None;
-
-    for athlete_id in ctx.athlete_ids() {
-        let Some(name) = ctx.athlete_name(athlete_id) else {
-            continue;
-        };
-        let trimmed = name.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-
-        let name_lower = trimmed.to_ascii_lowercase();
-        if card_lower.contains(&name_lower)
-            && best
-                .as_ref()
-                .map(|(_, previous)| trimmed.len() > previous.len())
-                .unwrap_or(true)
-        {
-            best = Some((athlete_id, trimmed.to_owned()));
-        }
+    let selected = rebuilt.get(fkey_slot).and_then(|slot| slot.clone());
+    if let Ok(mut cache) = CACHE.lock() {
+        cache.slots = rebuilt;
     }
 
-    let Some((athlete_id, athlete_name)) = best else {
-        publish(SlotMappingSnapshot {
-            fkey_slot: Some(fkey_slot),
-            card_text: Some(card_text),
-            card_path: Some(card_path),
-            error: Some("card found, but no StableClient athlete name matched it".to_owned()),
-            ..Default::default()
-        });
+    let Some(selected) = selected else {
+        publish_error(
+            fkey_slot,
+            format!("F{} was not resolved during the full card-map rebuild", fkey_slot + 1),
+        );
         return None;
     };
 
+    publish_success(fkey_slot, &selected);
+    Some(selected.athlete_id)
+}
+
+fn publish_success(fkey_slot: usize, slot: &CachedSlot) {
     publish(SlotMappingSnapshot {
         fkey_slot: Some(fkey_slot),
-        card_text: Some(card_text),
-        card_path: Some(card_path),
-        athlete_name: Some(athlete_name),
-        athlete_id: Some(athlete_id),
+        card_text: Some(slot.card_text.clone()),
+        card_path: Some(slot.card_path.clone()),
+        athlete_name: Some(slot.athlete_name.clone()),
+        athlete_id: Some(slot.athlete_id),
         error: None,
     });
-    Some(athlete_id)
+}
+
+fn publish_error(fkey_slot: usize, error: String) {
+    publish(SlotMappingSnapshot {
+        fkey_slot: Some(fkey_slot),
+        error: Some(error),
+        ..Default::default()
+    });
 }
 
 fn publish(snapshot: SlotMappingSnapshot) {
@@ -108,7 +132,160 @@ fn publish(snapshot: SlotMappingSnapshot) {
     }
 }
 
-fn find_card_text(ctx: &StableClient<'_>, key_suffix: &str) -> Option<(String, String)> {
+fn cached_slot_if_valid(ctx: &StableClient<'_>, fkey_slot: usize) -> Option<CachedSlot> {
+    let cached = CACHE
+        .lock()
+        .ok()
+        .and_then(|cache| cache.slots.get(fkey_slot).cloned().flatten())?;
+
+    if matches!(ctx.ui_visible(&cached.card_path), Some(false)) {
+        return None;
+    }
+
+    let current = ctx.ui_text(&cached.card_path)?;
+    let trimmed = current.trim();
+    let key_suffix = format!("(F{})", fkey_slot + 1);
+    if !trimmed.contains(&key_suffix)
+        || !trimmed
+            .to_ascii_lowercase()
+            .contains(&cached.athlete_name.to_ascii_lowercase())
+    {
+        return None;
+    }
+
+    Some(CachedSlot {
+        card_text: trimmed.to_owned(),
+        ..cached
+    })
+}
+
+fn rebuild_mapping(ctx: &StableClient<'_>) -> Result<Vec<Option<CachedSlot>>, String> {
+    let card_candidates = scan_visible_card_text(ctx);
+    let athletes = athlete_names(ctx);
+
+    if athletes.is_empty() {
+        return Err("StableClient exposed no named athletes for F-key mapping".to_owned());
+    }
+
+    let mut slots = vec![None; SLOT_COUNT];
+    let mut used_athletes = HashSet::new();
+
+    for fkey_slot in 0..SLOT_COUNT {
+        let candidates = &card_candidates[fkey_slot];
+        if candidates.is_empty() {
+            return Err(format!(
+                "no visible player-card text containing (F{})",
+                fkey_slot + 1
+            ));
+        }
+
+        let mut resolved: Vec<CachedSlot> = Vec::new();
+        for (card_text, card_path) in candidates {
+            if let Ok((athlete_id, athlete_name)) =
+                match_card_to_athlete(card_text, &athletes)
+            {
+                resolved.push(CachedSlot {
+                    card_text: card_text.clone(),
+                    card_path: card_path.clone(),
+                    athlete_name,
+                    athlete_id,
+                });
+            }
+        }
+
+        if resolved.is_empty() {
+            return Err(format!(
+                "F{} card text was found, but no candidate had one unambiguous athlete-name match",
+                fkey_slot + 1
+            ));
+        }
+
+        // Multiple UI nodes may mirror the same card. That is safe only when they all
+        // resolve to the same athlete; otherwise the slot is genuinely ambiguous.
+        let first_athlete = resolved[0].athlete_id;
+        if resolved
+            .iter()
+            .any(|candidate| candidate.athlete_id != first_athlete)
+        {
+            return Err(format!(
+                "F{} matched multiple different athletes across visible UI nodes",
+                fkey_slot + 1
+            ));
+        }
+
+        resolved.sort_by_key(|candidate| {
+            (
+                candidate.card_path.matches('.').count(),
+                candidate.card_path.len(),
+                candidate.card_text.len(),
+            )
+        });
+        let selected = resolved.remove(0);
+
+        if !used_athletes.insert(selected.athlete_id) {
+            return Err(format!(
+                "athlete {} ({}) mapped to more than one F-key slot",
+                selected.athlete_id, selected.athlete_name
+            ));
+        }
+
+        slots[fkey_slot] = Some(selected);
+    }
+
+    Ok(slots)
+}
+
+fn athlete_names(ctx: &StableClient<'_>) -> Vec<(usize, String)> {
+    let mut athletes = Vec::new();
+    for athlete_id in ctx.athlete_ids() {
+        let Some(name) = ctx.athlete_name(athlete_id) else {
+            continue;
+        };
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        athletes.push((athlete_id, trimmed.to_owned()));
+    }
+    athletes
+}
+
+fn match_card_to_athlete(
+    card_text: &str,
+    athletes: &[(usize, String)],
+) -> Result<(usize, String), String> {
+    let card_lower = card_text.to_ascii_lowercase();
+    let mut matches: Vec<(usize, String)> = athletes
+        .iter()
+        .filter_map(|(athlete_id, name)| {
+            card_lower
+                .contains(&name.to_ascii_lowercase())
+                .then_some((*athlete_id, name.clone()))
+        })
+        .collect();
+
+    if matches.is_empty() {
+        return Err("no athlete name appears in card text".to_owned());
+    }
+
+    let longest = matches
+        .iter()
+        .map(|(_, name)| name.len())
+        .max()
+        .unwrap_or(0);
+    matches.retain(|(_, name)| name.len() == longest);
+
+    if matches.len() != 1 {
+        return Err(format!(
+            "athlete-name match is ambiguous at longest length {longest}"
+        ));
+    }
+
+    Ok(matches.remove(0))
+}
+
+fn scan_visible_card_text(ctx: &StableClient<'_>) -> Vec<Vec<(String, String)>> {
+    let mut slots = vec![Vec::new(); SLOT_COUNT];
     let mut stack = vec![String::new()];
     let mut scanned = 0usize;
 
@@ -135,8 +312,13 @@ fn find_card_text(ctx: &StableClient<'_>, key_suffix: &str) -> Option<(String, S
 
             if let Some(text) = ctx.ui_text(&path) {
                 let trimmed = text.trim();
-                if trimmed.contains(key_suffix) {
-                    return Some((trimmed.to_owned(), path));
+                if !trimmed.is_empty() {
+                    for fkey_slot in 0..SLOT_COUNT {
+                        let key_suffix = format!("(F{})", fkey_slot + 1);
+                        if trimmed.contains(&key_suffix) {
+                            slots[fkey_slot].push((trimmed.to_owned(), path.clone()));
+                        }
+                    }
                 }
             }
 
@@ -144,5 +326,5 @@ fn find_card_text(ctx: &StableClient<'_>, key_suffix: &str) -> Option<(String, S
         }
     }
 
-    None
+    slots
 }
