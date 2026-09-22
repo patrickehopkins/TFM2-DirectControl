@@ -571,7 +571,7 @@ impl DirectControlExtension {
                 entity.x as f32 / SIM_UNITS_PER_WORLD_UNIT,
                 entity.y as f32 / SIM_UNITS_PER_WORLD_UNIT,
                 radius_sim as f32 / SIM_UNITS_PER_WORLD_UNIT,
-                99_940,
+                10_000,
                 color,
             );
         }
@@ -703,6 +703,11 @@ impl DirectControlExtension {
             return;
         };
 
+        // post_render has reliable map dimensions; a deliberately low Game-map z keeps these
+        // translucent circles behind the mod's cursor/skill previews and beneath higher-z actors
+        // where the renderer's normal z ordering permits it.
+        Self::draw_click_target_overlays(ctx, camera);
+
         if let Some(cursor) = Self::cursor_world(ctx, mouse, camera) {
             ctx.draw_set_camera(
                 "Game",
@@ -766,6 +771,7 @@ impl DirectControlExtension {
             .and_then(|camera| camera.vision_mode)
             .map(|mode| mode.to_string())
             .unwrap_or_else(|| "?".to_owned());
+        let hitbox_count = control::click_target_overlay_snapshot().len();
         let order = if control_state.selected_athlete.is_none() {
             "AI / spectator".to_owned()
         } else if control_state.returning {
@@ -818,7 +824,7 @@ impl DirectControlExtension {
             ctx,
             84.0,
             &format!(
-                "SELECTED: athlete {selected} | team {selected_team} | native vision {native_vision} | ORDER: {order}"
+                "SELECTED: athlete {selected} | team {selected_team} | native vision {native_vision} | hitboxes {hitbox_count} | ORDER: {order}"
             ),
             0xffffffff,
         );
@@ -847,22 +853,6 @@ impl DirectControlExtension {
 }
 
 impl StableExtension for DirectControlExtension {
-    fn pre_render(&self, ctx: &mut StableClient<'_>) {
-        if !matches!(ctx.client_scene_kind(), Some(ClientSceneKindV1::InGame)) {
-            return;
-        }
-        if camera_probe::ensure_installed().is_err() {
-            return;
-        }
-        let Some(camera) = Self::best_camera() else {
-            return;
-        };
-
-        // Stable API pre-render commands are composed beneath the game's own draw commands,
-        // so these translucent selection regions read as ground markers rather than sprite tint.
-        Self::draw_click_target_overlays(ctx, camera);
-    }
-
     fn post_render(&self, ctx: &mut StableClient<'_>) {
         let ingame = matches!(ctx.client_scene_kind(), Some(ClientSceneKindV1::InGame));
         let control_scene = Self::control_scene(ctx);
