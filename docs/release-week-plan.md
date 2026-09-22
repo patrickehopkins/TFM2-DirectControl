@@ -18,7 +18,9 @@ Do these in order unless a newly discovered crash/data-corruption-level regressi
    - When a champion is manually controlled, select that champion's actual simulation team vision.
    - Must work when controlling either side.
    - Do not synthesize configurable spectator hotkeys as the implementation.
-   - The old v0.6.0 native vision byte at camera/view `+0x63` is **not assumed valid on v0.6.1**; revalidate or find the new native state before writing anything.
+   - **v0.6.1 physical result:** the old camera/view `+0x63` candidate remains `0` for All / Blue / Red and is rejected. It must not be written or treated as vision state.
+   - **v0.6.1 team mapping confirmed physically:** Blue = simulation team `0`; Red = simulation team `1`.
+   - Current next step: use the focused read-only native vision/action scanner to relocate the All/Blue/Red state or a binding-independent action route.
    - `End` should return the champion to AI/spectator without forcibly changing fog unless we explicitly choose that behavior later.
 
 2. **F-key selection mapping hardening**
@@ -39,6 +41,20 @@ Do these in order unless a newly discovered crash/data-corruption-level regressi
    - Give towers/final objective substantial forgiveness, champions modest forgiveness, and creeps only enough to remain usable.
    - When enlarged areas overlap, priority is **Champion > Building/Objective > Creep**.
    - The purpose is to reduce rapid RMB attacks accidentally becoming ground MoveTo orders.
+
+## Release-blocking pause/control-retention regression
+
+Discovered during the v0.6.1 fog validation pass: after a sufficiently long in-game pause, vanilla AI could regain authority and the watched simulation could run to completion without `End` or `Ctrl+End`.
+
+The current fix under physical validation:
+
+- latch the live match session across transient `InGame -> Match -> InGame` presentation/menu transitions instead of treating every exit from `InGame` as match termination;
+- treat a temporary non-`InGame` scene inside an already-started match as paused/fail-closed;
+- add a render-heartbeat guard so Candidate A stops if the client stops rendering while a live match session still exists;
+- a 250 ms pacing anomaly may re-anchor pacing but may **not** permanently release Direct Control;
+- only explicit `Ctrl+End` may permanently release pacing/manual authority.
+
+This must pass a long-pause physical regression test before release work proceeds.
 
 ## Pregame / pre-simulation issue
 
