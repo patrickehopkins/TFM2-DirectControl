@@ -86,11 +86,9 @@ const BUILD_0_6_1: CameraLayout = CameraLayout {
     // The relocated handler retains five of six v0.6.0 camera signatures, but the
     // +0x100 mode access is absent. Keep it unknown rather than reading a guessed byte.
     mode_offset: None,
-    // Read-only runtime revalidation candidate. v0.6.0's match-view UI read this
-    // byte as 0/1/2 for All/Blue/Red. Reading one byte from the already-captured
-    // camera/view object is safe; do not write it until physical 0.6.1 testing
-    // confirms the same mapping.
-    vision_mode_offset: Some(0x63),
+    // Physical v0.6.1 testing showed +0x63 remains 0 for All/Blue/Red and is not
+    // the native vision selector on this build. Do not write or report it as vision.
+    vision_mode_offset: None,
     pan_x_offset: 0x428,
     pan_y_offset: 0x42C,
 };
