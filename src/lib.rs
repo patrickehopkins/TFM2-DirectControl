@@ -854,7 +854,8 @@ impl StableExtension for DirectControlExtension {
             pacing_probe::note_render_heartbeat();
         }
 
-        let pause_ui = pause_probe::update(ctx, session_active);
+        let multiplayer_speed_lock = MULTIPLAYER_SPEED_LOCK.load(Ordering::Acquire);
+        let pause_ui = pause_probe::update(ctx, session_active, !multiplayer_speed_lock);
         Self::sync_pacing_speed(ctx, session_active);
 
         // Once an InGame session has started, any temporary non-InGame match scene is fail-closed:
