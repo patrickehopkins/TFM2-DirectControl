@@ -71,6 +71,7 @@ struct CursorWorld {
     sim_x: u64,
     sim_y: u64,
     marker_units_per_px: f32,
+    sim_units_per_px: u64,
 }
 
 #[derive(Debug, Default)]
@@ -338,6 +339,12 @@ impl DirectControlExtension {
 
         let marker_units_per_px =
             ((camera.extent_a / game_w) + (camera.extent_b / game_h)) * 0.5;
+        let sim_units_per_px_f = marker_units_per_px * SIM_UNITS_PER_WORLD_UNIT;
+        let sim_units_per_px = if sim_units_per_px_f.is_finite() && sim_units_per_px_f > 0.0 {
+            sim_units_per_px_f.round() as u64
+        } else {
+            0
+        };
 
         Some(CursorWorld {
             world_x,
@@ -345,6 +352,7 @@ impl DirectControlExtension {
             sim_x: sim_x_f.round() as u64,
             sim_y: sim_y_f.round() as u64,
             marker_units_per_px,
+            sim_units_per_px,
         })
     }
 
@@ -495,7 +503,11 @@ impl DirectControlExtension {
             return;
         };
 
-        control::publish_move_target(cursor.sim_x, cursor.sim_y);
+        control::publish_move_target_with_pick_scale(
+            cursor.sim_x,
+            cursor.sim_y,
+            cursor.sim_units_per_px,
+        );
     }
 
     fn draw_skill_preview(ctx: &mut StableClient<'_>, camera: camera_probe::CameraSnapshot) {
