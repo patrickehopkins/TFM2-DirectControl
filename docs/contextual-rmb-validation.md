@@ -67,9 +67,18 @@ The full-cooldown hold is intentionally conservative. Physical testing now shows
 
 ## Picker geometry
 
-Stage 6A uses the entity's stable simulation `radius()` as the initial click shape. There is no extra fixed world-space tolerance yet. This is deliberate: a fixed simulation-space padding would feel different at different camera zooms.
+Exact-target behavior is proven, so contextual battlefield RMB now keeps the entity's stable simulation `radius()` as the base click shape and adds **screen-space forgiveness converted through the live camera scale**. This avoids the rejected fixed-simulation-padding problem where click feel changes with zoom.
 
-After exact-target behavior is proven, mouse forgiveness should be specified in screen pixels and converted to simulation units from the live camera scale before publication/resolution.
+Current first-release values:
+
+- champion: +12 px;
+- tower: +28 px;
+- other hostile targetable non-champion/non-tower/non-minion entities: +24 px, covering objective/building-like entities without brittle name matching;
+- minion: +5 px.
+
+When padded regions overlap, selection priority is **Champion > Building/Objective > Minion** before center-distance tie-breaking. The geometry is picker-only: collision, pathing, attack range, and every other simulation rule remain native.
+
+Minimap contextual RMB deliberately publishes zero screen-scale padding and therefore keeps its previous exact collision geometry.
 
 ## First physical result
 
