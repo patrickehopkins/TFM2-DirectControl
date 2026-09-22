@@ -101,7 +101,7 @@ The uploader already knows how to stage native Rust mods and excludes `src/`, `t
 
 ## Everything else moves post-release
 
-After the four immediate bugs, the bounded pregame attempt, the input-focus safety sweep, and the diagnostic presentation cleanup, **stop adding pre-release scope**. Package and ship.
+After the remaining immediate buglist, the bounded pregame attempt, the input-focus safety sweep, and the diagnostic presentation cleanup, **stop adding pre-release scope**. Package and ship.
 
 The following previously listed pre-release work is now post-release unless it turns into a concrete release-breaking regression during final testing:
 
