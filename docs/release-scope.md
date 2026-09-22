@@ -2,9 +2,13 @@
 
 This file records the current functionality-first scope and implementation priority so deferred systems do not drift back into the critical path.
 
-## Release boundary
+## Release-week override
 
-**Pings/team commands are the release boundary.** The intent is to ship the first public Direct Control release after the control/QoL work immediately before Pings is complete and validated, rather than holding release for the potentially larger ping-behavior subsystem. Unless explicitly stated otherwise, any new pre-release jobs added from this point should be inserted immediately before Pings/team commands.
+**The authoritative first-public-release cut is now `docs/release-week-plan.md`.** The long-form priority list below remains useful design history and backlog detail, but any item below still labeled "pre-release" is superseded by the release-week plan unless that file explicitly keeps it before release.
+
+Current release sequence: **automatic team fog-of-war -> F-key mapping hardening -> synchronized match speeds/death fast-forward -> click-target hitbox polish -> one bounded pregame/startup attempt -> Workshop packaging and release.** Everything else moves behind the first public release unless final testing exposes a core release-breaking regression.
+
+**Pings/team commands and manual shop control remain explicitly post-release systems.**
 
 ## Implementation priority
 
@@ -49,7 +53,9 @@ This file records the current functionality-first scope and implementation prior
    - arrow-key camera panning was rejected and removed;
    - native minimap LMB camera relocation + RMB command workflow remains intact;
    - detailed architecture and rejected experiments are recorded in `docs/camera-controls.md`.
-9. **Clicks beyond the playable map edge** — battlefield clicks just outside the legal map should still express the intended direction. Clamp/project the request onto a legal/pathable map-edge destination so pathfinding moves the champion toward that edge rather than silently eating the order. Never allow movement off-map.
+9. **Clicks beyond the playable map edge** — **validated.** Battlefield clicks beyond the legal map express direction by clamping only the requested movement destination into the legal 0..960 world square. TFM2 still receives an ordinary movement request, so native pathfinding, terrain, champion radius, and entity collision remain authoritative; Direct Control never grants permission to leave the map.
+   - physical validation passed RMB and attack-move edge/corner movement without bypassing normal pathing/collision.
+   - current rapid-fire queue: **automatic team fog-of-war -> F-key selection hardening -> synchronized match speeds/death fast-forward -> click-target hitbox polish**; then revisit the remaining order.
 10. **Skill cooldown UI** — expose direct-control-friendly Q/W/R cooldown/readiness information with high visibility so the player does not have to infer cooldowns from the normal spectator presentation. Include explicit red feedback for attempted use while unavailable.
 11. **Click-target hitbox polish**
    - enlarge only the **clickable/selectable area**; never alter entity collision/pathing geometry;
@@ -61,9 +67,13 @@ This file records the current functionality-first scope and implementation prior
    - radial/ray range must represent current live match values after simulated balance patches;
    - do not hard-code per-champion ranges from one game patch;
    - investigate deeper live action/effect metadata or a version-resilient native extraction route if the stable runtime API remains insufficient.
-13. **Automatic team fog-of-war on direct control**
-   - when manual control is taken of a champion, automatically switch spectator vision/fog-of-war to that champion's team;
-   - follow whichever side the selected champion belongs to rather than assuming the user's original team.
+13. **Automatic team fog-of-war on direct control** — **native vision state candidate found; runtime confirmation pending.**
+   - the authoritative Candidate-A callback publishes the selected champion's actual simulation team; do not infer side from F-key position or the user's original team;
+   - **rejected:** synthesizing default `X` / `C` keypresses. Automatic fog is semantic behavior, not a shortcut, and must not depend on the player's configurable key bindings;
+   - the 0.6.0 match-view UI selects its native `view_all`, `view_blue`, and `view_red` buttons by reading one byte at offset `+0x63` from the camera/view object and comparing it against `0 / 1 / 2` respectively; this is now exposed **read-only** as `native vision` for physical confirmation before any write is permitted;
+   - completed diagnostic: the older captured camera `mode` field remained `0` for All / Team 0 / Team 1 vision, so it is unrelated and must not be repurposed;
+   - if runtime confirmation shows `native vision = 0 / 1 / 2` for All / Blue / Red, use that verified native state rather than any configurable input binding;
+   - switching to the opposite-side champion must switch fog to that champion's team; `End` should not forcibly change fog unless we later choose that explicitly.
 14. **F-key selection mapping hardening**
    - preserve the game's native role order exactly after verifying it during implementation; current working hypothesis is `F1-F5 = player team Top, Jungle, Mid, Bottom, Support` and `F6-F10 = opponent team` in that same order;
    - current implementation finds visible `(F1)`-`(F10)` player cards in the UI tree and name-matches them to stable athlete ids; this works but is indirect and UI-layout-sensitive;

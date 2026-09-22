@@ -34,7 +34,8 @@ struct CameraLayout {
     center_y_offset: usize,
     extent_a_offset: usize,
     extent_b_offset: usize,
-    mode_offset: usize,
+    mode_offset: Option<usize>,
+    vision_mode_offset: Option<usize>,
     pan_x_offset: usize,
     pan_y_offset: usize,
 }
@@ -48,7 +49,9 @@ const BUILD_0_5_8: CameraLayout = CameraLayout {
     center_y_offset: 0xE8,
     extent_a_offset: 0xEC,
     extent_b_offset: 0xF0,
-    mode_offset: 0xF4,
+    mode_offset: Some(0xF4),
+    // Not yet reverse-engineered on 0.5.8; do not guess.
+    vision_mode_offset: None,
     pan_x_offset: 0x418,
     pan_y_offset: 0x41C,
 };
@@ -62,13 +65,35 @@ const BUILD_0_6_0: CameraLayout = CameraLayout {
     center_y_offset: 0xE8,
     extent_a_offset: 0xEC,
     extent_b_offset: 0xF0,
-    mode_offset: 0x100,
+    mode_offset: Some(0x100),
+    // 0.6.0 UI code selects view_all / view_blue / view_red by comparing this
+    // byte on the native camera/view object against 0 / 1 / 2 respectively.
+    // Keep this read-only until the runtime diagnostic confirms the same object.
+    vision_mode_offset: Some(0x63),
+    pan_x_offset: 0x428,
+    pan_y_offset: 0x42C,
+};
+
+const BUILD_0_6_1: CameraLayout = CameraLayout {
+    pe_timestamp: 0x6AB1_D950,
+    image_size: 0x0526_4000,
+    handler_rva: 0x00C2_DBE0,
+    zoom_offset: 0xE0,
+    center_x_offset: 0xE4,
+    center_y_offset: 0xE8,
+    extent_a_offset: 0xEC,
+    extent_b_offset: 0xF0,
+    // The relocated handler retains five of six v0.6.0 camera signatures, but the
+    // +0x100 mode access is absent. Keep it unknown rather than reading a guessed byte.
+    mode_offset: None,
+    // The 0.6.1 relocation probe did not validate the separate native-vision byte.
+    vision_mode_offset: None,
     pan_x_offset: 0x428,
     pan_y_offset: 0x42C,
 };
 
 fn known_layout(timestamp: u32, image_size: u32) -> Option<&'static CameraLayout> {
-    [&BUILD_0_5_8, &BUILD_0_6_0]
+    [&BUILD_0_5_8, &BUILD_0_6_0, &BUILD_0_6_1]
         .into_iter()
         .find(|layout| layout.pe_timestamp == timestamp && layout.image_size == image_size)
 }
@@ -118,7 +143,8 @@ pub struct CameraSnapshot {
     pub center_y: f32,
     pub extent_a: f32,
     pub extent_b: f32,
-    pub mode: u8,
+    pub mode: Option<u8>,
+    pub vision_mode: Option<u8>,
     pub calls: u64,
 }
 
@@ -130,6 +156,7 @@ struct CandidateSlot {
     extent_a: AtomicU32,
     extent_b: AtomicU32,
     mode: AtomicU32,
+    vision_mode: AtomicU32,
     calls: AtomicU64,
 }
 
@@ -142,14 +169,16 @@ impl CandidateSlot {
             center_y: AtomicU32::new(0),
             extent_a: AtomicU32::new(0),
             extent_b: AtomicU32::new(0),
-            mode: AtomicU32::new(0),
+            mode: AtomicU32::new(u32::MAX),
+            vision_mode: AtomicU32::new(u32::MAX),
             calls: AtomicU64::new(0),
         }
     }
 
     fn clear(&self) {
         self.calls.store(0, Ordering::Relaxed);
-        self.mode.store(0, Ordering::Relaxed);
+        self.mode.store(u32::MAX, Ordering::Relaxed);
+        self.vision_mode.store(u32::MAX, Ordering::Relaxed);
         self.extent_b.store(0, Ordering::Relaxed);
         self.extent_a.store(0, Ordering::Relaxed);
         self.center_y.store(0, Ordering::Relaxed);
@@ -317,7 +346,12 @@ unsafe fn capture(this: *mut u8) {
     let center_y = ptr::read_unaligned(this.add(layout.center_y_offset).cast::<f32>());
     let extent_a = ptr::read_unaligned(this.add(layout.extent_a_offset).cast::<f32>());
     let extent_b = ptr::read_unaligned(this.add(layout.extent_b_offset).cast::<f32>());
-    let mode = ptr::read_unaligned(this.add(layout.mode_offset).cast::<u8>());
+    let mode = layout
+        .mode_offset
+        .map(|offset| ptr::read_unaligned(this.add(offset).cast::<u8>()));
+    let vision_mode = layout
+        .vision_mode_offset
+        .map(|offset| ptr::read_unaligned(this.add(offset).cast::<u8>()));
 
     // Do not publish clearly nonsensical values if the handler layout ever changes.
     if !zoom.is_finite()
@@ -363,7 +397,14 @@ unsafe fn capture(this: *mut u8) {
     slot.center_y.store(center_y.to_bits(), Ordering::Relaxed);
     slot.extent_a.store(extent_a.to_bits(), Ordering::Relaxed);
     slot.extent_b.store(extent_b.to_bits(), Ordering::Relaxed);
-    slot.mode.store(mode as u32, Ordering::Relaxed);
+    slot.mode.store(
+        mode.map(u32::from).unwrap_or(u32::MAX),
+        Ordering::Relaxed,
+    );
+    slot.vision_mode.store(
+        vision_mode.map(u32::from).unwrap_or(u32::MAX),
+        Ordering::Relaxed,
+    );
     slot.calls.fetch_add(1, Ordering::Release);
 }
 
@@ -401,7 +442,14 @@ pub fn snapshots() -> Vec<CameraSnapshot> {
             center_y: f32::from_bits(slot.center_y.load(Ordering::Relaxed)),
             extent_a: f32::from_bits(slot.extent_a.load(Ordering::Relaxed)),
             extent_b: f32::from_bits(slot.extent_b.load(Ordering::Relaxed)),
-            mode: slot.mode.load(Ordering::Relaxed) as u8,
+            mode: match slot.mode.load(Ordering::Relaxed) {
+                u32::MAX => None,
+                value => Some(value as u8),
+            },
+            vision_mode: match slot.vision_mode.load(Ordering::Relaxed) {
+                u32::MAX => None,
+                value => Some(value as u8),
+            },
             calls: slot.calls.load(Ordering::Acquire),
         });
     }

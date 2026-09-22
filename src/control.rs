@@ -29,6 +29,7 @@ use mod_api_stable::{
 pub use skill_targeting::{SkillPreviewMode, SkillSlot, SkillTargetingSnapshot};
 
 const NO_ATHLETE: usize = usize::MAX;
+const NO_TEAM: usize = usize::MAX;
 const NO_TARGET: usize = usize::MAX;
 const NO_TICK: u64 = u64::MAX;
 
@@ -48,6 +49,10 @@ const HOLD_RECALL_CANCEL_TARGET_OFFSET_SIM: u64 = 32_000;
 const DEFAULT_MAP_MAX_SIM: u64 = 960_000;
 
 static SELECTED_ATHLETE: AtomicUsize = AtomicUsize::new(NO_ATHLETE);
+// Published by the authoritative simulation callback for the currently selected athlete.
+// The render thread uses this only for spectator fog/camera-side selection; gameplay target
+// legality still comes from StableAiContext/StableSim.
+static SELECTED_TEAM: AtomicUsize = AtomicUsize::new(NO_TEAM);
 static ATTACK_MOVE_ARMED: AtomicBool = AtomicBool::new(false);
 
 // Latest RMB point published by the render thread. VERSION is a tiny seqlock so x/y are coherent.
@@ -237,6 +242,7 @@ fn hold_recall_cancel_target(from: (u64, u64)) -> (u64, u64) {
 
 pub fn reset() {
     SELECTED_ATHLETE.store(NO_ATHLETE, Ordering::Release);
+    SELECTED_TEAM.store(NO_TEAM, Ordering::Release);
     ATTACK_MOVE_ARMED.store(false, Ordering::Release);
     clear_move_target();
     HOLD_BREAK_RETURN_PENDING.store(false, Ordering::Release);
@@ -266,10 +272,18 @@ pub fn selected_athlete() -> Option<usize> {
     }
 }
 
+pub fn selected_team() -> Option<usize> {
+    match SELECTED_TEAM.load(Ordering::Acquire) {
+        NO_TEAM => None,
+        team => Some(team),
+    }
+}
+
 pub fn select_athlete(athlete_id: usize) {
     // A newly selected athlete must never inherit the previous athlete's move, attack, recall,
     // attack-move, or skill aim.
     SELECTED_ATHLETE.store(NO_ATHLETE, Ordering::Release);
+    SELECTED_TEAM.store(NO_TEAM, Ordering::Release);
     ATTACK_MOVE_ARMED.store(false, Ordering::Release);
     clear_move_target();
     clear_last_self_position();
@@ -692,6 +706,10 @@ pub fn manual_input_for(ctx: &mut StableAiContext<'_>, tick: u64) -> Option<Inpu
     if selected_athlete() != Some(ctx.athlete_id()) {
         return None;
     }
+
+    // Resolve the selected champion's actual simulation side rather than inferring it from
+    // F-key position or the user's starting team. This is consumed by the spectator fog helper.
+    SELECTED_TEAM.store(ctx.team(), Ordering::Release);
 
     let self_position = current_champion_position(ctx);
     if let Some((x, y)) = self_position {
