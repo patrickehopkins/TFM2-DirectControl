@@ -21,8 +21,9 @@ Do these in order unless a newly discovered crash/data-corruption-level regressi
    - **v0.6.1 physical result:** reading `camera_handler_this+0x63` remains `0` for All / Blue / Red, proving the old diagnostic sampled the wrong object.
    - **v0.6.1 static result:** the same native camera handler at `0x00C2DBE0` loads a nested owner pointer from `this+0x418` and writes `0/1/2` to `owner+0x63` for All / Blue / Red, after checking `owner+0x10 == 0`.
    - **v0.6.1 team mapping confirmed physically:** Blue = simulation team `0`; Red = simulation team `1`. Automatic fog therefore requests native mode `selected_team + 1`.
-   - Current implementation applies that request after the original camera handler on the existing native camera thread and preserves the native `+0x10 == 0` guard. **Physical validation pending.**
-   - `End` should return the champion to AI/spectator without forcibly changing fog unless we explicitly choose that behavior later.
+   - Current implementation applies that request after the original camera handler on the existing native camera thread and preserves the native `+0x10 == 0` guard.
+   - **Physically validated on v0.6.1:** selecting Blue forces native vision `1`; selecting Red forces native vision `2`; manual spectator vision changes are overridden while a champion is controlled; `End` stops enforcement and leaves the current native fog state in place.
+   - Known/non-blocking spectator loophole: native follow-selection can still follow an opposing champion and reveal that champion's position through fog. This is accepted for the first release; Direct Control is not intended as an anti-cheat layer.
 
 2. **F-key selection mapping hardening**
    - Keep F1-F10 as the player-facing selection scheme for this release.
@@ -43,19 +44,23 @@ Do these in order unless a newly discovered crash/data-corruption-level regressi
    - When enlarged areas overlap, priority is **Champion > Building/Objective > Creep**.
    - The purpose is to reduce rapid RMB attacks accidentally becoming ground MoveTo orders.
 
-## Release-blocking pause/control-retention regression
+## Input-focus safety sweep before release
 
-Discovered during the v0.6.1 fog validation pass: after a sufficiently long in-game pause, vanilla AI could regain authority and the watched simulation could run to completion without `End` or `Ctrl+End`.
+The apparent "long pause released control" regression was reproduced and traced to **global raw keyboard polling**, not pause duration itself. `GetAsyncKeyState` sees keys even while another application owns focus, so using `Ctrl+End` while typing in another program can trigger Direct Control's global release in the background.
 
-The current fix under physical validation:
+Current raw-key paths requiring the same foreground-process gate before release:
 
-- latch the live match session across transient `InGame -> Match -> InGame` presentation/menu transitions instead of treating every exit from `InGame` as match termination;
-- treat a temporary non-`InGame` scene inside an already-started match as paused/fail-closed;
-- add a render-heartbeat guard so Candidate A stops if the client stops rendering while a live match session still exists;
-- a 250 ms pacing anomaly may re-anchor pacing but may **not** permanently release Direct Control;
-- only explicit `Ctrl+End` may permanently release pacing/manual authority.
+- render-thread `Ctrl+Home` start/release chord;
+- render-thread `Ctrl+End` global release chord;
+- render-thread `End` temporary release;
+- render-thread F1-F10 champion selection;
+- worker-thread `Ctrl+Home` prematch escape path, which cannot rely on `post_render` and therefore needs its own foreground-process check.
 
-This must pass a long-pause physical regression test before release work proceeds.
+Mouse/RMB/LMB and MMB/wheel code already verifies that the TFM2 process owns the foreground window before consuming raw Win32 input. A/B/Q/W/R/B/H/Escape use the stable SDK's contextual key input rather than these global raw keyboard polls.
+
+**Pre-release requirement:** add one shared foreground-focus test (or equivalent safe helper) to every raw keyboard path, then physically verify that Direct Control does nothing when the user presses those shortcuts while TFM2 is unfocused.
+
+The pause/session hardening added during investigation physically passed and may remain as defensive protection, but it was not the root cause of the observed releases.
 
 ## Pregame / pre-simulation issue
 
@@ -101,7 +106,7 @@ The uploader already knows how to stage native Rust mods and excludes `src/`, `t
 
 ## Everything else moves post-release
 
-After the four immediate bugs, the bounded pregame attempt, and the diagnostic presentation cleanup, **stop adding pre-release scope**. Package and ship.
+After the four immediate bugs, the bounded pregame attempt, the input-focus safety sweep, and the diagnostic presentation cleanup, **stop adding pre-release scope**. Package and ship.
 
 The following previously listed pre-release work is now post-release unless it turns into a concrete release-breaking regression during final testing:
 
