@@ -75,6 +75,19 @@ Physical validation passed normal startup, presentation catch-up, `Ctrl+Home` re
 The release still contains unavoidable loader-required pre-simulation. Do not attempt to hide it by shifting global spawn/AI schedules around an assumed fixed number of seconds; tests showed the readiness tick/time varies with startup behavior.
 
 
+## Space follow — late pre-release QoL insertion
+
+User-requested release-scope exception: restore the previously deferred Space recenter/follow control before packaging.
+
+Current implementation target:
+- hold Space while a champion is under Direct Control to keep the native camera centered on that champion;
+- release Space to return immediately to free camera;
+- reuse the validated native pan-request path; never resume direct camera-center writes;
+- Space takes priority over MMB while both are held, and releasing Space while MMB remains held starts a fresh drag anchor;
+- no selected champion means Space has no Direct Control camera effect.
+
+**Physical validation pending.**
+
 ## Diagnostic presentation cleanup
 
 Do one final cleanup pass immediately before packaging:
@@ -121,7 +134,6 @@ The following previously listed pre-release work is now post-release unless it t
 - pause/menu and View Match Results Immediately safety audit;
 - resolution / aspect-ratio / DPI / UI-scaling compatibility audit;
 - native-hook discovery/version-resilience hardening beyond the guarded v0.6.1 profile;
-- Space recenter/follow;
 - screen-edge scrolling;
 - idle retaliation;
 - Morgard/manual-order override investigation.
