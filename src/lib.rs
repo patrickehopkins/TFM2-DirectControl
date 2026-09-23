@@ -7,7 +7,10 @@ mod pause_probe;
 mod simulation_probe;
 mod slot_mapping;
 
-use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use std::sync::{
+    atomic::{AtomicBool, AtomicU16, Ordering},
+    Mutex,
+};
 
 use mod_api_stable::{
     declare_stable_mod, ClientSceneKindV1, LogLevel, StableClient, StableExtension, StableHost,
@@ -61,6 +64,8 @@ static TEMP_RELEASE_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static SELECT_KEYS_WERE_DOWN: AtomicU16 = AtomicU16::new(0);
 static LMB_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static RMB_WAS_DOWN: AtomicBool = AtomicBool::new(false);
+static NATIVE_SEEK_CONTROLS_SUPPRESSED: AtomicBool = AtomicBool::new(false);
+static NATIVE_SEEK_CONTROL_NODES: Mutex<Vec<(String, bool)>> = Mutex::new(Vec::new());
 
 #[derive(Debug, Clone, Copy, Default)]
 struct MouseSnapshot {
@@ -772,7 +777,7 @@ impl DirectControlExtension {
     }
 
     fn draw_start_gate(ctx: &mut StableClient<'_>) {
-        ctx.draw_rect("UI", 18.0, 58.0, 720.0, 74.0, 19_998, 6.0, 0x101018dd);
+        ctx.draw_rect("UI", 18.0, 58.0, 430.0, 34.0, 19_998, 6.0, 0x101018dd);
         Self::draw_text_line(
             ctx,
             64.0,
@@ -782,12 +787,102 @@ impl DirectControlExtension {
             ),
             0x80ffbfff,
         );
-        Self::draw_text_line(
-            ctx,
-            88.0,
-            "Waiting for the battlefield to become ready...",
-            0xd8d8e8ff,
-        );
+    }
+
+    fn native_seek_control_candidates(ctx: &StableClient<'_>) -> Vec<(String, bool)> {
+        const MAX_DEPTH: usize = 6;
+        const MAX_NODES: usize = 768;
+
+        let mut found = Vec::new();
+        let mut pending = vec![("ingame".to_owned(), 0usize)];
+        let mut visited = 0usize;
+
+        while let Some((parent, depth)) = pending.pop() {
+            if depth >= MAX_DEPTH || visited >= MAX_NODES {
+                continue;
+            }
+
+            for child in ctx.ui_child_names(&parent) {
+                if visited >= MAX_NODES {
+                    break;
+                }
+                visited += 1;
+
+                let path = format!("{parent}.{child}");
+                if depth + 1 < MAX_DEPTH {
+                    pending.push((path.clone(), depth + 1));
+                }
+
+                let runner = ctx.ui_runner_name(&path).unwrap_or_default();
+                if !(runner.contains("button") || runner.contains("selectable")) {
+                    continue;
+                }
+
+                let Some((x, y, w, h)) = ctx.ui_node_rect(&path) else {
+                    continue;
+                };
+                let center_x = x + w * 0.5;
+                let center_y = y + h * 0.5;
+
+                // TFM2's native replay seek/highlight toolbar sits directly under the blue-team
+                // header in the upper-left of the 1920x1080 UI map. Restrict discovery to small
+                // interactive widgets in that strip so the rest of the match UI remains untouched.
+                if (0.0..=430.0).contains(&center_x)
+                    && (58.0..=132.0).contains(&center_y)
+                    && w <= 90.0
+                    && h <= 90.0
+                {
+                    found.push((path, ctx.ui_visible(&path).unwrap_or(true)));
+                }
+            }
+        }
+
+        found
+    }
+
+    fn update_native_seek_controls(ctx: &mut StableClient<'_>) {
+        let scene = ctx.client_scene_kind();
+        let live_session = matches!(scene, Some(ClientSceneKindV1::InGame))
+            || (MATCH_SESSION_ACTIVE.load(Ordering::Acquire) && Self::control_scene(ctx));
+        let should_suppress = live_session && !pacing_probe::manual_control_released();
+
+        if should_suppress {
+            if !NATIVE_SEEK_CONTROLS_SUPPRESSED.load(Ordering::Acquire) {
+                let nodes = Self::native_seek_control_candidates(ctx);
+                if nodes.is_empty() {
+                    return;
+                }
+
+                for (path, _) in &nodes {
+                    let _ = ctx.ui_set_properties(path, "disable: true;");
+                    let _ = ctx.ui_set_visible(path, false);
+                }
+
+                if let Ok(mut cached) = NATIVE_SEEK_CONTROL_NODES.lock() {
+                    *cached = nodes;
+                    NATIVE_SEEK_CONTROLS_SUPPRESSED.store(true, Ordering::Release);
+                }
+            } else if let Ok(cached) = NATIVE_SEEK_CONTROL_NODES.lock() {
+                // Reassert suppression in case the match UI rebuilt a runner while paused.
+                for (path, _) in cached.iter() {
+                    let _ = ctx.ui_set_properties(path, "disable: true;");
+                    let _ = ctx.ui_set_visible(path, false);
+                }
+            }
+            return;
+        }
+
+        if !NATIVE_SEEK_CONTROLS_SUPPRESSED.swap(false, Ordering::AcqRel) {
+            return;
+        }
+
+        if let Ok(mut cached) = NATIVE_SEEK_CONTROL_NODES.lock() {
+            for (path, was_visible) in cached.iter() {
+                let _ = ctx.ui_set_properties(path, "disable: false;");
+                let _ = ctx.ui_set_visible(path, *was_visible);
+            }
+            cached.clear();
+        }
     }
 
     fn visible_match_seconds(ctx: &StableClient<'_>) -> Option<u64> {
@@ -958,54 +1053,62 @@ impl DirectControlExtension {
             .unwrap_or_else(|| "spectator".to_owned());
 
         let order = if control_state.selected_athlete.is_none() {
-            "AI".to_owned()
+            "AI"
         } else if control_state.returning {
-            "return home".to_owned()
+            "return home"
         } else if control_state.attack_moving {
-            "attack-move".to_owned()
+            "attack-move"
         } else if control_state.attack_target.is_some() {
-            "attack".to_owned()
+            "attack"
         } else if control_state.move_target.is_some() {
-            "move".to_owned()
+            "move"
         } else {
-            "hold".to_owned()
+            "hold"
         };
 
         let targeting = if control::attack_move_armed() {
-            "A-MOVE ARMED — LMB confirm | RMB/Esc cancel".to_owned()
-        } else if let Some(slot) = skill.armed {
-            format!(
-                "{} {} — LMB confirm | RMB/Esc cancel",
-                slot.label(),
-                skill.mode.label()
-            )
+            Some("A-MOVE — LMB confirm | RMB/Esc cancel".to_owned())
         } else {
-            "Targeting ready".to_owned()
+            skill.armed.map(|slot| {
+                format!(
+                    "{} {} — LMB confirm | RMB/Esc cancel",
+                    slot.label(),
+                    skill.mode.label()
+                )
+            })
         };
 
-        ctx.draw_rect("UI", 18.0, 58.0, 1_180.0, 76.0, 19_998, 6.0, 0x101018d8);
+        let status = if control_state.selected_athlete.is_none() {
+            format!(
+                "DIRECT CONTROL: {} | spectator",
+                pacing_probe::presentation_phase_label()
+            )
+        } else {
+            format!(
+                "DIRECT CONTROL: {} | {controlled} | {order}",
+                pacing_probe::presentation_phase_label()
+            )
+        };
+
+        let height = if targeting.is_some() { 56.0 } else { 34.0 };
+        ctx.draw_rect("UI", 18.0, 58.0, 720.0, height, 19_998, 6.0, 0x101018d8);
         Self::draw_text_line(
             ctx,
-            62.0,
-            &format!(
-                "DIRECT CONTROL: {} | CONTROLLED: {controlled} | ORDER: {order}",
-                pacing_probe::presentation_phase_label(),
-            ),
+            64.0,
+            &status,
             if pause_ui.paused { 0xffd080ff } else { 0x80ffbfff },
         );
-        Self::draw_text_line(ctx, 84.0, &targeting, 0xffffffff);
-        Self::draw_text_line(
-            ctx,
-            106.0,
-            "F1-F10 select | RMB move/attack/minimap | A+LMB attack-move | H hold | B return | Q/W/R skills | End AI | Ctrl+End release",
-            0x80d8ffff,
-        );
+
+        if let Some(targeting) = targeting {
+            Self::draw_text_line(ctx, 86.0, &targeting, 0xffffffff);
+        }
     }
 }
 
 impl StableExtension for DirectControlExtension {
     fn post_update(&self, ctx: &mut StableClient<'_>, _dt_micros: u64) {
         Self::update_startup_presentation_sync(ctx);
+        Self::update_native_seek_controls(ctx);
     }
 
     fn post_render(&self, ctx: &mut StableClient<'_>) {
