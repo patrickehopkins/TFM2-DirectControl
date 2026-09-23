@@ -91,27 +91,28 @@ The release still contains unavoidable loader-required pre-simulation. Do not at
 - the visual champion circle uses the same effective radius and therefore shrinks automatically with the clickable region;
 - **physically accepted on v0.6.1:** the reduction is less intrusive while preserving useful champion click forgiveness.
 
-**Self-only skill auto-cast — test build**
-- pressing Q/W/R should be the complete command for a skill that is genuinely cursorless/self-only;
+**Self-only skill auto-cast — validated**
+- pressing Q/W/R is the complete command for a skill that is genuinely cursorless/self-only;
 - validator-accepted `TargetKind::None` skills cast immediately on key press;
 - vanilla self buffs encoded as Targeting + AllyOnlySelf also cast immediately when self is legal, all other currently visible entity targets are illegal, and Direction/Position forms reject;
 - ordinary target/position/direction skills retain the existing aim/click flow;
 - cooldown and locked-slot safety gates remain unchanged;
-- Berserker is the benchmark because his self attack steroid is core to his play pattern;
-- physical validation pending.
+- **physically validated on v0.6.1:** Berserker Skill 1 and Monk Skill 1 cast on keypress; Ogre's automatic/passive trigger remained non-activatable.
 
 Space recenter/follow is now deliberately post-release. Its complete investigation history, along with other worked-but-deferred systems, is preserved in `docs/deferred-investigations.md`.
 
-## Diagnostic presentation cleanup
+## Diagnostic presentation cleanup — implementation complete, physical smoke test pending
 
-Do one final cleanup pass immediately before packaging:
+Release cleanup now:
+- removes the always-on startup/load/native diagnostic rows;
+- removes the development physical-cursor crosshair and yellow world-coordinate marker;
+- keeps clickable hitbox outlines and skill targeting/range graphics because they are gameplay-facing;
+- replaces the large diagnostic panel with a compact player-facing status panel using the controlled athlete's name and simplified order/targeting state;
+- keeps the startup synchronization prompt and Ctrl+End irreversible-release confirmation;
+- keeps deep diagnostic counters/probe machinery internal where it is still part of validated pacing/hook infrastructure rather than refactoring those systems immediately before release;
+- retains one normal load log and actionable initialization errors.
 
-- remove or disable always-on development diagnostics, probe counters, temporary native-field readouts, and log spam that a Workshop subscriber does not need;
-- remove purely diagnostic cursor/world markers or debug panels that are not part of the intended player-facing control/targeting UI;
-- preserve concise user-facing control feedback, targeting/range indicators that are part of gameplay, and actionable error logging;
-- keep deep diagnostics in source behind an explicit development/debug switch where practical rather than deleting useful investigation tools.
-
-This is presentation cleanup, not permission to refactor validated control systems before release.
+No validated gameplay-control path was intentionally changed by cleanup. Perform one final physical smoke test before packaging.
 
 ## Packaging / Workshop release path
 
