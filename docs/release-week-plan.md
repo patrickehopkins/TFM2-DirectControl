@@ -80,13 +80,12 @@ The release still contains unavoidable loader-required pre-simulation. Do not at
 User-requested release-scope exception: restore the previously deferred Space recenter/follow control before packaging.
 
 Current implementation target:
-- hold Space while a champion is under Direct Control for momentary follow;
-- double-tap Space to toggle persistent follow lock;
-- MMB drag breaks persistent follow lock and returns to free camera;
-- switching controlled champions while locked follows the newly selected champion;
-- reuse the validated native pan-request path; never resume direct camera-center writes;
-- update the follow controller only once per native camera frame and use damped moving-target correction;
-- no selected champion means Space has no Direct Control camera effect.
+- reject custom simulation-position camera chasing; two physical tests produced visible jerk/overshoot;
+- translate physical Space transitions into the currently controlled F1-F10 slot's native follow key;
+- let TFM2 own immediate recenter, held-follow, double-tap lock, and manual-pan lock break exactly as it does for the native F-key action;
+- inject only at the TFM2 window-message layer so Direct Control's global F1-F10 selector does not see a fake key press and reset the current champion order;
+- if the controlled slot changes while Space remains held, release the old native follow key and press the new one;
+- no selected champion means Space emits no native follow key.
 
 **Physical validation pending.**
 
