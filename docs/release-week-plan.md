@@ -36,7 +36,7 @@ Do these in order unless a newly discovered crash/data-corruption-level regressi
    - Give towers/final objective substantial forgiveness, champions modest forgiveness, and creeps only enough to remain usable.
    - When enlarged areas overlap, priority is **Champion > Building/Objective > Creep**.
    - The purpose is to reduce rapid RMB attacks accidentally becoming ground MoveTo orders.
-   - Current implementation uses live camera scale rather than fixed simulation padding: +12 px champion, +28 px tower, +24 px other targetable objective/building-like entity, +5 px minion. Minimap commands retain exact collision geometry.
+   - Current implementation uses live camera scale rather than fixed simulation padding: +8 px champion, +28 px tower, +24 px other targetable objective/building-like entity, +5 px minion. Minimap commands retain exact collision geometry. Champion padding was reduced from +12 px after physical play showed champions could crowd out minions directly beneath them.
    - **Physically validated on v0.6.1:** the enlarged regions and Champion > Building/Objective > Creep overlap priority behave as intended. The optional visual hitbox rings remain lightweight by throttling geometry snapshots and using low-segment outlines; full-rate targeting itself is unchanged.
 
 ## Input-focus safety sweep before release — validated
@@ -85,10 +85,11 @@ The release still contains unavoidable loader-required pre-simulation. Do not at
 - No copied external repeat interval, native hook, or alternate attack path was required.
 - **Physically validated on v0.6.1:** held RMB feels correct with no noted regressions; single-click contextual behavior remains intact.
 
-**Champion click forgiveness revisit**
-- after held-RMB passes, reduce champion click padding slightly because the current +12 px makes minions directly under champions harder to select;
-- change champion padding only unless testing exposes another problem;
-- the visual champion circle must shrink automatically with the same effective radius.
+**Champion click forgiveness revisit — test build**
+- champion click padding reduced from +12 px to +8 px because the larger region made minions directly under champions harder to select;
+- tower/objective/minion padding is unchanged;
+- the visual champion circle uses the same effective radius and therefore shrinks automatically with the clickable region;
+- physical validation pending.
 
 Space recenter/follow is now deliberately post-release. Its complete investigation history, along with other worked-but-deferred systems, is preserved in `docs/deferred-investigations.md`.
 
