@@ -18,18 +18,14 @@ This document records issues that are intentionally **not** blocking continued c
 
 ## Startup pre-simulation
 
-Status: **one bounded pre-release attempt remains; defer and ship if unresolved**.
+Teamfight Manager 2 still requires watched-match simulation progress before the battlefield can be constructed. Physical v0.6.1 probing confirmed Candidate A is already the correct `ClientMatchView` simulation at tick 1, so the remaining lead is a loader dependency rather than misidentifying the simulation.
 
-Teamfight Manager 2 requires some Candidate-A simulation progress before the Start Match transition can complete. Two startup-gating experiments were physically rejected:
+The release build handles this by freezing Candidate A at the first usable `InGame` boundary and withholding `Ctrl+Home` until the visible presentation catches that frozen live state. This prevents manual commands from targeting simulation state that the player has not yet seen.
 
-- holding Candidate A inside its earliest observed AI callback freezes Start Match and can make Windows report the process as not responding;
-- allowing one complete simulation tick and then holding is still too early for the battlefield to become independent of simulation progress.
+The startup lead itself is therefore **not eliminated**. It is packaged as a synchronization transition rather than exposed as a misleading immediately-controllable replay state.
 
-The current fail-safe startup gate releases into the proven 60 Hz pacer after a short bounded hold. This avoids hangs, but the game still begins with some pre-simulated lead and can visibly progress before the player would ideally have made manual-control decisions.
+Post-release hardening should treat presentation as a slave clock while Direct Control owns simulation authority: suppress replay seek/rewind/highlight jumps, continuously detect presentation/live divergence, snap presentation back to live when necessary, and restore ordinary replay freedom only after confirmed `Ctrl+End` release.
 
-This is annoying and visually inelegant, but it does **not** block live control once the match is running. The release-week plan allows one bounded attempt after the immediate buglist, preferably reusing a clean readiness/startup result from the Flame Simulator investigation. If that attempt does not produce a clean fix, document the remaining lead and ship the first public release anyway.
-
-Post-release work may probe a later readiness boundary where the loader no longer depends synchronously on Candidate A. Do not allow startup work to destabilize the already-validated real-time pacing path.
 
 ## Cursor/world marker origin offset
 

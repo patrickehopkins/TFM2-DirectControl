@@ -57,21 +57,23 @@ Mouse/RMB/LMB and MMB/wheel code already verifies that the TFM2 process owns the
 
 The pause/session hardening added during investigation physically passed and may remain as defensive protection, but it was not the root cause of the observed releases.
 
-## Pregame / pre-simulation issue
+## Pregame / pre-simulation issue — validated release solution
 
-Make **one bounded pre-release attempt** after the immediate buglist.
+Physical probing on v0.6.1 established that Candidate A is the watched `ClientMatchView` simulation from tick 1, but TFM2 synchronously requires meaningful simulation progress before the battlefield can be constructed. Zero-tick and one-tick holds therefore remain rejected.
 
-Preferred route: reuse or adapt any clean readiness/startup solution learned from the Flame Simulator pre-game probe so the player can enter the map before meaningful watched-match simulation gets ahead.
+The accepted release path is:
 
-Rules for this attempt:
+- use the bounded startup hold plus 60 Hz loader runway so the battlefield can become interactive;
+- freeze Candidate A at the first usable `InGame` boundary;
+- keep Direct Control locked while the visible presentation catches the frozen live simulation;
+- show **“Synchronizing Direct Control with the live match...”** during catch-up;
+- once synchronized, show **“Direct Control is ready. Press Ctrl+Home to take control and resume the match.”**;
+- reject `Ctrl+Home` until synchronization is complete.
 
-- do not destabilize the already-validated 60 Hz pacing architecture;
-- do not reintroduce the startup hangs from holding Candidate A too early;
-- prefer a real readiness boundary over arbitrary timing hacks;
-- if a clean fix does not emerge from the bounded attempt, **defer the issue and ship**;
-- the first public release may therefore retain a known amount of startup pre-simulation.
+Physical validation passed normal startup, presentation catch-up, `Ctrl+Home` resume, selection, movement, attack, skills, MMB/zoom, and pause/resume.
 
-This issue is desired before release, but it is **not allowed to become a release blocker**.
+The release still contains unavoidable loader-required pre-simulation. Do not attempt to hide it by shifting global spawn/AI schedules around an assumed fixed number of seconds; tests showed the readiness tick/time varies with startup behavior.
+
 
 ## Diagnostic presentation cleanup
 
