@@ -71,6 +71,12 @@ The validated startup path is:
 
 `Ctrl+End` is global and irreversible for that match. After confirmation, Direct Control relinquishes live control/pacing and the normal simulation may race ahead or finish. Start a new match to regain Direct Control.
 
+While Direct Control owns the live match, TFM2's native upper-left replay seek/highlight controls are hidden and disabled so they cannot move presentation away from the authoritative live simulation. They are restored after the confirmed `Ctrl+End` release.
+
+### Presentation desync indicator
+
+The lightweight targeting/click rings are drawn from the **live simulation**, not from delayed replay presentation. If those circles are visibly offset from the champions, minions, towers, or other entities they belong to, the replay presentation is out of sync with the live match. Fast-forward until the circles line back up with the actual entities before continuing; alignment is the practical visual confirmation that presentation has caught up again.
+
 ## Camera and fog
 
 The release camera controls are the physically validated **MMB drag + mouse-wheel zoom** path. Screen-edge scrolling and Space follow were investigated and deliberately deferred rather than shipping brittle implementations.
