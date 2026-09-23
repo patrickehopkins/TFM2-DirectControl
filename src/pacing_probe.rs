@@ -3,15 +3,16 @@
 //! Stage 3 proved Candidate A can be paced at ~60 ticks/s and irreversibly released with Ctrl+End.
 //! Stage 4 proved manual `InputV1::move_to` commands reach that live simulation.
 //!
-//! Stage 5A's zero-tick prematch hold was physically rejected: blocking the very first AI callback
-//! prevents Start Match from completing, and the render thread stops pumping while it waits. This
-//! revision allows one complete Candidate-A simulation tick through before holding on the next tick.
-//! That tests whether the client only needs an initial simulation frame/state to construct InGame.
+//! Startup probing on v0.6.1 proved Candidate A is already the watched ClientMatchView simulation
+//! at tick 1, but the client does not expose GameMap/InGame until that simulation has progressed
+//! further. Blocking at tick 2 therefore deadlocks the loader rather than preserving a clean start.
 //!
-//! The held Candidate-A worker now also polls Ctrl+Home directly. That escape does not depend on
-//! `post_render`, so it still works if the Start Match UI thread is synchronously waiting. If one
-//! tick is insufficient and the client has not reached InGame after two seconds, the gate
-//! automatically releases into the known-good 60 Hz pacer rather than leaving the process hung.
+//! The current bounded experiment paces Candidate A at the proven 60 Hz during loading, then latches
+//! the first InGame boundary and finishes that already-running simulation tick before holding the next
+//! one for Ctrl+Home. This lets the loader consume only the simulation progress it actually requires
+//! without allowing the watched match to keep advancing after the battlefield becomes interactive.
+//! The worker-local Ctrl+Home escape remains available because post_render may not be pumping while
+//! a Candidate-A callback is held.
 //!
 //! Pause uses a separate presentation gate. Ctrl+End permanently releases pacing and manual input
 //! for the current match.
@@ -89,6 +90,10 @@ static START_AUTO_RELEASED: AtomicBool = AtomicBool::new(false);
 static INTERACTIVE_MATCH: AtomicBool = AtomicBool::new(false);
 static LAST_RENDER_HEARTBEAT_MS: AtomicU64 = AtomicU64::new(0);
 static PRESENTATION_PHASE: AtomicU8 = AtomicU8::new(PHASE_WAITING_START);
+// When the client first reaches InGame, finish this currently observed simulation tick before
+// blocking. That avoids freezing halfway through a ten-player tick while still preventing any
+// further watched-match progress before the user's explicit Ctrl+Home.
+static READY_GATE_TICK: AtomicU64 = AtomicU64::new(NO_TICK);
 static PACER_ORIGIN_TICK: AtomicU64 = AtomicU64::new(NO_TICK);
 static PACER_ORIGIN_MS: AtomicU64 = AtomicU64::new(0);
 static MANUAL_FINISH_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -165,6 +170,7 @@ fn reset_job_runtime() {
     START_AUTO_RELEASED.store(false, Ordering::Release);
     LAST_RENDER_HEARTBEAT_MS.store(0, Ordering::Release);
     PRESENTATION_PHASE.store(PHASE_WAITING_START, Ordering::Release);
+    READY_GATE_TICK.store(NO_TICK, Ordering::Release);
     reanchor_pacer();
     MANUAL_FINISH_REQUESTED.store(false, Ordering::Release);
     SAFETY_FAIL_OPEN.store(false, Ordering::Release);
@@ -312,7 +318,15 @@ pub fn note_render_heartbeat() {
 
 /// Publish interactive/pause state from the client render thread.
 pub fn set_presentation_state(interactive_match: bool, paused: bool) {
-    INTERACTIVE_MATCH.store(interactive_match, Ordering::Release);
+    let was_interactive = INTERACTIVE_MATCH.swap(interactive_match, Ordering::AcqRel);
+
+    if interactive_match
+        && !was_interactive
+        && !START_REQUESTED.load(Ordering::Acquire)
+        && READY_GATE_TICK.load(Ordering::Acquire) == NO_TICK
+    {
+        READY_GATE_TICK.store(LAST_CANDIDATE_A_TICK.load(Ordering::Acquire), Ordering::Release);
+    }
 
     if !START_REQUESTED.load(Ordering::Acquire) {
         PRESENTATION_PHASE.store(PHASE_WAITING_START, Ordering::Release);
@@ -587,22 +601,29 @@ fn pace_candidate_a(tick: u64) {
     }
 
     if !START_REQUESTED.load(Ordering::Acquire) {
-        let first_tick = FIRST_CANDIDATE_A_TICK.load(Ordering::Acquire);
+        if INTERACTIVE_MATCH.load(Ordering::Acquire) {
+            let ready_tick = READY_GATE_TICK.load(Ordering::Acquire);
 
-        // Let every player callback belonging to the first observed simulation tick pass. The hold
-        // begins only when Candidate A asks for input on a later tick, which proves the first tick
-        // completed rather than freezing halfway through its ten players.
-        if first_tick == NO_TICK || tick <= first_tick {
-            return;
+            // Finish the simulation tick that was already in progress when the first InGame frame
+            // became visible. Block only on the next tick so the loader is never frozen mid-tick.
+            if ready_tick != NO_TICK && tick <= ready_tick {
+                return;
+            }
+
+            if !wait_until_started() {
+                return;
+            }
+
+            // User-started live control begins from the exact held tick; loading/waiting wall time
+            // never becomes catch-up budget.
+            reanchor_pacer();
+            return pace_candidate_a(tick);
         }
 
-        if !wait_until_started() {
-            return;
-        }
-        // The exact held tick becomes the fresh pacing origin. Time spent waiting is never catch-up
-        // budget, whether release came from the visible UI, worker-local Ctrl+Home, or auto-recovery.
-        reanchor_pacer();
-        return pace_candidate_a(tick);
+        // Before the battlefield is interactive, do not block Candidate A. The v0.6.1 loader
+        // demonstrably requires watched-match simulation progress before GameMap/InGame exists.
+        // Fall through into the normal 60 Hz pacer so loading receives only real-time progress,
+        // not a fast pre-simulation burst.
     }
 
     if PRESENTATION_PHASE.load(Ordering::Acquire) == PHASE_PAUSED {
