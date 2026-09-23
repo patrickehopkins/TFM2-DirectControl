@@ -27,7 +27,7 @@ pub use base::CameraSnapshot;
 use std::{
     ffi::c_void,
     sync::{
-        atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicI32, AtomicU16, AtomicUsize, Ordering},
         Mutex, OnceLock,
     },
     thread,
@@ -52,10 +52,9 @@ const VK_SPACE_CODE: i32 = 0x20;
 const VK_F1_CODE: usize = 0x70;
 const NO_FOLLOW_SLOT: usize = usize::MAX;
 const MAPVK_VK_TO_VSC: u32 = 0;
+const KEYEVENTF_KEYUP: u32 = 0x0002;
 
 const GWLP_WNDPROC: i32 = -4;
-const WM_KEYDOWN: u32 = 0x0100;
-const WM_KEYUP: u32 = 0x0101;
 const WM_MOUSEMOVE: u32 = 0x0200;
 const WM_LBUTTONDOWN: u32 = 0x0201;
 const WM_LBUTTONUP: u32 = 0x0202;
@@ -100,7 +99,7 @@ extern "system" {
     fn ScreenToClient(hwnd: *mut c_void, point: *mut WinPoint) -> i32;
     fn GetClientRect(hwnd: *mut c_void, rect: *mut WinRect) -> i32;
     fn MapVirtualKeyW(code: u32, map_type: u32) -> u32;
-    fn PostMessageW(hwnd: *mut c_void, message: u32, wparam: usize, lparam: isize) -> i32;
+    fn keybd_event(vk: u8, scan: u8, flags: u32, extra_info: usize);
     fn SetWindowLongPtrW(hwnd: *mut c_void, index: i32, new_long: isize) -> isize;
     fn CallWindowProcW(
         previous: isize,
@@ -167,6 +166,9 @@ static VIRTUAL_HOVER_FLIP: AtomicBool = AtomicBool::new(false);
 static SWALLOWED_LBUTTON: AtomicBool = AtomicBool::new(false);
 static SWALLOWED_RBUTTON: AtomicBool = AtomicBool::new(false);
 static WHEEL_REMAINDER: AtomicI32 = AtomicI32::new(0);
+// Synthetic native-follow F-keys update global keyboard state just like real input. Mask them from
+// Direct Control's own F1-F10 selector so following the camera never republishes/reset champion input.
+static SYNTHETIC_FKEY_SUPPRESS_MASK: AtomicU16 = AtomicU16::new(0);
 
 fn driver_state() -> &'static Mutex<CameraControlState> {
     DRIVER_STATE.get_or_init(|| Mutex::new(CameraControlState::default()))
@@ -415,23 +417,51 @@ fn publish_pan(state: &mut CameraControlState, address: usize, pan_x: f32, pan_y
     }
 }
 
-fn post_native_fkey(hwnd: usize, slot: usize, down: bool) -> bool {
-    if hwnd == 0 || slot >= 10 {
+fn inject_native_fkey(slot: usize, down: bool) -> bool {
+    if slot >= 10 {
         return false;
     }
 
     let vk = VK_F1_CODE + slot;
-    let scan = unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC) } & 0xff;
-    let mut lparam = 1usize | ((scan as usize) << 16);
-    let message = if down {
-        WM_KEYDOWN
-    } else {
-        lparam |= 1usize << 30;
-        lparam |= 1usize << 31;
-        WM_KEYUP
-    };
+    let bit = 1u16 << slot;
+    if down {
+        // Publish suppression before the key enters the OS input stream so the render thread can
+        // never mistake our native-follow event for a user's Direct Control selection press.
+        SYNTHETIC_FKEY_SUPPRESS_MASK.fetch_or(bit, Ordering::AcqRel);
+    }
 
-    unsafe { PostMessageW(hwnd as *mut c_void, message, vk, lparam as isize) != 0 }
+    let scan = unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC) } as u8;
+    unsafe {
+        keybd_event(
+            vk as u8,
+            scan,
+            if down { 0 } else { KEYEVENTF_KEYUP },
+            0,
+        );
+    }
+    true
+}
+
+fn refresh_synthetic_fkey_suppression() {
+    let mask = SYNTHETIC_FKEY_SUPPRESS_MASK.load(Ordering::Acquire);
+    if mask == 0 {
+        return;
+    }
+
+    let mut clear = 0u16;
+    for slot in 0..10usize {
+        let bit = 1u16 << slot;
+        if mask & bit == 0 {
+            continue;
+        }
+        let vk = (VK_F1_CODE + slot) as i32;
+        if unsafe { GetAsyncKeyState(vk) } >= 0 {
+            clear |= bit;
+        }
+    }
+    if clear != 0 {
+        SYNTHETIC_FKEY_SUPPRESS_MASK.fetch_and(!clear, Ordering::AcqRel);
+    }
 }
 
 fn release_injected_follow_key(state: &mut CameraControlState) {
@@ -439,11 +469,12 @@ fn release_injected_follow_key(state: &mut CameraControlState) {
         return;
     }
 
-    let hwnd = SHIM_HWND.load(Ordering::Acquire);
-    if hwnd != 0 {
-        let _ = post_native_fkey(hwnd, state.injected_follow_slot, false);
-    }
+    let _ = inject_native_fkey(state.injected_follow_slot, false);
     state.injected_follow_slot = NO_FOLLOW_SLOT;
+}
+
+pub fn synthetic_follow_fkey_mask() -> u16 {
+    SYNTHETIC_FKEY_SUPPRESS_MASK.load(Ordering::Acquire)
 }
 
 fn disable_match_camera(state: &mut CameraControlState) {
@@ -459,6 +490,8 @@ fn disable_match_camera(state: &mut CameraControlState) {
 }
 
 fn camera_control_step(state: &mut CameraControlState) {
+    refresh_synthetic_fkey_suppression();
+
     // MMB and wheel zoom remain available throughout the interactive match, regardless
     // of whether a champion is currently under manual control. Screen-edge panning is
     // intentionally absent from this driver while that feature is shelved.
@@ -496,10 +529,10 @@ fn camera_control_step(state: &mut CameraControlState) {
     let physical_space_down = unsafe { GetAsyncKeyState(VK_SPACE_CODE) < 0 };
     MMB_UI_LOCK_ACTIVE.store(middle_down, Ordering::Release);
 
-    // Space is a translation layer, not a second camera controller. Forward Space key transitions
-    // as the native F-key belonging to the currently selected Direct Control slot. Because these are
-    // window messages rather than global keyboard state, our own GetAsyncKeyState F1-F10 selector
-    // does not see them and therefore does not clear the champion's active manual order.
+    // Space is a translation layer, not a second camera controller. Forward Space transitions as
+    // real synthetic keyboard input for the native F-key belonging to the selected Direct Control
+    // slot. The suppression mask keeps our own GetAsyncKeyState F1-F10 selector from consuming the
+    // injected key while TFM2's native input stack receives the same key stream as ordinary input.
     if state.space_block_until_release {
         if !physical_space_down {
             state.space_block_until_release = false;
@@ -511,7 +544,7 @@ fn camera_control_step(state: &mut CameraControlState) {
 
         if physical_space_down && !state.space_down {
             if let Some(slot) = selected_slot {
-                if post_native_fkey(hwnd, slot, true) {
+                if inject_native_fkey(slot, true) {
                     state.injected_follow_slot = slot;
                 }
             }
@@ -522,11 +555,11 @@ fn camera_control_step(state: &mut CameraControlState) {
                 if state.injected_follow_slot != NO_FOLLOW_SLOT
                     && state.injected_follow_slot != slot
                 {
-                    let _ = post_native_fkey(hwnd, state.injected_follow_slot, false);
+                    let _ = inject_native_fkey(state.injected_follow_slot, false);
                     state.injected_follow_slot = NO_FOLLOW_SLOT;
                 }
                 if state.injected_follow_slot == NO_FOLLOW_SLOT
-                    && post_native_fkey(hwnd, slot, true)
+                    && inject_native_fkey(slot, true)
                 {
                     state.injected_follow_slot = slot;
                 }
