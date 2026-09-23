@@ -43,4 +43,4 @@ The compatibility audit should cover multiple 16:9 resolutions/window sizes, bot
 ## Later optional camera polish
 
 - **Screen-edge scrolling:** shelved until/unless a deeper native-camera route is worth revisiting.
-- **Space recenter/follow:** still desirable as optional QoL, but not part of the now-validated camera milestone. Persistent follow/lock already exists natively through TFM2's F-key camera behavior and can later be exposed through the custom shortcut pass.
+- **Space recenter/follow:** promoted back into the first-release polish pass. Current implementation is momentary: hold Space to follow the currently controlled champion; release Space to return immediately to free camera. It reuses the validated native-pan request path rather than writing camera center directly. Physical validation pending.
