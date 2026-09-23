@@ -268,6 +268,14 @@ fn last_self_position() -> Option<(u64, u64)> {
     ))
 }
 
+/// Latest authoritative simulation position published by the currently selected champion.
+/// Camera-only consumers may use this for follow/recenter behavior; gameplay legality must still
+/// come from the simulation callback itself.
+pub fn selected_position() -> Option<(u64, u64)> {
+    selected_athlete()?;
+    last_self_position()
+}
+
 fn hold_recall_cancel_target(from: (u64, u64)) -> (u64, u64) {
     let center = DEFAULT_MAP_MAX_SIM / 2;
     let x = if from.0 < center {
