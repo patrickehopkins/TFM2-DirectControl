@@ -9,7 +9,7 @@
 
 use mod_api_stable::StableSim;
 
-const CHAMPION_PADDING_PX: u64 = 12;
+const CHAMPION_PADDING_PX: u64 = 8;
 const TOWER_PADDING_PX: u64 = 28;
 const MINION_PADDING_PX: u64 = 5;
 const OTHER_OBJECTIVE_PADDING_PX: u64 = 24;

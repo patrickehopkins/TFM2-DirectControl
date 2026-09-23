@@ -2,6 +2,18 @@
 
 This is a **pre-release pass before Pings/team commands**. The preferred policy is universal-first: investigate whether a generic Direct Control rule, stable/native action property, or target-form resolver can fix a champion-specific failure without hard-coding that champion. Only add a champion-specific exception when the underlying action genuinely behaves differently and no resilient generic rule fits.
 
+## Generic self-only skill casting
+
+Direct Control should not require a second click for a skill whose only meaningful target is the caster. Berserker is the primary benchmark because his self attack steroid is central to his kit and the extra self-click is disruptive.
+
+Current generic rule:
+- `CastingType::None` / validator-accepted no-target actions cast immediately on Q/W/R press;
+- Targeting actions that validate on self, reject every other currently visible entity target, and reject Direction/Position forms are treated as self-only and cast immediately on self;
+- ordinary ally/enemy Target skills retain click confirmation whenever another legal entity target exists;
+- locked-slot and cooldown safety remain ahead of all validator probing.
+
+This is intentionally universal rather than a Berserker-specific adapter. If physical testing shows an ordinary ally-target skill can be misclassified when no other target is presently legal, narrow or defer the heuristic rather than hard-coding broad exceptions.
+
 ## Confirmed issues
 
 ### Gambler — Skill 1
