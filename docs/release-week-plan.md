@@ -85,10 +85,19 @@ The release still contains unavoidable loader-required pre-simulation. Do not at
 - No copied external repeat interval, native hook, or alternate attack path was required.
 - **Physically validated on v0.6.1:** held RMB feels correct with no noted regressions; single-click contextual behavior remains intact.
 
-**Champion click forgiveness revisit — test build**
+**Champion click forgiveness revisit — validated**
 - champion click padding reduced from +12 px to +8 px because the larger region made minions directly under champions harder to select;
 - tower/objective/minion padding is unchanged;
 - the visual champion circle uses the same effective radius and therefore shrinks automatically with the clickable region;
+- **physically accepted on v0.6.1:** the reduction is less intrusive while preserving useful champion click forgiveness.
+
+**Self-only skill auto-cast — test build**
+- pressing Q/W/R should be the complete command for a skill that is genuinely cursorless/self-only;
+- validator-accepted `TargetKind::None` skills cast immediately on key press;
+- vanilla self buffs encoded as Targeting + AllyOnlySelf also cast immediately when self is legal, all other currently visible entity targets are illegal, and Direction/Position forms reject;
+- ordinary target/position/direction skills retain the existing aim/click flow;
+- cooldown and locked-slot safety gates remain unchanged;
+- Berserker is the benchmark because his self attack steroid is core to his play pattern;
 - physical validation pending.
 
 Space recenter/follow is now deliberately post-release. Its complete investigation history, along with other worked-but-deferred systems, is preserved in `docs/deferred-investigations.md`.
@@ -121,7 +130,7 @@ The uploader already knows how to stage native Rust mods and excludes `src/`, `t
 
 ## Everything else moves post-release
 
-After held-RMB refresh, the small champion-hitbox adjustment, and diagnostic presentation cleanup, **stop adding pre-release scope**. Package and ship.
+After self-only skill auto-cast validation and diagnostic presentation cleanup, **stop adding pre-release scope**. Package and ship.
 
 The following previously listed pre-release work is now post-release unless it turns into a concrete release-breaking regression during final testing:
 
