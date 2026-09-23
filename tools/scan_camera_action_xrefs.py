@@ -59,6 +59,12 @@ NEAR_DATA_RADIUS = 0x100
 
 
 @dataclass(frozen=True)
+class RuntimeFunction:
+    start: int
+    end: int
+
+
+@dataclass(frozen=True)
 class Section:
     name: str
     rva: int
@@ -132,6 +138,36 @@ class PeImage:
     def bytes_at_rva(self, rva: int, size: int) -> bytes:
         offset = self.rva_to_offset(rva)
         return self.data[offset : offset + size]
+
+    def runtime_functions(self) -> list[RuntimeFunction]:
+        pdata = next((section for section in self.sections if section.name == ".pdata"), None)
+        if pdata is None:
+            return []
+
+        out: list[RuntimeFunction] = []
+        data = self.data[pdata.raw_offset : pdata.raw_offset + pdata.raw_size]
+        for offset in range(0, len(data) - 11, 12):
+            start, end, _unwind = struct.unpack_from("<III", data, offset)
+            if start == 0 or end <= start:
+                continue
+            out.append(RuntimeFunction(start, end))
+        out.sort(key=lambda fn: fn.start)
+        return out
+
+
+def owner_of(functions: list[RuntimeFunction], rva: int) -> RuntimeFunction | None:
+    lo = 0
+    hi = len(functions)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        fn = functions[mid]
+        if rva < fn.start:
+            hi = mid
+        elif rva >= fn.end:
+            lo = mid + 1
+        else:
+            return fn
+    return None
 
 
 def sha256(data: bytes) -> str:
@@ -251,6 +287,22 @@ def collect_rip_refs(image: PeImage) -> list[tuple[int, int, str]]:
             refs.append((insn_rva, resolved, "lea" if opcode == 0x8D else "mov"))
 
     return refs
+
+
+def collect_rel32_calls(image: PeImage) -> list[tuple[int, int]]:
+    calls: list[tuple[int, int]] = []
+    for section in image.sections:
+        if not section.executable or section.raw_size < 5:
+            continue
+        data = image.data[section.raw_offset : section.raw_offset + section.raw_size]
+        for i in range(len(data) - 4):
+            if data[i] != 0xE8:
+                continue
+            disp = struct.unpack_from("<i", data, i + 1)[0]
+            call_rva = section.rva + i
+            target = call_rva + 5 + disp
+            calls.append((call_rva, target))
+    return calls
 
 
 def refs_to(
@@ -434,6 +486,8 @@ def main() -> int:
 
     image = PeImage(args.exe.resolve())
     all_refs = collect_rip_refs(image)
+    runtime_functions = image.runtime_functions()
+    all_calls = collect_rel32_calls(image)
 
     lines: list[str] = [
         "TFM2 DIRECT CONTROL - SPECTATOR CAMERA SEMANTIC ACTION REPORT",
@@ -443,6 +497,8 @@ def main() -> int:
         f"Image size: 0x{image.image_size:08X}",
         f"Image base: 0x{image.image_base:X}",
         f"Collected RIP-relative LEA/MOV refs: {len(all_refs)}",
+        f"Runtime functions from .pdata: {len(runtime_functions)}",
+        f"Collected rel32 calls: {len(all_calls)}",
         "",
         "Read-only static analysis. No game files or process memory were modified.",
         "",
@@ -614,6 +670,113 @@ def main() -> int:
             max(0, min(follow_refs) - 0x300),
             max(follow_refs) + 0x300,
         )
+
+    # Deeper pass: all semantic action descriptors form one contiguous 16-byte table. References
+    # into any address inside that table are more useful than exact references to individual members
+    # because Rust code commonly addresses the table base and indexes into it.
+    action_descriptor_rvas = sorted(
+        {
+            descriptor
+            for name, descriptors in descriptor_centers.items()
+            if name.startswith("in_game_") and not name.startswith("speed_buttons.")
+            for descriptor in descriptors
+            if decode_rust_str_descriptor(image, descriptor) is not None
+        }
+    )
+    if action_descriptor_rvas:
+        table_start = min(action_descriptor_rvas)
+        table_end = max(action_descriptor_rvas) + 0x10
+        table_refs = sorted(
+            ref for ref in all_refs if table_start <= ref[1] < table_end
+        )
+
+        lines.append("===== ACTION DESCRIPTOR TABLE EXECUTABLE REFS =====")
+        lines.append(
+            f"table 0x{table_start:08X}..0x{table_end:08X}; refs={len(table_refs)}"
+        )
+        grouped: dict[tuple[int, int], list[tuple[int, int, str]]] = {}
+        for ref in table_refs:
+            owner = owner_of(runtime_functions, ref[0])
+            key = (owner.start, owner.end) if owner else (ref[0], ref[0] + 1)
+            grouped.setdefault(key, []).append(ref)
+
+        for (owner_start, owner_end), refs in sorted(grouped.items()):
+            lines.append(
+                f"owner 0x{owner_start:08X}..0x{owner_end:08X} "
+                f"size=0x{owner_end-owner_start:X} refs={len(refs)}"
+            )
+            for xref_rva, resolved, kind in refs[:32]:
+                lines.append(
+                    f"  0x{xref_rva:08X} {kind} -> 0x{resolved:08X} "
+                    f"(table+0x{resolved-table_start:X})"
+                )
+            if owner_end - owner_start <= 0x1800:
+                emit_code_window(
+                    lines,
+                    image,
+                    f"ACTION TABLE OWNER 0x{owner_start:08X}",
+                    owner_start,
+                    owner_end,
+                )
+            else:
+                emit_code_window(
+                    lines,
+                    image,
+                    f"ACTION TABLE OWNER HEAD 0x{owner_start:08X}",
+                    owner_start,
+                    min(owner_end, owner_start + 0x700),
+                )
+
+    # The dense 0x0215Dxxx cluster is an enum->name mapper. Find its real .pdata owner and every
+    # direct caller. Callers are candidates for semantic shortcut registration/query code.
+    if follow_refs:
+        mapper_owner = owner_of(runtime_functions, min(follow_refs))
+        if mapper_owner:
+            mapper_callers = sorted(
+                call_rva for call_rva, target in all_calls if target == mapper_owner.start
+            )
+            lines.append("===== ACTION NAME MAPPER CALLERS =====")
+            lines.append(
+                f"mapper owner 0x{mapper_owner.start:08X}..0x{mapper_owner.end:08X} "
+                f"size=0x{mapper_owner.end-mapper_owner.start:X}; callers={len(mapper_callers)}"
+            )
+            emit_code_window(
+                lines,
+                image,
+                "ACTION NAME MAPPER FUNCTION",
+                mapper_owner.start,
+                mapper_owner.end,
+            )
+
+            caller_owners: dict[tuple[int, int], list[int]] = {}
+            for call_rva in mapper_callers:
+                owner = owner_of(runtime_functions, call_rva)
+                key = (owner.start, owner.end) if owner else (call_rva, call_rva + 1)
+                caller_owners.setdefault(key, []).append(call_rva)
+
+            for (owner_start, owner_end), calls in sorted(caller_owners.items()):
+                lines.append(
+                    f"caller owner 0x{owner_start:08X}..0x{owner_end:08X} "
+                    f"size=0x{owner_end-owner_start:X}; callsites="
+                    + ", ".join(f"0x{call:08X}" for call in calls)
+                )
+                if owner_end - owner_start <= 0x1400:
+                    emit_code_window(
+                        lines,
+                        image,
+                        f"MAPPER CALLER OWNER 0x{owner_start:08X}",
+                        owner_start,
+                        owner_end,
+                    )
+                else:
+                    for call_rva in calls[:6]:
+                        emit_code_window(
+                            lines,
+                            image,
+                            f"MAPPER CALLER WINDOW 0x{call_rva:08X}",
+                            max(owner_start, call_rva - 0x180),
+                            min(owner_end, call_rva + 0x220),
+                        )
 
     lines.append("===== CODE-XREF CLUSTERS =====")
     flattened = sorted(set(discovered_code_refs))
