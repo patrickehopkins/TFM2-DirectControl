@@ -5,10 +5,9 @@
 //! +0xE4/+0xE8; doing that created a second camera authority and caused flicker,
 //! snap-back, and screen-to-world disagreement.
 //!
-//! MMB drag publishes desired native pan values to `base`; the native hook applies them
-//! synchronously immediately before TFM2's own camera handler runs. The game stays
-//! authoritative for actual camera-center integration, bounds, follow state, minimap
-//! camera jumps, and rendering.
+//! MMB drag and hold-Space champion follow publish desired native pan values to `base`; the native
+//! hook applies them synchronously immediately before TFM2's own camera handler runs. The game stays
+//! authoritative for actual camera-center integration, bounds, minimap relocation, and rendering.
 //!
 //! MMB drag and wheel zoom are match-view QoL, not manual-control ownership. They remain
 //! available while spectating after `End` releases a champion.
@@ -46,8 +45,11 @@ const WORLD_MAX: f32 = 960.0;
 // speed ceiling: the same cursor displacement requests the same camera displacement
 // regardless of how quickly the mouse moved.
 const DRAG_POSITION_GAIN: f32 = 60.0;
+const FOLLOW_POSITION_GAIN: f32 = 60.0;
 const CAMERA_CONTROL_POLL_MS: u64 = 2;
 const VK_MBUTTON_CODE: i32 = 0x04;
+const VK_SPACE_CODE: i32 = 0x20;
+const SIM_UNITS_PER_WORLD_UNIT: f32 = 1000.0;
 
 const GWLP_WNDPROC: i32 = -4;
 const WM_MOUSEMOVE: u32 = 0x0200;
@@ -443,9 +445,25 @@ fn camera_control_step(state: &mut CameraControlState) {
     MATCH_CAMERA_ACTIVE.store(true, Ordering::Release);
 
     let middle_down = unsafe { GetAsyncKeyState(VK_MBUTTON_CODE) < 0 };
+    let space_down = unsafe { GetAsyncKeyState(VK_SPACE_CODE) < 0 };
     MMB_UI_LOCK_ACTIVE.store(middle_down, Ordering::Release);
 
-    if middle_down {
+    // Space is a momentary camera lock: while held, continuously close the native camera center
+    // toward the currently controlled champion's authoritative simulation position. Releasing Space
+    // immediately returns camera ownership to ordinary free-pan behavior. Space intentionally wins
+    // over MMB when both are held; releasing Space while MMB remains down starts a fresh drag anchor.
+    if space_down {
+        state.middle_down = false;
+        if let Some((sim_x, sim_y)) = crate::control::selected_position() {
+            let desired_x = clamp_center(sim_x as f32 / SIM_UNITS_PER_WORLD_UNIT);
+            let desired_y = clamp_center(sim_y as f32 / SIM_UNITS_PER_WORLD_UNIT);
+            let pan_x = (desired_x - camera.center_x) * FOLLOW_POSITION_GAIN;
+            let pan_y = (desired_y - camera.center_y) * FOLLOW_POSITION_GAIN;
+            publish_pan(state, camera.address, pan_x, pan_y);
+        } else {
+            publish_pan(state, camera.address, 0.0, 0.0);
+        }
+    } else if middle_down {
         if !state.middle_down {
             state.middle_down = true;
             state.drag_start_mouse_x = mouse_x;
