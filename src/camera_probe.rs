@@ -22,7 +22,7 @@
 #[path = "camera_probe/base.rs"]
 mod base;
 
-pub use base::CameraSnapshot;
+pub use base::{CameraSnapshot, FollowProbeReport};
 
 use std::{
     ffi::c_void,
@@ -520,6 +520,10 @@ pub fn set_team_vision(team: Option<usize>) {
         (mode <= 2).then_some(mode)
     });
     base::set_vision_mode(mode);
+}
+
+pub fn follow_probe_report() -> Option<FollowProbeReport> {
+    base::follow_probe_report()
 }
 
 pub fn snapshots() -> Vec<CameraSnapshot> {
