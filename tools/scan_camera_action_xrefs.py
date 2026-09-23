@@ -7,11 +7,14 @@ This probe therefore searches for substring starts, Rust-style &str descriptors
 (pointer + usize length), direct/nearby RIP-relative references to those
 descriptors, and the native match-view UI paths for the same vision controls.
 
-The goal is to find a binding-independent native route for:
-    in_game_camera_all
-    in_game_camera_team0
-    in_game_camera_team1
+The goal is to find binding-independent native routes for spectator camera actions:
+    in_game_camera_all / team0 / team1
     in_game_auto_follow
+    in_game_follow_own_{top,jungle,mid,bottom,support}
+    in_game_follow_enemy_{top,jungle,mid,bottom,support}
+
+The Direct Control Space-follow investigation specifically uses the role-follow actions to locate
+the real native follow dispatcher/state instead of synthesizing keyboard input.
 
 No game files or process memory are modified.
 """
@@ -30,6 +33,16 @@ ANCHORS = (
     ("action", "in_game_camera_team0"),
     ("action", "in_game_camera_team1"),
     ("action", "in_game_auto_follow"),
+    ("follow", "in_game_follow_own_top"),
+    ("follow", "in_game_follow_own_jungle"),
+    ("follow", "in_game_follow_own_mid"),
+    ("follow", "in_game_follow_own_bottom"),
+    ("follow", "in_game_follow_own_support"),
+    ("follow", "in_game_follow_enemy_top"),
+    ("follow", "in_game_follow_enemy_jungle"),
+    ("follow", "in_game_follow_enemy_mid"),
+    ("follow", "in_game_follow_enemy_bottom"),
+    ("follow", "in_game_follow_enemy_support"),
     ("ui", "speed_buttons.view_all"),
     ("ui", "speed_buttons.view_blue"),
     ("ui", "speed_buttons.view_red"),
@@ -549,12 +562,29 @@ def main() -> int:
     # The higher action-string cluster appears to convert internal action ids to
     # names. Dump its surrounding switch so the team0/team1 discriminants can be
     # recovered if useful.
+    follow_names = [
+        "in_game_follow_own_top",
+        "in_game_follow_own_jungle",
+        "in_game_follow_own_mid",
+        "in_game_follow_own_bottom",
+        "in_game_follow_own_support",
+        "in_game_follow_enemy_top",
+        "in_game_follow_enemy_jungle",
+        "in_game_follow_enemy_mid",
+        "in_game_follow_enemy_bottom",
+        "in_game_follow_enemy_support",
+    ]
     action_refs = sorted(
         set(
             direct_code_refs.get("in_game_camera_all", [])
             + direct_code_refs.get("in_game_camera_team0", [])
             + direct_code_refs.get("in_game_camera_team1", [])
             + direct_code_refs.get("in_game_auto_follow", [])
+            + [
+                ref
+                for name in follow_names
+                for ref in direct_code_refs.get(name, [])
+            ]
         )
     )
     high_action_refs = [r for r in action_refs if r >= 0x0260_0000]
@@ -565,6 +595,24 @@ def main() -> int:
             "CAMERA ACTION ID/NAME CODE WINDOW",
             max(0, min(high_action_refs) - 0x180),
             max(high_action_refs) + 0x180,
+        )
+
+    follow_refs = sorted(
+        set(
+            ref
+            for name in follow_names
+            for ref in direct_code_refs.get(name, [])
+        )
+    )
+    if follow_refs:
+        # Follow role-name conversion/dispatch tends to be a tight switch cluster. A wider window
+        # helps recover the discriminant and nearby call targets in one report.
+        emit_code_window(
+            lines,
+            image,
+            "ROLE FOLLOW ACTION CODE WINDOW",
+            max(0, min(follow_refs) - 0x300),
+            max(follow_refs) + 0x300,
         )
 
     lines.append("===== CODE-XREF CLUSTERS =====")
