@@ -6,7 +6,7 @@ This file records the current functionality-first scope and implementation prior
 
 **The authoritative first-public-release cut is now `docs/release-week-plan.md`.** The long-form priority list below remains useful design history and backlog detail, but any item below still labeled "pre-release" is superseded by the release-week plan unless that file explicitly keeps it before release.
 
-Current release sequence: **automatic team fog-of-war -> F-key mapping hardening -> click-target hitbox polish -> validated pregame/presentation synchronization -> raw-input foreground-focus safety sweep -> held-RMB command refresh (validated) -> small champion-hitbox reduction -> diagnostic presentation cleanup -> Workshop packaging and release.** Synchronized match speeds/death fast-forward were attempted during release week and deliberately moved post-release after physical testing made the release-time pacing/control model less predictable. Everything else moves behind the first public release unless final testing exposes a core release-breaking regression.
+Current release sequence: **automatic team fog-of-war -> F-key mapping hardening -> click-target hitbox polish -> validated pregame/presentation synchronization -> raw-input foreground-focus safety sweep -> held-RMB command refresh (validated) -> champion-hitbox reduction (validated) -> self-only skill auto-cast -> diagnostic presentation cleanup -> Workshop packaging and release.** Synchronized match speeds/death fast-forward were attempted during release week and deliberately moved post-release after physical testing made the release-time pacing/control model less predictable. Everything else moves behind the first public release unless final testing exposes a core release-breaking regression.
 
 **Pings/team commands and manual shop control remain explicitly post-release systems.**
 
@@ -59,7 +59,7 @@ Current release sequence: **automatic team fog-of-war -> F-key mapping hardening
 10. **Skill cooldown UI** — expose direct-control-friendly Q/W/R cooldown/readiness information with high visibility so the player does not have to infer cooldowns from the normal spectator presentation. Include explicit red feedback for attempted use while unavailable.
 11. **Click-target hitbox polish** — **validated.**
    - enlarge only the **clickable/selectable area**; never alter entity collision/pathing geometry;
-   - current screen-space forgiveness: +12 px champions, +28 px towers, +24 px other targetable objective/building-like entities, +5 px minions;
+   - current screen-space forgiveness: +8 px champions, +28 px towers, +24 px other targetable objective/building-like entities, +5 px minions; champion padding was reduced from +12 px after playtesting showed it could make minions underneath champions awkward to select;
    - when enlarged selectable areas overlap, prefer **Champion > Building/Objective > Creep**;
    - physical validation passed the intended selection feel and priority behavior on v0.6.1;
    - lightweight outline visualization is throttled separately from full-rate targeting so it does not disturb MMB camera behavior.
