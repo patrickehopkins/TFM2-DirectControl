@@ -94,6 +94,7 @@ static PRESENTATION_PHASE: AtomicU8 = AtomicU8::new(PHASE_WAITING_START);
 // blocking. That avoids freezing halfway through a ten-player tick while still preventing any
 // further watched-match progress before the user's explicit Ctrl+Home.
 static READY_GATE_TICK: AtomicU64 = AtomicU64::new(NO_TICK);
+static STARTUP_PRESENTATION_SYNCED: AtomicBool = AtomicBool::new(false);
 static PACER_ORIGIN_TICK: AtomicU64 = AtomicU64::new(NO_TICK);
 static PACER_ORIGIN_MS: AtomicU64 = AtomicU64::new(0);
 static MANUAL_FINISH_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -171,6 +172,7 @@ fn reset_job_runtime() {
     LAST_RENDER_HEARTBEAT_MS.store(0, Ordering::Release);
     PRESENTATION_PHASE.store(PHASE_WAITING_START, Ordering::Release);
     READY_GATE_TICK.store(NO_TICK, Ordering::Release);
+    STARTUP_PRESENTATION_SYNCED.store(false, Ordering::Release);
     reanchor_pacer();
     MANUAL_FINISH_REQUESTED.store(false, Ordering::Release);
     SAFETY_FAIL_OPEN.store(false, Ordering::Release);
@@ -298,9 +300,28 @@ fn observe_sim_origin(ctx: &mut StableAiContext<'_>, tick: u64) {
     );
 }
 
+pub fn ready_gate_tick() -> Option<u64> {
+    let tick = READY_GATE_TICK.load(Ordering::Acquire);
+    (tick != NO_TICK).then_some(tick)
+}
+
+pub fn set_startup_presentation_synced(synced: bool) {
+    STARTUP_PRESENTATION_SYNCED.store(synced, Ordering::Release);
+}
+
+pub fn startup_presentation_synced() -> bool {
+    STARTUP_PRESENTATION_SYNCED.load(Ordering::Acquire)
+}
+
 /// Starts the held Candidate-A simulation and re-anchors the 60 Hz wall-clock pacer.
 pub fn request_start_simulation() {
     if manual_control_released() {
+        return;
+    }
+
+    if INTERACTIVE_MATCH.load(Ordering::Acquire)
+        && !STARTUP_PRESENTATION_SYNCED.load(Ordering::Acquire)
+    {
         return;
     }
 
