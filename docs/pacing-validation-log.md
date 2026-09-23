@@ -106,7 +106,31 @@ visible 00:13 | origin 2 | elapsed 4985 ms | start held ~1620 ms
 
 Therefore one complete tick is still insufficient for the battlefield to become independent of simulation progress. The fail-safe behavior works, but a true zero-pre-simulation manual start cannot be implemented by simply blocking StablePlayerAi callbacks this early.
 
-**Decision:** startup gating is shelved for later polish. It is not a blocker for higher-priority command work. See `docs/known-issues.md`.
+This result was later superseded by the bounded v0.6.1 readiness/synchronization work below.
+
+## Stage 5B2 — v0.6.1 startup readiness and presentation synchronization
+
+Status: **PASS — physically validated 2026-09-22**.
+
+The v0.6.1 stable API exposed `StableSim::sim_origin()`, which proved Candidate A is already the watched `ClientMatchView` simulation from tick 1. Additional startup instrumentation showed the client itself requires substantial watched-simulation progress before `GameMap`, `ingame.center_log`, and the first `InGame` frame exist. Attempts to hold at tick 1/2 deadlocked loading; deliberately slowing startup pacing merely stretched load time toward a similar simulation-tick threshold.
+
+The accepted release behavior therefore separates three states:
+
+1. a bounded startup hold plus the proven 60 Hz loader runway lets TFM2 reach its first usable `InGame` frame;
+2. Candidate A then freezes at that live simulation boundary while the visible presentation catches up;
+3. `Ctrl+Home` remains rejected until the visible match clock reaches the frozen live second, after which the player receives the explicit Direct Control start prompt.
+
+The startup overlay now states either **“Synchronizing Direct Control with the live match...”** or **“Direct Control is ready. Press Ctrl+Home to take control and resume the match.”**
+
+A best-effort native speed-selector write may accelerate presentation catch-up, but speed-control mutation is not required for correctness: if the native selector is not writable, the frozen simulation simply waits for ordinary presentation to reach the live boundary. Physical testing confirmed the gate unlocks and normal Direct Control resumes correctly after `Ctrl+Home`.
+
+This does not produce a true zero-pre-simulation match. Instead it prevents the player from issuing manual commands against a presentation that is still behind the authoritative frozen simulation.
+
+## Stage 5B3 — Ctrl+End irreversible-release confirmation
+
+Status: **PASS — physically validated 2026-09-22**.
+
+`Ctrl+End` no longer releases Direct Control immediately. It opens a confirmation overlay explaining that global release is permanent for the current match, with **YES — RELEASE** and **NO — KEEP CONTROL** choices. Candidate A is held while the confirmation is open. The user physically confirmed the blocker behaves correctly.
 
 ## Stage 5C — pause/resume gate
 

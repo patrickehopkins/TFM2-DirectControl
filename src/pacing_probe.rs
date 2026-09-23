@@ -3,15 +3,16 @@
 //! Stage 3 proved Candidate A can be paced at ~60 ticks/s and irreversibly released with Ctrl+End.
 //! Stage 4 proved manual `InputV1::move_to` commands reach that live simulation.
 //!
-//! Stage 5A's zero-tick prematch hold was physically rejected: blocking the very first AI callback
-//! prevents Start Match from completing, and the render thread stops pumping while it waits. This
-//! revision allows one complete Candidate-A simulation tick through before holding on the next tick.
-//! That tests whether the client only needs an initial simulation frame/state to construct InGame.
+//! Startup probing on v0.6.1 proved Candidate A is already the watched ClientMatchView simulation
+//! at tick 1. It also proved the loader behaves materially better with the existing bounded startup
+//! hold: tick 1 completes, the next tick waits up to two seconds, then Candidate A resumes at 60 Hz.
 //!
-//! The held Candidate-A worker now also polls Ctrl+Home directly. That escape does not depend on
-//! `post_render`, so it still works if the Start Match UI thread is synchronously waiting. If one
-//! tick is insufficient and the client has not reached InGame after two seconds, the gate
-//! automatically releases into the known-good 60 Hz pacer rather than leaving the process hung.
+//! The loader auto-release is now distinct from the user's Ctrl+Home start. It opens only enough
+//! runway for the client to reach its first InGame frame. That frame latches the current simulation
+//! tick; the tick is allowed to finish, then Candidate A blocks again until the user explicitly
+//! starts Direct Control. This preserves the loader's physically validated path while preventing
+//! further watched-match progress once the battlefield is actually available.
+//! The worker-local Ctrl+Home escape remains available while a Candidate-A callback is held.
 //!
 //! Pause uses a separate presentation gate. Ctrl+End permanently releases pacing and manual input
 //! for the current match.
@@ -22,7 +23,9 @@ use std::{
     time::Duration,
 };
 
-use mod_api_stable::{InputV1, StableAiContext, StableAiInit, StablePlayerAi};
+use mod_api_stable::{
+    InputV1, SimOriginKindV1, StableAiContext, StableAiInit, StablePlayerAi,
+};
 use windows_sys::Win32::{
     System::Threading::GetCurrentThreadId,
     UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_CONTROL, VK_HOME},
@@ -62,11 +65,36 @@ static SEEN_PLAYER_MASK: AtomicU64 = AtomicU64::new(0);
 static ACTIVE_JOB_CONTEXT: AtomicUsize = AtomicUsize::new(0);
 static ACTIVE_JOB_ENTRY: AtomicU64 = AtomicU64::new(0);
 
+// Read-only pregame readiness probe. None of these fields affect pacing or control.
+static STARTUP_JOB_START_MS: AtomicU64 = AtomicU64::new(0);
+static LAST_ORIGIN_PROBE_TICK: AtomicU64 = AtomicU64::new(NO_TICK);
+static FIRST_ORIGIN_KIND: AtomicU64 = AtomicU64::new(u64::MAX);
+static FIRST_ORIGIN_TICK: AtomicU64 = AtomicU64::new(NO_TICK);
+static LAST_ORIGIN_KIND: AtomicU64 = AtomicU64::new(u64::MAX);
+static FIRST_CLIENT_MATCH_VIEW_TICK: AtomicU64 = AtomicU64::new(NO_TICK);
+static FIRST_CLIENT_MATCH_VIEW_MS: AtomicU64 = AtomicU64::new(NO_TICK);
+static CLIENT_MATCH_VIEW_MATCH_ID: AtomicU64 = AtomicU64::new(u64::MAX);
+static CLIENT_MATCH_VIEW_REPLAY_ID: AtomicU64 = AtomicU64::new(u64::MAX);
+static CLIENT_MATCH_VIEW_SET_INDEX: AtomicU64 = AtomicU64::new(u64::MAX);
+static FIRST_MATCH_RENDER_TICK: AtomicU64 = AtomicU64::new(NO_TICK);
+static FIRST_MATCH_RENDER_MS: AtomicU64 = AtomicU64::new(NO_TICK);
+static FIRST_GAME_MAP_TICK: AtomicU64 = AtomicU64::new(NO_TICK);
+static FIRST_GAME_MAP_MS: AtomicU64 = AtomicU64::new(NO_TICK);
+static FIRST_CENTER_LOG_TICK: AtomicU64 = AtomicU64::new(NO_TICK);
+static FIRST_CENTER_LOG_MS: AtomicU64 = AtomicU64::new(NO_TICK);
+static FIRST_INGAME_RENDER_TICK: AtomicU64 = AtomicU64::new(NO_TICK);
+static FIRST_INGAME_RENDER_MS: AtomicU64 = AtomicU64::new(NO_TICK);
+
 static START_REQUESTED: AtomicBool = AtomicBool::new(false);
 static START_AUTO_RELEASED: AtomicBool = AtomicBool::new(false);
 static INTERACTIVE_MATCH: AtomicBool = AtomicBool::new(false);
 static LAST_RENDER_HEARTBEAT_MS: AtomicU64 = AtomicU64::new(0);
 static PRESENTATION_PHASE: AtomicU8 = AtomicU8::new(PHASE_WAITING_START);
+// When the client first reaches InGame, finish this currently observed simulation tick before
+// blocking. That avoids freezing halfway through a ten-player tick while still preventing any
+// further watched-match progress before the user's explicit Ctrl+Home.
+static READY_GATE_TICK: AtomicU64 = AtomicU64::new(NO_TICK);
+static STARTUP_PRESENTATION_SYNCED: AtomicBool = AtomicBool::new(false);
 static PACER_ORIGIN_TICK: AtomicU64 = AtomicU64::new(NO_TICK);
 static PACER_ORIGIN_MS: AtomicU64 = AtomicU64::new(0);
 static MANUAL_FINISH_REQUESTED: AtomicBool = AtomicBool::new(false);
@@ -104,6 +132,22 @@ pub struct PacingProbeSnapshot {
     pub interactive_match: bool,
     pub active_job_context: usize,
     pub active_job_entry: u64,
+    pub first_origin_kind: Option<u64>,
+    pub first_origin_tick: Option<u64>,
+    pub startup_origin_kind: Option<u64>,
+    pub client_match_view_tick: Option<u64>,
+    pub client_match_view_ms: Option<u64>,
+    pub client_match_view_match_id: Option<u64>,
+    pub client_match_view_replay_id: Option<u64>,
+    pub client_match_view_set_index: Option<u64>,
+    pub first_match_render_tick: Option<u64>,
+    pub first_match_render_ms: Option<u64>,
+    pub first_game_map_tick: Option<u64>,
+    pub first_game_map_ms: Option<u64>,
+    pub first_center_log_tick: Option<u64>,
+    pub first_center_log_ms: Option<u64>,
+    pub first_ingame_render_tick: Option<u64>,
+    pub first_ingame_render_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -127,6 +171,8 @@ fn reset_job_runtime() {
     START_AUTO_RELEASED.store(false, Ordering::Release);
     LAST_RENDER_HEARTBEAT_MS.store(0, Ordering::Release);
     PRESENTATION_PHASE.store(PHASE_WAITING_START, Ordering::Release);
+    READY_GATE_TICK.store(NO_TICK, Ordering::Release);
+    STARTUP_PRESENTATION_SYNCED.store(false, Ordering::Release);
     reanchor_pacer();
     MANUAL_FINISH_REQUESTED.store(false, Ordering::Release);
     SAFETY_FAIL_OPEN.store(false, Ordering::Release);
@@ -136,6 +182,25 @@ fn reset_job_runtime() {
     START_TOTAL_WAIT_MS.store(0, Ordering::Release);
     PAUSE_WAIT_COUNT.store(0, Ordering::Release);
     PAUSE_TOTAL_WAIT_MS.store(0, Ordering::Release);
+
+    STARTUP_JOB_START_MS.store(0, Ordering::Release);
+    LAST_ORIGIN_PROBE_TICK.store(NO_TICK, Ordering::Release);
+    FIRST_ORIGIN_KIND.store(u64::MAX, Ordering::Release);
+    FIRST_ORIGIN_TICK.store(NO_TICK, Ordering::Release);
+    LAST_ORIGIN_KIND.store(u64::MAX, Ordering::Release);
+    FIRST_CLIENT_MATCH_VIEW_TICK.store(NO_TICK, Ordering::Release);
+    FIRST_CLIENT_MATCH_VIEW_MS.store(NO_TICK, Ordering::Release);
+    CLIENT_MATCH_VIEW_MATCH_ID.store(u64::MAX, Ordering::Release);
+    CLIENT_MATCH_VIEW_REPLAY_ID.store(u64::MAX, Ordering::Release);
+    CLIENT_MATCH_VIEW_SET_INDEX.store(u64::MAX, Ordering::Release);
+    FIRST_MATCH_RENDER_TICK.store(NO_TICK, Ordering::Release);
+    FIRST_MATCH_RENDER_MS.store(NO_TICK, Ordering::Release);
+    FIRST_GAME_MAP_TICK.store(NO_TICK, Ordering::Release);
+    FIRST_GAME_MAP_MS.store(NO_TICK, Ordering::Release);
+    FIRST_CENTER_LOG_TICK.store(NO_TICK, Ordering::Release);
+    FIRST_CENTER_LOG_MS.store(NO_TICK, Ordering::Release);
+    FIRST_INGAME_RENDER_TICK.store(NO_TICK, Ordering::Release);
+    FIRST_INGAME_RENDER_MS.store(NO_TICK, Ordering::Release);
 }
 
 /// Called when the client leaves an interactive match. The actual Candidate-A job boundary is also
@@ -157,11 +222,106 @@ fn observe_candidate_job(probe: simulation_probe::SimulationProbeSnapshot) {
     ACTIVE_JOB_CONTEXT.store(probe.last_context, Ordering::Release);
     ACTIVE_JOB_ENTRY.store(probe.entries, Ordering::Release);
     reset_job_runtime();
+    STARTUP_JOB_START_MS.store(unsafe { GetTickCount64() }, Ordering::Release);
+}
+
+fn startup_elapsed_ms() -> Option<u64> {
+    let start = STARTUP_JOB_START_MS.load(Ordering::Acquire);
+    (start != 0).then(|| unsafe { GetTickCount64() }.saturating_sub(start))
+}
+
+fn record_client_milestone(tick_slot: &AtomicU64, ms_slot: &AtomicU64) {
+    if tick_slot.load(Ordering::Acquire) != NO_TICK {
+        return;
+    }
+    let Some(elapsed_ms) = startup_elapsed_ms() else {
+        return;
+    };
+    let tick = LAST_CANDIDATE_A_TICK.load(Ordering::Acquire);
+    ms_slot.store(elapsed_ms, Ordering::Relaxed);
+    let _ = tick_slot.compare_exchange(NO_TICK, tick, Ordering::AcqRel, Ordering::Acquire);
+}
+
+pub fn note_match_render() {
+    record_client_milestone(&FIRST_MATCH_RENDER_TICK, &FIRST_MATCH_RENDER_MS);
+}
+
+pub fn note_game_map_ready() {
+    record_client_milestone(&FIRST_GAME_MAP_TICK, &FIRST_GAME_MAP_MS);
+}
+
+pub fn note_center_log_ready() {
+    record_client_milestone(&FIRST_CENTER_LOG_TICK, &FIRST_CENTER_LOG_MS);
+}
+
+pub fn note_ingame_render() {
+    record_client_milestone(&FIRST_INGAME_RENDER_TICK, &FIRST_INGAME_RENDER_MS);
+}
+
+fn observe_sim_origin(ctx: &mut StableAiContext<'_>, tick: u64) {
+    if LAST_ORIGIN_PROBE_TICK.swap(tick, Ordering::AcqRel) == tick {
+        return;
+    }
+
+    let Some(sim) = ctx.sim() else {
+        return;
+    };
+    let Some(origin) = sim.sim_origin() else {
+        return;
+    };
+
+    let origin_kind = origin.kind as u64;
+    LAST_ORIGIN_KIND.store(origin_kind, Ordering::Release);
+    if FIRST_ORIGIN_TICK.load(Ordering::Acquire) == NO_TICK {
+        FIRST_ORIGIN_KIND.store(origin_kind, Ordering::Relaxed);
+        let _ = FIRST_ORIGIN_TICK.compare_exchange(
+            NO_TICK,
+            tick,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
+
+    if origin.kind != SimOriginKindV1::ClientMatchView.code()
+        || FIRST_CLIENT_MATCH_VIEW_TICK.load(Ordering::Acquire) != NO_TICK
+    {
+        return;
+    }
+
+    CLIENT_MATCH_VIEW_MATCH_ID.store(origin.match_id, Ordering::Relaxed);
+    CLIENT_MATCH_VIEW_REPLAY_ID.store(origin.replay_id, Ordering::Relaxed);
+    CLIENT_MATCH_VIEW_SET_INDEX.store(origin.set_index, Ordering::Relaxed);
+    FIRST_CLIENT_MATCH_VIEW_MS.store(startup_elapsed_ms().unwrap_or(NO_TICK), Ordering::Relaxed);
+    let _ = FIRST_CLIENT_MATCH_VIEW_TICK.compare_exchange(
+        NO_TICK,
+        tick,
+        Ordering::AcqRel,
+        Ordering::Acquire,
+    );
+}
+
+pub fn ready_gate_tick() -> Option<u64> {
+    let tick = READY_GATE_TICK.load(Ordering::Acquire);
+    (tick != NO_TICK).then_some(tick)
+}
+
+pub fn set_startup_presentation_synced(synced: bool) {
+    STARTUP_PRESENTATION_SYNCED.store(synced, Ordering::Release);
+}
+
+pub fn startup_presentation_synced() -> bool {
+    STARTUP_PRESENTATION_SYNCED.load(Ordering::Acquire)
 }
 
 /// Starts the held Candidate-A simulation and re-anchors the 60 Hz wall-clock pacer.
 pub fn request_start_simulation() {
     if manual_control_released() {
+        return;
+    }
+
+    if INTERACTIVE_MATCH.load(Ordering::Acquire)
+        && !STARTUP_PRESENTATION_SYNCED.load(Ordering::Acquire)
+    {
         return;
     }
 
@@ -179,7 +339,15 @@ pub fn note_render_heartbeat() {
 
 /// Publish interactive/pause state from the client render thread.
 pub fn set_presentation_state(interactive_match: bool, paused: bool) {
-    INTERACTIVE_MATCH.store(interactive_match, Ordering::Release);
+    let was_interactive = INTERACTIVE_MATCH.swap(interactive_match, Ordering::AcqRel);
+
+    if interactive_match
+        && !was_interactive
+        && !START_REQUESTED.load(Ordering::Acquire)
+        && READY_GATE_TICK.load(Ordering::Acquire) == NO_TICK
+    {
+        READY_GATE_TICK.store(LAST_CANDIDATE_A_TICK.load(Ordering::Acquire), Ordering::Release);
+    }
 
     if !START_REQUESTED.load(Ordering::Acquire) {
         PRESENTATION_PHASE.store(PHASE_WAITING_START, Ordering::Release);
@@ -290,6 +458,70 @@ pub fn snapshot() -> PacingProbeSnapshot {
         interactive_match: INTERACTIVE_MATCH.load(Ordering::Acquire),
         active_job_context: ACTIVE_JOB_CONTEXT.load(Ordering::Acquire),
         active_job_entry: ACTIVE_JOB_ENTRY.load(Ordering::Acquire),
+        first_origin_kind: {
+            let value = FIRST_ORIGIN_KIND.load(Ordering::Acquire);
+            (value != u64::MAX).then_some(value)
+        },
+        first_origin_tick: {
+            let value = FIRST_ORIGIN_TICK.load(Ordering::Acquire);
+            (value != NO_TICK).then_some(value)
+        },
+        startup_origin_kind: {
+            let value = LAST_ORIGIN_KIND.load(Ordering::Acquire);
+            (value != u64::MAX).then_some(value)
+        },
+        client_match_view_tick: {
+            let value = FIRST_CLIENT_MATCH_VIEW_TICK.load(Ordering::Acquire);
+            (value != NO_TICK).then_some(value)
+        },
+        client_match_view_ms: {
+            let value = FIRST_CLIENT_MATCH_VIEW_MS.load(Ordering::Acquire);
+            (value != NO_TICK).then_some(value)
+        },
+        client_match_view_match_id: {
+            let value = CLIENT_MATCH_VIEW_MATCH_ID.load(Ordering::Acquire);
+            (value != u64::MAX).then_some(value)
+        },
+        client_match_view_replay_id: {
+            let value = CLIENT_MATCH_VIEW_REPLAY_ID.load(Ordering::Acquire);
+            (value != u64::MAX).then_some(value)
+        },
+        client_match_view_set_index: {
+            let value = CLIENT_MATCH_VIEW_SET_INDEX.load(Ordering::Acquire);
+            (value != u64::MAX).then_some(value)
+        },
+        first_match_render_tick: {
+            let value = FIRST_MATCH_RENDER_TICK.load(Ordering::Acquire);
+            (value != NO_TICK).then_some(value)
+        },
+        first_match_render_ms: {
+            let value = FIRST_MATCH_RENDER_MS.load(Ordering::Acquire);
+            (value != NO_TICK).then_some(value)
+        },
+        first_game_map_tick: {
+            let value = FIRST_GAME_MAP_TICK.load(Ordering::Acquire);
+            (value != NO_TICK).then_some(value)
+        },
+        first_game_map_ms: {
+            let value = FIRST_GAME_MAP_MS.load(Ordering::Acquire);
+            (value != NO_TICK).then_some(value)
+        },
+        first_center_log_tick: {
+            let value = FIRST_CENTER_LOG_TICK.load(Ordering::Acquire);
+            (value != NO_TICK).then_some(value)
+        },
+        first_center_log_ms: {
+            let value = FIRST_CENTER_LOG_MS.load(Ordering::Acquire);
+            (value != NO_TICK).then_some(value)
+        },
+        first_ingame_render_tick: {
+            let value = FIRST_INGAME_RENDER_TICK.load(Ordering::Acquire);
+            (value != NO_TICK).then_some(value)
+        },
+        first_ingame_render_ms: {
+            let value = FIRST_INGAME_RENDER_MS.load(Ordering::Acquire);
+            (value != NO_TICK).then_some(value)
+        },
     }
 }
 
@@ -332,8 +564,9 @@ fn wait_until_started() -> bool {
         if !INTERACTIVE_MATCH.load(Ordering::Acquire)
             && now_ms.saturating_sub(wait_started_ms) >= PREMATCH_AUTO_RELEASE_MS
         {
+            // Loader escape only: allow Candidate A to resume at 60 Hz, but keep manual control
+            // unstarted so the first real InGame frame can re-establish a deliberate Ctrl+Home gate.
             START_AUTO_RELEASED.store(true, Ordering::Release);
-            request_start_simulation();
             return true;
         }
 
@@ -390,22 +623,46 @@ fn pace_candidate_a(tick: u64) {
     }
 
     if !START_REQUESTED.load(Ordering::Acquire) {
-        let first_tick = FIRST_CANDIDATE_A_TICK.load(Ordering::Acquire);
+        if INTERACTIVE_MATCH.load(Ordering::Acquire) {
+            let ready_tick = READY_GATE_TICK.load(Ordering::Acquire);
 
-        // Let every player callback belonging to the first observed simulation tick pass. The hold
-        // begins only when Candidate A asks for input on a later tick, which proves the first tick
-        // completed rather than freezing halfway through its ten players.
-        if first_tick == NO_TICK || tick <= first_tick {
-            return;
+            // Finish the simulation tick already in progress when InGame first becomes visible.
+            // The next tick blocks for the user's actual Ctrl+Home.
+            if ready_tick != NO_TICK && tick <= ready_tick {
+                return;
+            }
+
+            if !wait_until_started() {
+                return;
+            }
+
+            reanchor_pacer();
+            return pace_candidate_a(tick);
         }
 
-        if !wait_until_started() {
-            return;
+        if !START_AUTO_RELEASED.load(Ordering::Acquire) {
+            let first_tick = FIRST_CANDIDATE_A_TICK.load(Ordering::Acquire);
+
+            // Preserve the loader behavior that physically reached InGame around tick 166:
+            // complete tick 1, hold at the next tick for the bounded 2-second runway gate, then
+            // resume Candidate A at 60 Hz without treating that recovery as the user's start.
+            if first_tick == NO_TICK || tick <= first_tick {
+                return;
+            }
+
+            if !wait_until_started() {
+                return;
+            }
+
+            // Ctrl+Home may have been pressed during the hold. If so, START_REQUESTED is now true
+            // and the recursive call enters ordinary live pacing. Otherwise this was only the
+            // bounded loader auto-release and the next call falls through to the 60 Hz loader runway.
+            reanchor_pacer();
+            return pace_candidate_a(tick);
         }
-        // The exact held tick becomes the fresh pacing origin. Time spent waiting is never catch-up
-        // budget, whether release came from the visible UI, worker-local Ctrl+Home, or auto-recovery.
-        reanchor_pacer();
-        return pace_candidate_a(tick);
+
+        // Loader runway: paced at the proven 60 Hz until the first InGame frame is observed.
+        // START_REQUESTED remains false, so that frame immediately reinstates the user gate.
     }
 
     if PRESENTATION_PHASE.load(Ordering::Acquire) == PHASE_PAUSED {
@@ -543,6 +800,7 @@ impl StablePlayerAi for CandidateAObserverAi {
             SEEN_PLAYER_MASK.fetch_or(1u64 << player_id, Ordering::Relaxed);
         }
 
+        observe_sim_origin(ctx, tick);
         pace_candidate_a(tick);
 
         // Debug-only click geometry is intentionally throttled; targeting itself remains full-rate.

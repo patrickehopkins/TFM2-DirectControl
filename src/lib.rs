@@ -54,6 +54,11 @@ const HOLD_KEY: &str = "H";
 static MATCH_SESSION_ACTIVE: AtomicBool = AtomicBool::new(false);
 static START_CHORD_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static FINISH_CHORD_WAS_DOWN: AtomicBool = AtomicBool::new(false);
+static FINISH_CONFIRM_ACTIVE: AtomicBool = AtomicBool::new(false);
+static FINISH_CONFIRM_LMB_WAS_DOWN: AtomicBool = AtomicBool::new(false);
+static STARTUP_VISIBLE_SECONDS: AtomicU16 = AtomicU16::new(u16::MAX);
+static STARTUP_FORCE_SPEED_OK: AtomicBool = AtomicBool::new(false);
+static STARTUP_SPEED_OVERRIDE_ACTIVE: AtomicBool = AtomicBool::new(false);
 static TEMP_RELEASE_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static SELECT_KEYS_WERE_DOWN: AtomicU16 = AtomicU16::new(0);
 static LMB_WAS_DOWN: AtomicBool = AtomicBool::new(false);
@@ -194,6 +199,8 @@ impl DirectControlExtension {
     fn poll_finish_chord(ingame: bool) {
         if !ingame {
             FINISH_CHORD_WAS_DOWN.store(false, Ordering::Release);
+            FINISH_CONFIRM_ACTIVE.store(false, Ordering::Release);
+            FINISH_CONFIRM_LMB_WAS_DOWN.store(false, Ordering::Release);
             return;
         }
 
@@ -201,8 +208,37 @@ impl DirectControlExtension {
             GetAsyncKeyState(VK_CONTROL as i32) < 0 && GetAsyncKeyState(VK_END as i32) < 0
         };
         let was_down = FINISH_CHORD_WAS_DOWN.swap(chord_down, Ordering::AcqRel);
-        if chord_down && !was_down {
+        if chord_down && !was_down && !pacing_probe::manual_control_released() {
+            FINISH_CONFIRM_ACTIVE.store(true, Ordering::Release);
+            FINISH_CONFIRM_LMB_WAS_DOWN.store(false, Ordering::Release);
+        }
+    }
+
+    fn poll_finish_confirmation(mouse: MouseSnapshot) {
+        if !FINISH_CONFIRM_ACTIVE.load(Ordering::Acquire) {
+            FINISH_CONFIRM_LMB_WAS_DOWN.store(false, Ordering::Release);
+            return;
+        }
+
+        let was_down = FINISH_CONFIRM_LMB_WAS_DOWN.swap(mouse.left_down, Ordering::AcqRel);
+        if !mouse.valid || !mouse.left_down || was_down {
+            return;
+        }
+
+        let yes = mouse.ui_x >= 760.0
+            && mouse.ui_x <= 930.0
+            && mouse.ui_y >= 590.0
+            && mouse.ui_y <= 646.0;
+        let no = mouse.ui_x >= 990.0
+            && mouse.ui_x <= 1_160.0
+            && mouse.ui_y >= 590.0
+            && mouse.ui_y <= 646.0;
+
+        if yes {
+            FINISH_CONFIRM_ACTIVE.store(false, Ordering::Release);
             pacing_probe::request_finish_simulation();
+        } else if no {
+            FINISH_CONFIRM_ACTIVE.store(false, Ordering::Release);
         }
     }
 
@@ -801,6 +837,172 @@ impl DirectControlExtension {
         );
     }
 
+    fn visible_match_seconds(ctx: &StableClient<'_>) -> Option<u64> {
+        let text = ctx
+            .ui_text("ingame.header.game_time.value")
+            .or_else(|| ctx.ui_text("header.game_time.value"))?;
+        let mut total = 0u64;
+        for part in text.trim().split(':') {
+            let value = part.trim().parse::<u64>().ok()?;
+            total = total.checked_mul(60)?.checked_add(value)?;
+        }
+        Some(total)
+    }
+
+    fn set_native_speed_selected(ctx: &mut StableClient<'_>, selected_path: &str) -> bool {
+        const SPEED_PATHS: [&str; 5] = [
+            "ingame.speed_buttons.speed05x",
+            "ingame.speed_buttons.speed1x",
+            "ingame.speed_buttons.speed15x",
+            "ingame.speed_buttons.speed2x",
+            "ingame.speed_buttons.speed3x",
+        ];
+
+        let mut recognized = 0usize;
+        let mut writes_ok = true;
+        for path in SPEED_PATHS {
+            if ctx.ui_selectable_selected(path).is_none() {
+                continue;
+            }
+            recognized += 1;
+            let selected = path == selected_path;
+            writes_ok &= ctx.ui_set_selectable_selected(path, selected);
+        }
+
+        recognized > 0
+            && writes_ok
+            && matches!(ctx.ui_selectable_selected(selected_path), Some(true))
+    }
+
+    fn update_startup_presentation_sync(ctx: &mut StableClient<'_>) {
+        if !matches!(ctx.client_scene_kind(), Some(ClientSceneKindV1::InGame))
+            || pacing_probe::start_requested()
+            || pacing_probe::manual_control_released()
+        {
+            return;
+        }
+
+        let Some(ready_tick) = pacing_probe::ready_gate_tick() else {
+            return;
+        };
+        let Some(visible_seconds) = Self::visible_match_seconds(ctx) else {
+            STARTUP_VISIBLE_SECONDS.store(u16::MAX, Ordering::Release);
+            STARTUP_FORCE_SPEED_OK.store(false, Ordering::Release);
+            pacing_probe::set_startup_presentation_synced(false);
+            return;
+        };
+
+        STARTUP_VISIBLE_SECONDS.store(
+            u16::try_from(visible_seconds).unwrap_or(u16::MAX - 1),
+            Ordering::Release,
+        );
+
+        // The visible clock is whole-second precision. Reaching floor(live_tick / 60) proves the
+        // viewer has reached the frozen live second. A sub-second residual cannot be observed through
+        // the stable client API and is deferred to the post-release playback-position watchdog.
+        let target_seconds = ready_tick / 60;
+        if visible_seconds < target_seconds {
+            let ok = Self::set_native_speed_selected(ctx, "ingame.speed_buttons.speed3x");
+            STARTUP_FORCE_SPEED_OK.store(ok, Ordering::Release);
+            if ok {
+                STARTUP_SPEED_OVERRIDE_ACTIVE.store(true, Ordering::Release);
+            }
+            pacing_probe::set_startup_presentation_synced(false);
+        } else {
+            let override_active = STARTUP_SPEED_OVERRIDE_ACTIVE.load(Ordering::Acquire);
+            if override_active {
+                let restored = Self::set_native_speed_selected(ctx, "ingame.speed_buttons.speed1x");
+                STARTUP_FORCE_SPEED_OK.store(restored, Ordering::Release);
+                if restored {
+                    STARTUP_SPEED_OVERRIDE_ACTIVE.store(false, Ordering::Release);
+                    pacing_probe::set_startup_presentation_synced(true);
+                } else {
+                    // We successfully changed the native selection earlier, so fail closed until
+                    // 1x can be restored; never hand control over while a forced fast speed remains.
+                    pacing_probe::set_startup_presentation_synced(false);
+                }
+            } else {
+                // If programmatic speed selection is unsupported, do not deadlock startup. The
+                // frozen simulation lets ordinary 1x presentation catch up safely on its own.
+                pacing_probe::set_startup_presentation_synced(true);
+            }
+        }
+    }
+
+    fn draw_ready_prompt(ctx: &mut StableClient<'_>) {
+        let synced = pacing_probe::startup_presentation_synced();
+        let message = if synced {
+            "Direct Control is ready. Press Ctrl+Home to take control and resume the match."
+        } else {
+            "Synchronizing Direct Control with the live match..."
+        };
+
+        ctx.draw_rect("UI", 520.0, 160.0, 880.0, 86.0, 30_000, 10.0, 0x101018e8);
+        ctx.draw_text(
+            "UI",
+            message,
+            "asset/base/font/set/bold",
+            (550.0, 176.0, 820.0, 54.0),
+            30_001,
+            24.0,
+            0xffffffff,
+            TextAlignXV1::Center,
+            TextAlignYV1::Center,
+        );
+    }
+
+    fn draw_finish_confirmation(ctx: &mut StableClient<'_>) {
+        ctx.draw_rect("UI", 610.0, 405.0, 700.0, 290.0, 40_000, 14.0, 0x101018f4);
+        ctx.draw_text(
+            "UI",
+            "Give control back to the AI?",
+            "asset/base/font/set/bold",
+            (650.0, 438.0, 620.0, 46.0),
+            40_001,
+            28.0,
+            0xffffffff,
+            TextAlignXV1::Center,
+            TextAlignYV1::Center,
+        );
+        ctx.draw_text(
+            "UI",
+            "Ctrl+End permanently releases Direct Control for this match. You cannot take control again until the next match.",
+            "asset/base/font/set/regular",
+            (690.0, 495.0, 540.0, 66.0),
+            40_001,
+            17.0,
+            0xd8d8e8ff,
+            TextAlignXV1::Center,
+            TextAlignYV1::Center,
+        );
+
+        ctx.draw_rect("UI", 760.0, 590.0, 170.0, 56.0, 40_001, 8.0, 0x397a4fff);
+        ctx.draw_text(
+            "UI",
+            "YES — RELEASE",
+            "asset/base/font/set/bold",
+            (760.0, 590.0, 170.0, 56.0),
+            40_002,
+            17.0,
+            0xffffffff,
+            TextAlignXV1::Center,
+            TextAlignYV1::Center,
+        );
+
+        ctx.draw_rect("UI", 990.0, 590.0, 170.0, 56.0, 40_001, 8.0, 0x633b47ff);
+        ctx.draw_text(
+            "UI",
+            "NO — KEEP CONTROL",
+            "asset/base/font/set/bold",
+            (990.0, 590.0, 170.0, 56.0),
+            40_002,
+            16.0,
+            0xffffffff,
+            TextAlignXV1::Center,
+            TextAlignYV1::Center,
+        );
+    }
+
     fn draw_status(ctx: &mut StableClient<'_>, pause_ui: &pause_probe::PauseUiSnapshot) {
         let pacing = pacing_probe::snapshot();
         let control_state = control::diagnostics();
@@ -853,7 +1055,7 @@ impl DirectControlExtension {
             "running"
         };
 
-        ctx.draw_rect("UI", 18.0, 58.0, 1_030.0, 112.0, 19_998, 6.0, 0x101018d8);
+        ctx.draw_rect("UI", 18.0, 58.0, 1_180.0, 184.0, 19_998, 6.0, 0x101018d8);
         Self::draw_text_line(
             ctx,
             62.0,
@@ -894,14 +1096,74 @@ impl DirectControlExtension {
             "F1-F10 select | RMB move/attack/minimap | A attack-move + LMB | H hold | B return | Q/W/R arm | End AI release | Ctrl+End global release",
             0x80d8ffff,
         );
+
+        let probe_value =
+            |value: Option<u64>| value.map(|v| v.to_string()).unwrap_or_else(|| "-".to_owned());
+        Self::draw_text_line(
+            ctx,
+            150.0,
+            &format!(
+                "STARTUP PROBE: A first t{} | first origin {}@t{} | last origin {} | ClientMatchView t{} @{}ms",
+                probe_value(pacing.first_candidate_a_tick),
+                probe_value(pacing.first_origin_kind),
+                probe_value(pacing.first_origin_tick),
+                probe_value(pacing.startup_origin_kind),
+                probe_value(pacing.client_match_view_tick),
+                probe_value(pacing.client_match_view_ms),
+            ),
+            0xffd080ff,
+        );
+        Self::draw_text_line(
+            ctx,
+            172.0,
+            &format!(
+                "LOAD: Match t{} @{}ms | GameMap t{} @{}ms | center_log t{} @{}ms | InGame t{} @{}ms | auto {} wait {}ms | view {}s target {}s speedwrite {} override {}",
+                probe_value(pacing.first_match_render_tick),
+                probe_value(pacing.first_match_render_ms),
+                probe_value(pacing.first_game_map_tick),
+                probe_value(pacing.first_game_map_ms),
+                probe_value(pacing.first_center_log_tick),
+                probe_value(pacing.first_center_log_ms),
+                probe_value(pacing.first_ingame_render_tick),
+                probe_value(pacing.first_ingame_render_ms),
+                if pacing.start_auto_released { "YES" } else { "no" },
+                pacing.start_total_wait_ms,
+                {
+                    let value = STARTUP_VISIBLE_SECONDS.load(Ordering::Acquire);
+                    if value == u16::MAX { "-".to_owned() } else { value.to_string() }
+                },
+                pacing_probe::ready_gate_tick().map(|tick| tick / 60).unwrap_or(0),
+                if STARTUP_FORCE_SPEED_OK.load(Ordering::Acquire) { "ok" } else { "no" },
+                if STARTUP_SPEED_OVERRIDE_ACTIVE.load(Ordering::Acquire) { "ON" } else { "off" },
+            ),
+            0xffd080ff,
+        );
     }
 }
 
 impl StableExtension for DirectControlExtension {
+    fn post_update(&self, ctx: &mut StableClient<'_>, _dt_micros: u64) {
+        Self::update_startup_presentation_sync(ctx);
+    }
+
     fn post_render(&self, ctx: &mut StableClient<'_>) {
-        let ingame = matches!(ctx.client_scene_kind(), Some(ClientSceneKindV1::InGame));
+        let scene = ctx.client_scene_kind();
+        let ingame = matches!(scene, Some(ClientSceneKindV1::InGame));
         let control_scene = Self::control_scene(ctx);
         let session_was_active = MATCH_SESSION_ACTIVE.load(Ordering::Acquire);
+
+        if matches!(scene, Some(ClientSceneKindV1::Match)) {
+            pacing_probe::note_match_render();
+        }
+        if ctx.draw_map_size("Game").is_some() {
+            pacing_probe::note_game_map_ready();
+        }
+        if ctx.ui_node_rect("ingame.center_log").is_some() {
+            pacing_probe::note_center_log_ready();
+        }
+        if ingame {
+            pacing_probe::note_ingame_render();
+        }
 
         // Match and InGame are both part of the live match-view lifecycle. Do not treat a
         // temporary transition from InGame -> Match (for example a pause/menu presentation state)
@@ -917,6 +1179,11 @@ impl StableExtension for DirectControlExtension {
                 slot_mapping::reset();
                 START_CHORD_WAS_DOWN.store(false, Ordering::Release);
                 FINISH_CHORD_WAS_DOWN.store(false, Ordering::Release);
+                FINISH_CONFIRM_ACTIVE.store(false, Ordering::Release);
+                FINISH_CONFIRM_LMB_WAS_DOWN.store(false, Ordering::Release);
+                STARTUP_VISIBLE_SECONDS.store(u16::MAX, Ordering::Release);
+                STARTUP_FORCE_SPEED_OK.store(false, Ordering::Release);
+                STARTUP_SPEED_OVERRIDE_ACTIVE.store(false, Ordering::Release);
                 TEMP_RELEASE_WAS_DOWN.store(false, Ordering::Release);
                 SELECT_KEYS_WERE_DOWN.store(0, Ordering::Release);
                 LMB_WAS_DOWN.store(false, Ordering::Release);
@@ -942,17 +1209,27 @@ impl StableExtension for DirectControlExtension {
         }
 
         let pause_ui = pause_probe::update(ctx, session_active);
-        // Once an InGame session has started, any temporary non-InGame match scene is fail-closed:
-        // hold Candidate A until the battlefield returns instead of running vanilla AI unseen.
-        let presentation_paused = session_active && (!ingame || pause_ui.paused);
 
         Self::poll_start_chord(control_scene);
-        pacing_probe::set_presentation_state(session_active, presentation_paused);
         Self::poll_finish_chord(ingame);
-        Self::poll_player_selection(ctx, ingame);
-        Self::poll_temporary_release(ingame);
-        Self::poll_return_home(ctx, ingame);
-        Self::poll_hold(ctx, ingame);
+
+        let mouse = self.read_mouse(ctx);
+        Self::poll_finish_confirmation(mouse);
+        let finish_confirm_active = FINISH_CONFIRM_ACTIVE.load(Ordering::Acquire);
+
+        // Once an InGame session has started, any temporary non-InGame match scene is fail-closed.
+        // The Ctrl+End confirmation also holds Candidate A so the user can make the irreversible
+        // choice without the match advancing underneath the dialog.
+        let presentation_paused =
+            session_active && (!ingame || pause_ui.paused || finish_confirm_active);
+        pacing_probe::set_presentation_state(session_active, presentation_paused);
+
+        if !finish_confirm_active {
+            Self::poll_player_selection(ctx, ingame);
+            Self::poll_temporary_release(ingame);
+            Self::poll_return_home(ctx, ingame);
+            Self::poll_hold(ctx, ingame);
+        }
 
         // Automatic fog follows the controlled champion's authoritative simulation team.
         // Stop enforcing on pause/release/spectator without changing the last native view.
@@ -970,14 +1247,24 @@ impl StableExtension for DirectControlExtension {
             return;
         }
 
-        let mouse = self.read_mouse(ctx);
-        let targeting_consumed_rmb = self.poll_targeting(ctx, mouse, ingame);
-        self.poll_rmb_move(ctx, mouse, ingame, targeting_consumed_rmb);
-        Self::draw_cursor(ctx, mouse);
+        if !finish_confirm_active {
+            let targeting_consumed_rmb = self.poll_targeting(ctx, mouse, ingame);
+            self.poll_rmb_move(ctx, mouse, ingame, targeting_consumed_rmb);
+            Self::draw_cursor(ctx, mouse);
+        }
 
         if ingame {
-            Self::draw_world_cursor_and_skill(ctx, mouse);
+            if !finish_confirm_active {
+                Self::draw_world_cursor_and_skill(ctx, mouse);
+            }
             Self::draw_status(ctx, &pause_ui);
+
+            if !pacing_probe::start_requested() && !pacing_probe::manual_control_released() {
+                Self::draw_ready_prompt(ctx);
+            }
+            if finish_confirm_active {
+                Self::draw_finish_confirmation(ctx);
+            }
         } else {
             Self::draw_start_gate(ctx);
         }
