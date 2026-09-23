@@ -296,11 +296,6 @@ impl DirectControlExtension {
             }
         }
 
-        // Native Space-follow is implemented by injecting the selected slot's real F-key into the
-        // Windows input stream. Mask those synthetic bits here so camera follow cannot look like a
-        // fresh Direct Control selection and clear the champion's retained command.
-        down_mask &= !camera_probe::synthetic_follow_fkey_mask();
-
         let previous = SELECT_KEYS_WERE_DOWN.swap(down_mask, Ordering::AcqRel);
         if !pacing_probe::manual_input_enabled() {
             return;
@@ -313,7 +308,7 @@ impl DirectControlExtension {
 
         let slot = rising.trailing_zeros() as usize;
         if let Some(athlete_id) = slot_mapping::resolve_fkey(ctx, slot) {
-            control::select_athlete(athlete_id, slot);
+            control::select_athlete(athlete_id);
         }
     }
 
@@ -1115,7 +1110,7 @@ impl DirectControlExtension {
         Self::draw_text_line(
             ctx,
             128.0,
-            "F1-F10 select | Space follow | RMB move/attack/minimap | A attack-move + LMB | H hold | B return | Q/W/R arm | End AI release | Ctrl+End global release",
+            "F1-F10 select | RMB move/attack/minimap | A attack-move + LMB | H hold | B return | Q/W/R arm | End AI release | Ctrl+End global release",
             0x80d8ffff,
         );
 
