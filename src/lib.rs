@@ -854,7 +854,6 @@ impl DirectControlExtension {
                 }
 
                 for (path, _) in &nodes {
-                    let _ = ctx.ui_set_properties(path, "disable: true;");
                     let _ = ctx.ui_set_visible(path, false);
                 }
 
@@ -865,7 +864,6 @@ impl DirectControlExtension {
             } else if let Ok(cached) = NATIVE_SEEK_CONTROL_NODES.lock() {
                 // Reassert suppression in case the match UI rebuilt a runner while paused.
                 for (path, _) in cached.iter() {
-                    let _ = ctx.ui_set_properties(path, "disable: true;");
                     let _ = ctx.ui_set_visible(path, false);
                 }
             }
@@ -878,7 +876,6 @@ impl DirectControlExtension {
 
         if let Ok(mut cached) = NATIVE_SEEK_CONTROL_NODES.lock() {
             for (path, was_visible) in cached.iter() {
-                let _ = ctx.ui_set_properties(path, "disable: false;");
                 let _ = ctx.ui_set_visible(path, *was_visible);
             }
             cached.clear();
