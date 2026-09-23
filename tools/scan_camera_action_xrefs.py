@@ -530,54 +530,90 @@ def decode_action_jump_table(
     return table_rva, decoded
 
 
-def enum_immediate_sites(image: PeImage, value: int) -> list[tuple[int, str]]:
-    """Find common x64 encodings that materialize/store a small enum discriminant."""
+def index_small_enum_immediates(
+    image: PeImage,
+    wanted_values: set[int],
+) -> dict[int, list[tuple[int, str]]]:
+    """Index common x64 materializations for all wanted u8 enum values in one pass."""
 
-    if not 0 <= value <= 0xFF:
-        return []
-
-    out: list[tuple[int, str]] = []
-    imm32 = struct.pack("<I", value)
-    imm8 = value.to_bytes(1, "little")
+    wanted = {value for value in wanted_values if 0 <= value <= 0xFF}
+    out: dict[int, list[tuple[int, str]]] = {value: [] for value in wanted}
+    if not wanted:
+        return out
 
     for section in image.sections:
         if not section.executable:
             continue
         data = image.data[section.raw_offset : section.raw_offset + section.raw_size]
         base = section.rva
+        n = len(data)
 
-        for reg in range(0xB8, 0xC0):
-            needle = bytes([reg]) + imm32
-            start = 0
-            while True:
-                i = data.find(needle, start)
-                if i < 0:
-                    break
-                out.append((base + i, "mov32"))
-                start = i + 1
+        # Single linear pass. Recognize:
+        #   B8+r imm32
+        #   41 B8+r imm32
+        #   C6 44 24 disp8 imm8
+        #   C6 45 disp8 imm8
+        #   41 C6 44 24 disp8 imm8
+        i = 0
+        while i < n:
+            b0 = data[i]
 
-            needle = b"\x41" + bytes([reg]) + imm32
-            start = 0
-            while True:
-                i = data.find(needle, start)
-                if i < 0:
-                    break
-                out.append((base + i, "mov32-rex"))
-                start = i + 1
+            if 0xB8 <= b0 <= 0xBF and i + 5 <= n:
+                value32 = struct.unpack_from("<I", data, i + 1)[0]
+                if value32 in wanted:
+                    out[value32].append((base + i, "mov32"))
+                i += 5
+                continue
 
-        patterns = (
-            (b"\xc6\x44\x24", "store-stack8", 4),
-            (b"\xc6\x45", "store-local8", 3),
-            (b"\x41\xc6\x44\x24", "store-r12-8", 5),
-        )
-        for prefix, kind, imm_index in patterns:
-            plen = len(prefix)
-            limit = len(data) - max(plen + 2, imm_index + 1)
-            for i in range(max(0, limit)):
-                if data[i : i + plen] == prefix and data[i + imm_index : i + imm_index + 1] == imm8:
-                    out.append((base + i, kind))
+            if (
+                b0 == 0x41
+                and i + 6 <= n
+                and 0xB8 <= data[i + 1] <= 0xBF
+            ):
+                value32 = struct.unpack_from("<I", data, i + 2)[0]
+                if value32 in wanted:
+                    out[value32].append((base + i, "mov32-rex"))
+                i += 6
+                continue
 
-    return sorted(set(out))
+            if (
+                b0 == 0xC6
+                and i + 5 <= n
+                and data[i + 1] == 0x44
+                and data[i + 2] == 0x24
+            ):
+                value8 = data[i + 4]
+                if value8 in wanted:
+                    out[value8].append((base + i, "store-stack8"))
+                i += 5
+                continue
+
+            if b0 == 0xC6 and i + 4 <= n and data[i + 1] == 0x45:
+                value8 = data[i + 3]
+                if value8 in wanted:
+                    out[value8].append((base + i, "store-local8"))
+                i += 4
+                continue
+
+            if (
+                b0 == 0x41
+                and i + 6 <= n
+                and data[i + 1] == 0xC6
+                and data[i + 2] == 0x44
+                and data[i + 3] == 0x24
+            ):
+                value8 = data[i + 5]
+                if value8 in wanted:
+                    out[value8].append((base + i, "store-r12-8"))
+                i += 6
+                continue
+
+            i += 1
+
+    for value in out:
+        out[value] = sorted(set(out[value]))
+    return out
+
 
 
 def first_rel32_call_after(
@@ -652,17 +688,6 @@ def nearby_rip_text(
             out.append((xref, resolved, kind, text))
     return out
 
-
-def normalized_enum_sites(image: PeImage, value: int) -> list[tuple[int, str]]:
-    """Remove the overlapping mov32 hit inside each REX-prefixed mov32 instruction."""
-
-    sites = enum_immediate_sites(image, value)
-    rex_starts = {site for site, kind in sites if kind == "mov32-rex"}
-    return [
-        (site, kind)
-        for site, kind in sites
-        if not (kind == "mov32" and site - 1 in rex_starts)
-    ]
 
 
 def emit_code_window(
@@ -912,8 +937,11 @@ def main() -> int:
                     missing = [name for name in follow_names if name not in follow_ids]
                     lines.append("missing decoded follow ids: " + ", ".join(missing))
                 else:
+                    follow_site_index = index_small_enum_immediates(
+                        image, set(follow_ids.values())
+                    )
                     sites_by_name = {
-                        name: enum_immediate_sites(image, value)
+                        name: follow_site_index.get(value, [])
                         for name, value in follow_ids.items()
                     }
                     owners: dict[tuple[int, int], dict[str, list[tuple[int, str]]]] = {}
@@ -986,8 +1014,11 @@ def main() -> int:
             dict[str, list[tuple[int, str, int]]],
         ] = {}
 
+        ingame_site_index = index_small_enum_immediates(
+            image, set(ingame_ids.values())
+        )
         for name, value in ingame_ids.items():
-            for site, kind in normalized_enum_sites(image, value):
+            for site, kind in ingame_site_index.get(value, []):
                 owner = owner_of(runtime_functions, site)
                 if owner is None:
                     continue
