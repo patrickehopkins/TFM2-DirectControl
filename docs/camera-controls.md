@@ -43,4 +43,4 @@ The compatibility audit should cover multiple 16:9 resolutions/window sizes, bot
 ## Later optional camera polish
 
 - **Screen-edge scrolling:** shelved until/unless a deeper native-camera route is worth revisiting.
-- **Space recenter/follow:** promoted back into the first-release polish pass. Current implementation is momentary: hold Space to follow the currently controlled champion; release Space to return immediately to free camera. It reuses the validated native-pan request path rather than writing camera center directly. Physical validation pending.
+- **Space recenter/follow:** promoted back into the first-release polish pass. Hold Space for momentary follow; double-tap Space toggles a persistent follow lock; MMB drag breaks the persistent lock and returns to free camera. The controller reuses the validated native-pan request path, updates only once per captured native camera frame, and uses a damped moving-target correction rather than the aggressive fixed-destination MMB gain. Physical validation pending.
