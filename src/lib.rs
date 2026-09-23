@@ -581,7 +581,7 @@ impl DirectControlExtension {
                 world_x,
                 world_y,
                 world_radius,
-                10_000,
+                1,
                 color,
             );
 
@@ -596,7 +596,7 @@ impl DirectControlExtension {
                     world_x,
                     world_y,
                     world_radius * 0.62,
-                    10_001,
+                    2,
                     core_color,
                 );
             }
