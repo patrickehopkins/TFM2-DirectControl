@@ -79,13 +79,13 @@ The release still contains unavoidable loader-required pre-simulation. Do not at
 
 User-requested release-scope exception: restore the previously deferred Space recenter/follow control before packaging.
 
-Current implementation target:
+Investigation status:
 - reject custom simulation-position camera chasing; two physical tests produced visible jerk/overshoot;
-- translate physical Space transitions into the currently controlled F1-F10 slot's native follow key;
-- let TFM2 own immediate recenter, held-follow, double-tap lock, and manual-pan lock break exactly as it does for the native F-key action;
-- inject only at the TFM2 window-message layer so Direct Control's global F1-F10 selector does not see a fake key press and reset the current champion order;
-- if the controlled slot changes while Space remains held, release the old native follow key and press the new one;
-- no selected champion means Space emits no native follow key.
+- reject posted WM_KEYDOWN/WM_KEYUP native-F-key synthesis; TFM2 did not respond;
+- reject Windows keyboard-event F-key synthesis; TFM2 still did not respond;
+- restore the validated pre-Space camera baseline while probing the current executable;
+- trace `in_game_follow_own_*`, `in_game_follow_enemy_*`, and `in_game_auto_follow` to locate the real native follow dispatcher/state;
+- once located, bind Space directly to that native route so TFM2 owns immediate recenter, held follow, double-tap lock, and manual-pan lock break.
 
 **Physical validation pending.**
 
