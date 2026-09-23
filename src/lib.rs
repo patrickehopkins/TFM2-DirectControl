@@ -32,13 +32,6 @@ const UI_FALLBACK_H: f32 = 1080.0;
 const CURSOR_WORLD_COLOR: u32 = 0xffd040ff;
 const SKILL_YELLOW: u32 = 0xffd04070;
 const SKILL_SKY_BLUE: u32 = 0x66ccff20;
-const PICK_OVERLAY_ENEMY_CHAMPION: u32 = 0xe04848c0;
-const PICK_OVERLAY_ALLY_CHAMPION: u32 = 0x78f090c0;
-const PICK_OVERLAY_ENEMY: u32 = 0x8f202080;
-const PICK_OVERLAY_ALLY: u32 = 0x48b86080;
-const PICK_OVERLAY_ENEMY_CREEP: u32 = 0x8f20204c;
-const PICK_OVERLAY_ALLY_CREEP: u32 = 0x48b8604c;
-const PICK_RING_SEGMENTS: usize = 48;
 const VK_F1_CODE: i32 = 0x70;
 const PLAYER_SLOT_COUNT: usize = 10;
 const SIM_UNITS_PER_WORLD_UNIT: f32 = 1000.0;
@@ -517,107 +510,6 @@ impl DirectControlExtension {
         );
     }
 
-    fn draw_click_target_overlays(
-        ctx: &mut StableClient<'_>,
-        camera: camera_probe::CameraSnapshot,
-    ) {
-        if !pacing_probe::manual_input_enabled() || control::selected_athlete().is_none() {
-            return;
-        }
-        let Some(controlled_team) = control::selected_team() else {
-            return;
-        };
-        let Some((game_w, game_h)) = ctx.draw_map_size("Game") else {
-            return;
-        };
-        let (ui_w, ui_h) = ctx
-            .draw_map_size("UI")
-            .unwrap_or((UI_FALLBACK_W, UI_FALLBACK_H));
-        if game_w <= 0.0
-            || game_h <= 0.0
-            || ui_w <= 0.0
-            || ui_h <= 0.0
-            || camera.extent_a <= 0.0
-            || camera.extent_b <= 0.0
-        {
-            return;
-        }
-
-        let (origin_ui_x, origin_ui_y) =
-            if let Some((x, y, w, h)) = ctx.ui_node_rect("ingame.center_log") {
-                (x + w * 0.5, y + h * 0.5)
-            } else {
-                (ui_w * 0.5, ui_h * 0.5)
-            };
-
-        let world_units_per_px =
-            ((camera.extent_a / game_w) + (camera.extent_b / game_h)) * 0.5;
-        let sim_units_per_px_f = world_units_per_px * SIM_UNITS_PER_WORLD_UNIT;
-        if !sim_units_per_px_f.is_finite() || sim_units_per_px_f <= 0.0 {
-            return;
-        }
-        let sim_units_per_px = sim_units_per_px_f.round() as u64;
-        let ui_per_world_x = game_w / camera.extent_a;
-        let ui_per_world_y = game_h / camera.extent_b;
-
-        for entity in control::click_target_overlay_snapshot() {
-            let radius_sim = control::click_target_effective_radius(
-                entity.kind,
-                entity.collision_radius,
-                sim_units_per_px,
-            );
-            if radius_sim == 0 {
-                continue;
-            }
-
-            let friendly = entity.team == controlled_team;
-            let color = match entity.kind {
-                control::EntityKind::Champion if friendly => PICK_OVERLAY_ALLY_CHAMPION,
-                control::EntityKind::Champion => PICK_OVERLAY_ENEMY_CHAMPION,
-                control::EntityKind::Minion if friendly => PICK_OVERLAY_ALLY_CREEP,
-                control::EntityKind::Minion => PICK_OVERLAY_ENEMY_CREEP,
-                _ if friendly => PICK_OVERLAY_ALLY,
-                _ => PICK_OVERLAY_ENEMY,
-            };
-
-            let world_x = entity.x as f32 / SIM_UNITS_PER_WORLD_UNIT;
-            let world_y = entity.y as f32 / SIM_UNITS_PER_WORLD_UNIT;
-            let world_radius = radius_sim as f32 / SIM_UNITS_PER_WORLD_UNIT;
-            let line_width_px = match entity.kind {
-                control::EntityKind::Champion => 3.0,
-                control::EntityKind::Minion => 1.0,
-                _ => 2.0,
-            };
-
-            let project = |x: f32, y: f32| {
-                (
-                    origin_ui_x + (x - camera.center_x) * ui_per_world_x,
-                    origin_ui_y + (y - camera.center_y) * ui_per_world_y,
-                )
-            };
-
-            let step = std::f32::consts::TAU / PICK_RING_SEGMENTS as f32;
-            let (mut previous_x, mut previous_y) = project(world_x + world_radius, world_y);
-            for segment in 1..=PICK_RING_SEGMENTS {
-                let angle = segment as f32 * step;
-                let next_world_x = world_x + world_radius * angle.cos();
-                let next_world_y = world_y + world_radius * angle.sin();
-                let (next_x, next_y) = project(next_world_x, next_world_y);
-                ctx.draw_line(
-                    "UI",
-                    previous_x,
-                    previous_y,
-                    next_x,
-                    next_y,
-                    line_width_px,
-                    19_990,
-                    color,
-                );
-                previous_x = next_x;
-                previous_y = next_y;
-            }
-        }
-    }
 
     fn draw_skill_preview(ctx: &mut StableClient<'_>, camera: camera_probe::CameraSnapshot) {
         let skill = control::skill_targeting_snapshot();
@@ -745,11 +637,6 @@ impl DirectControlExtension {
             return;
         };
 
-        // Hitbox visualization is outline-only now, so it can safely live in post-render without
-        // covering champion sprites. Keeping it here avoids touching the game's pre-render camera
-        // state, which must remain exclusively owned by the native camera path.
-        Self::draw_click_target_overlays(ctx, camera);
-
         if let Some(cursor) = Self::cursor_world(ctx, mouse, camera) {
             ctx.draw_set_camera(
                 "Game",
@@ -813,7 +700,6 @@ impl DirectControlExtension {
             .and_then(|camera| camera.vision_mode)
             .map(|mode| mode.to_string())
             .unwrap_or_else(|| "?".to_owned());
-        let hitbox_count = control::click_target_overlay_snapshot().len();
         let order = if control_state.selected_athlete.is_none() {
             "AI / spectator".to_owned()
         } else if control_state.returning {
@@ -866,7 +752,7 @@ impl DirectControlExtension {
             ctx,
             84.0,
             &format!(
-                "SELECTED: athlete {selected} | team {selected_team} | native vision {native_vision} | hitboxes {hitbox_count} | ORDER: {order}"
+                "SELECTED: athlete {selected} | team {selected_team} | native vision {native_vision} | ORDER: {order}"
             ),
             0xffffffff,
         );
