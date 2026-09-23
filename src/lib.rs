@@ -1072,7 +1072,7 @@ impl DirectControlExtension {
             "running"
         };
 
-        ctx.draw_rect("UI", 18.0, 58.0, 1_180.0, 184.0, 19_998, 6.0, 0x101018d8);
+        ctx.draw_rect("UI", 18.0, 58.0, 1_180.0, 244.0, 19_998, 6.0, 0x101018d8);
         Self::draw_text_line(
             ctx,
             62.0,
@@ -1155,6 +1155,53 @@ impl DirectControlExtension {
             ),
             0xffd080ff,
         );
+
+        if let Some(report) = camera_probe::follow_probe_report() {
+            let summary = if report.diffs.is_empty() {
+                "<no stable changed qwords>".to_owned()
+            } else {
+                report
+                    .diffs
+                    .iter()
+                    .take(4)
+                    .map(|diff| {
+                        format!(
+                            "+{:03X}:{:016X}>{:016X}",
+                            diff.offset, diff.free, diff.held
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            };
+            Self::draw_text_line(
+                ctx,
+                194.0,
+                &format!(
+                    "FOLLOW PROBE: F{} | held samples {} | {}",
+                    report.slot + 1,
+                    report.samples,
+                    summary
+                ),
+                0xffd080ff,
+            );
+
+            if report.diffs.len() > 4 {
+                let overflow = report
+                    .diffs
+                    .iter()
+                    .skip(4)
+                    .take(4)
+                    .map(|diff| {
+                        format!(
+                            "+{:03X}:{:016X}>{:016X}",
+                            diff.offset, diff.free, diff.held
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                Self::draw_text_line(ctx, 216.0, &overflow, 0xffd080ff);
+            }
+        }
     }
 }
 

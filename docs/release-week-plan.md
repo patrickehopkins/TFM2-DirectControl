@@ -75,6 +75,22 @@ Physical validation passed normal startup, presentation catch-up, `Ctrl+Home` re
 The release still contains unavoidable loader-required pre-simulation. Do not attempt to hide it by shifting global spawn/AI schedules around an assumed fixed number of seconds; tests showed the readiness tick/time varies with startup behavior.
 
 
+## Space follow — late pre-release QoL insertion
+
+User-requested release-scope exception: restore the previously deferred Space recenter/follow control before packaging.
+
+Investigation status:
+- reject custom simulation-position camera chasing; two physical tests produced visible jerk/overshoot;
+- reject posted WM_KEYDOWN/WM_KEYUP native-F-key synthesis; TFM2 did not respond;
+- reject Windows keyboard-event F-key synthesis; TFM2 still did not respond;
+- restore the validated pre-Space camera baseline while probing the current executable;
+- trace `in_game_follow_own_*`, `in_game_follow_enemy_*`, and `in_game_auto_follow` to locate the real native follow dispatcher/state;
+- once located, bind Space directly to that native route so TFM2 owns immediate recenter, held follow, double-tap lock, and manual-pan lock break.
+
+**Physical validation pending.**
+
+Immediately after Space follow is validated, add **held-RMB command refresh** as the next control refinement. The intended behavior is to mirror League of Legends as closely as practical: while RMB remains held, continuously refresh the contextual command toward the current cursor/target rather than requiring repeated clicks. Verify League's exact ground-vs-enemy hold semantics before implementation rather than guessing.
+
 ## Diagnostic presentation cleanup
 
 Do one final cleanup pass immediately before packaging:
@@ -121,7 +137,6 @@ The following previously listed pre-release work is now post-release unless it t
 - pause/menu and View Match Results Immediately safety audit;
 - resolution / aspect-ratio / DPI / UI-scaling compatibility audit;
 - native-hook discovery/version-resilience hardening beyond the guarded v0.6.1 profile;
-- Space recenter/follow;
 - screen-edge scrolling;
 - idle retaliation;
 - Morgard/manual-order override investigation.

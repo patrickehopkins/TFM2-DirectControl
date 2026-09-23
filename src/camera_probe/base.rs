@@ -20,7 +20,7 @@ use std::{
     ptr,
     sync::{
         atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering},
-        OnceLock,
+        Mutex, OnceLock,
     },
 };
 
@@ -125,9 +125,21 @@ const ABS_JUMP_LEN: usize = 12;
 const TRAMPOLINE_LEN: usize = PATCH_LEN + ABS_JUMP_LEN;
 const MAX_CANDIDATES: usize = 4;
 
+// Temporary native-follow differential probe. 0x430 is within the already-validated camera object
+// span because v0.6.1's pan_y field lives at +0x42C.
+const FOLLOW_PROBE_BYTES: usize = 0x430;
+const FOLLOW_PROBE_WORDS: usize = FOLLOW_PROBE_BYTES / 8;
+const VK_F1_CODE: i32 = 0x70;
+const FOLLOW_PROBE_MAX_DIFFS: usize = 16;
+
 const MEM_COMMIT: u32 = 0x1000;
 const MEM_RESERVE: u32 = 0x2000;
 const PAGE_EXECUTE_READWRITE: u32 = 0x40;
+
+#[link(name = "user32")]
+extern "system" {
+    fn GetAsyncKeyState(vkey: i32) -> i16;
+}
 
 #[link(name = "kernel32")]
 extern "system" {
@@ -159,6 +171,54 @@ pub struct CameraSnapshot {
     pub mode: Option<u8>,
     pub vision_mode: Option<u8>,
     pub calls: u64,
+}
+
+
+#[derive(Debug, Clone, Copy)]
+pub struct FollowProbeDiff {
+    pub offset: usize,
+    pub free: u64,
+    pub held: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct FollowProbeReport {
+    pub slot: usize,
+    pub samples: u32,
+    pub diffs: Vec<FollowProbeDiff>,
+    pub arg_diffs: Vec<FollowProbeDiff>,
+}
+
+struct FollowProbeState {
+    last_mask: u16,
+    free_valid: bool,
+    free_words: [u64; FOLLOW_PROBE_WORDS],
+    held_words: [u64; FOLLOW_PROBE_WORDS],
+    stable: [bool; FOLLOW_PROBE_WORDS],
+    held_samples: u32,
+    held_slot: usize,
+    report: Option<FollowProbeReport>,
+    free_args: [u64; 6],
+    held_args: [u64; 6],
+    arg_stable: [bool; 6],
+}
+
+impl Default for FollowProbeState {
+    fn default() -> Self {
+        Self {
+            last_mask: 0,
+            free_valid: false,
+            free_words: [0; FOLLOW_PROBE_WORDS],
+            held_words: [0; FOLLOW_PROBE_WORDS],
+            stable: [false; FOLLOW_PROBE_WORDS],
+            held_samples: 0,
+            held_slot: 0,
+            report: None,
+            free_args: [0; 6],
+            held_args: [0; 6],
+            arg_stable: [false; 6],
+        }
+    }
 }
 
 struct CandidateSlot {
@@ -210,6 +270,7 @@ static CANDIDATES: [CandidateSlot; MAX_CANDIDATES] = [
 static ACTIVE_LAYOUT: OnceLock<&'static CameraLayout> = OnceLock::new();
 static TRAMPOLINE: AtomicUsize = AtomicUsize::new(0);
 static INSTALL_RESULT: OnceLock<Result<(), String>> = OnceLock::new();
+static FOLLOW_PROBE_STATE: OnceLock<Mutex<FollowProbeState>> = OnceLock::new();
 
 // Requested pan is published by the match-wide camera driver. The actual private
 // camera fields are touched only from inside the native camera-handler thread.
@@ -256,6 +317,17 @@ unsafe extern "system" fn camera_handler_hook(
     // click cannot override the controlled champion's required team vision mid-frame.
     inject_requested_vision(this);
     capture(this);
+    update_follow_probe(
+        this,
+        [
+            arg2 as u64,
+            arg3 as u64,
+            arg4.to_bits() as u64,
+            arg5 as u64,
+            arg6 as u64,
+            arg7 as u64,
+        ],
+    );
 }
 
 unsafe fn inject_requested_zoom(this: *mut u8) {
@@ -399,6 +471,125 @@ pub fn clear_pan_request(address: usize) {
     REQUESTED_PAN_CLEAR_ONCE.store(true, Ordering::Release);
 }
 
+fn follow_probe_state() -> &'static Mutex<FollowProbeState> {
+    FOLLOW_PROBE_STATE.get_or_init(|| Mutex::new(FollowProbeState::default()))
+}
+
+unsafe fn fkey_mask() -> u16 {
+    let mut mask = 0u16;
+    for slot in 0..10usize {
+        if GetAsyncKeyState(VK_F1_CODE + slot as i32) < 0 {
+            mask |= 1u16 << slot;
+        }
+    }
+    mask
+}
+
+unsafe fn read_follow_probe_words(this: *mut u8) -> [u64; FOLLOW_PROBE_WORDS] {
+    let mut words = [0u64; FOLLOW_PROBE_WORDS];
+    for (index, word) in words.iter_mut().enumerate() {
+        *word = ptr::read_unaligned(this.add(index * 8).cast::<u64>());
+    }
+    words
+}
+
+unsafe fn update_follow_probe(this: *mut u8, args: [u64; 6]) {
+    let mask = fkey_mask();
+    let words = read_follow_probe_words(this);
+    let Ok(mut state) = follow_probe_state().lock() else {
+        return;
+    };
+
+    if mask == 0 {
+        if state.last_mask != 0 && state.free_valid && state.held_samples >= 3 {
+            let mut diffs = Vec::new();
+            for index in 0..FOLLOW_PROBE_WORDS {
+                if !state.stable[index] || state.free_words[index] == state.held_words[index] {
+                    continue;
+                }
+
+                // Known continuously changing camera geometry/input fields are not useful for
+                // identifying native follow ownership.
+                let offset = index * 8;
+                if (0xE0..=0xF0).contains(&offset)
+                    || (0x428..=0x42C).contains(&offset)
+                {
+                    continue;
+                }
+
+                diffs.push(FollowProbeDiff {
+                    offset,
+                    free: state.free_words[index],
+                    held: state.held_words[index],
+                });
+                if diffs.len() >= FOLLOW_PROBE_MAX_DIFFS {
+                    break;
+                }
+            }
+
+            let mut arg_diffs = Vec::new();
+            for index in 0..6 {
+                if state.arg_stable[index] && state.free_args[index] != state.held_args[index] {
+                    arg_diffs.push(FollowProbeDiff {
+                        // 0xF00+N is a HUD-only namespace for handler arguments, not object memory.
+                        offset: 0xF00 + index,
+                        free: state.free_args[index],
+                        held: state.held_args[index],
+                    });
+                }
+            }
+
+            state.report = Some(FollowProbeReport {
+                slot: state.held_slot,
+                samples: state.held_samples,
+                diffs,
+                arg_diffs,
+            });
+        }
+
+        // Keep the most recent genuinely free-camera frame as the baseline. The report is retained
+        // until the next completed F-key hold so the render HUD can show it after release.
+        state.free_words = words;
+        state.free_args = args;
+        state.free_valid = true;
+        state.last_mask = 0;
+        state.held_samples = 0;
+        return;
+    }
+
+    let slot = mask.trailing_zeros() as usize;
+    if state.last_mask == 0 || state.last_mask != mask {
+        state.held_words = words;
+        state.stable.fill(true);
+        state.held_args = args;
+        state.arg_stable.fill(true);
+        state.held_samples = 1;
+        state.held_slot = slot;
+    } else {
+        for (index, word) in words.iter().enumerate() {
+            if state.held_words[index] != *word {
+                state.stable[index] = false;
+            }
+        }
+        for index in 0..6 {
+            if state.held_args[index] != args[index] {
+                state.arg_stable[index] = false;
+            }
+        }
+        state.held_words = words;
+        state.held_args = args;
+        state.held_samples = state.held_samples.saturating_add(1);
+    }
+    state.last_mask = mask;
+}
+
+pub fn follow_probe_report() -> Option<FollowProbeReport> {
+    follow_probe_state()
+        .lock()
+        .ok()
+        .and_then(|state| state.report.clone())
+}
+
 unsafe fn capture(this: *mut u8) {
     if this.is_null() {
         return;
@@ -482,6 +673,12 @@ pub fn ensure_installed() -> Result<(), String> {
         .clone()
 }
 
+pub fn clear_follow_probe() {
+    if let Ok(mut state) = follow_probe_state().lock() {
+        *state = FollowProbeState::default();
+    }
+}
+
 pub fn clear_candidates() {
     REQUESTED_PAN_ACTIVE.store(false, Ordering::Release);
     REQUESTED_PAN_CLEAR_ONCE.store(false, Ordering::Release);
@@ -489,6 +686,7 @@ pub fn clear_candidates() {
     REQUESTED_ZOOM_STEPS.store(0, Ordering::Release);
     REQUESTED_ZOOM_ADDRESS.store(0, Ordering::Release);
     REQUESTED_VISION_MODE.store(u32::MAX, Ordering::Release);
+    clear_follow_probe();
 
     for slot in &CANDIDATES {
         slot.clear();

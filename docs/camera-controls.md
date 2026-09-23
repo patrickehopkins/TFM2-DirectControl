@@ -43,4 +43,4 @@ The compatibility audit should cover multiple 16:9 resolutions/window sizes, bot
 ## Later optional camera polish
 
 - **Screen-edge scrolling:** shelved until/unless a deeper native-camera route is worth revisiting.
-- **Space recenter/follow:** still desirable as optional QoL, but not part of the now-validated camera milestone. Persistent follow/lock already exists natively through TFM2's F-key camera behavior and can later be exposed through the custom shortcut pass.
+- **Space recenter/follow:** promoted back into the first-release polish pass. Two custom pan-chase implementations were physically rejected because they jerked/overshot while following a moving simulation target. Two attempts to synthesize the native F-key follow input (posted window messages, then Windows keyboard injection) were also physically rejected because TFM2 did not respond. The release branch has been restored to the validated camera baseline while a targeted v0.6.1 native-follow action probe traces `in_game_follow_own_*`, `in_game_follow_enemy_*`, and `in_game_auto_follow` so Space can drive the real follow dispatcher/state directly. Physical validation pending.
