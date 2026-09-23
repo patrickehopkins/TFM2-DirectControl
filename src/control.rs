@@ -53,7 +53,6 @@ const HOLD_RECALL_CANCEL_TARGET_OFFSET_SIM: u64 = 32_000;
 const DEFAULT_MAP_MAX_SIM: u64 = 960_000;
 
 static SELECTED_ATHLETE: AtomicUsize = AtomicUsize::new(NO_ATHLETE);
-static SELECTED_FKEY_SLOT: AtomicUsize = AtomicUsize::new(NO_ATHLETE);
 // Published by the authoritative simulation callback for the currently selected athlete.
 // The render thread uses this only for spectator fog/camera-side selection; gameplay target
 // legality still comes from StableAiContext/StableSim.
@@ -294,7 +293,6 @@ fn hold_recall_cancel_target(from: (u64, u64)) -> (u64, u64) {
 
 pub fn reset() {
     SELECTED_ATHLETE.store(NO_ATHLETE, Ordering::Release);
-    SELECTED_FKEY_SLOT.store(NO_ATHLETE, Ordering::Release);
     SELECTED_TEAM.store(NO_TEAM, Ordering::Release);
     ATTACK_MOVE_ARMED.store(false, Ordering::Release);
     clear_move_target();
@@ -334,18 +332,10 @@ pub fn selected_team() -> Option<usize> {
     }
 }
 
-pub fn selected_fkey_slot() -> Option<usize> {
-    match SELECTED_FKEY_SLOT.load(Ordering::Acquire) {
-        NO_ATHLETE => None,
-        slot => Some(slot),
-    }
-}
-
-pub fn select_athlete(athlete_id: usize, fkey_slot: usize) {
+pub fn select_athlete(athlete_id: usize) {
     // A newly selected athlete must never inherit the previous athlete's move, attack, recall,
     // attack-move, or skill aim.
     SELECTED_ATHLETE.store(NO_ATHLETE, Ordering::Release);
-    SELECTED_FKEY_SLOT.store(NO_ATHLETE, Ordering::Release);
     SELECTED_TEAM.store(NO_TEAM, Ordering::Release);
     ATTACK_MOVE_ARMED.store(false, Ordering::Release);
     clear_move_target();
@@ -353,7 +343,6 @@ pub fn select_athlete(athlete_id: usize, fkey_slot: usize) {
     clear_click_target_overlay();
     LAST_CLICK_TARGET_OVERLAY_TICK.store(NO_TICK, Ordering::Release);
     skill_targeting::on_selection_changed();
-    SELECTED_FKEY_SLOT.store(fkey_slot, Ordering::Release);
     SELECTED_ATHLETE.store(athlete_id, Ordering::Release);
     SELECT_COUNT.fetch_add(1, Ordering::Relaxed);
 }
