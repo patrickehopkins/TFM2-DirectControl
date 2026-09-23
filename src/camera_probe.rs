@@ -45,7 +45,11 @@ const WORLD_MAX: f32 = 960.0;
 // speed ceiling: the same cursor displacement requests the same camera displacement
 // regardless of how quickly the mouse moved.
 const DRAG_POSITION_GAIN: f32 = 60.0;
-const FOLLOW_POSITION_GAIN: f32 = 60.0;
+// Follow targets move every simulation tick, unlike MMB's fixed drag destination. Correct only a
+// fraction of the error per native camera frame so the native integrator cannot overshoot/circle.
+const FOLLOW_POSITION_GAIN: f32 = 12.0;
+const FOLLOW_DEADZONE_WORLD: f32 = 0.35;
+const SPACE_DOUBLE_TAP_MS: u64 = 350;
 const CAMERA_CONTROL_POLL_MS: u64 = 2;
 const VK_MBUTTON_CODE: i32 = 0x04;
 const VK_SPACE_CODE: i32 = 0x20;
@@ -85,6 +89,7 @@ struct WinRect {
 #[link(name = "kernel32")]
 extern "system" {
     fn GetCurrentProcessId() -> u32;
+    fn GetTickCount64() -> u64;
 }
 
 #[link(name = "user32")]
@@ -119,6 +124,11 @@ struct CameraControlState {
     drag_start_extent_y: f32,
     drag_start_client_w: i32,
     drag_start_client_h: i32,
+    space_down: bool,
+    space_block_until_release: bool,
+    last_space_press_ms: u64,
+    follow_locked: bool,
+    last_follow_camera_calls: u64,
 }
 
 impl Default for CameraControlState {
@@ -135,6 +145,11 @@ impl Default for CameraControlState {
             drag_start_extent_y: 0.0,
             drag_start_client_w: 1,
             drag_start_client_h: 1,
+            space_down: false,
+            space_block_until_release: false,
+            last_space_press_ms: 0,
+            follow_locked: false,
+            last_follow_camera_calls: 0,
         }
     }
 }
@@ -407,6 +422,11 @@ fn disable_match_camera(state: &mut CameraControlState) {
     MATCH_CAMERA_ACTIVE.store(false, Ordering::Release);
     ACTIVE_CAMERA_ADDRESS.store(0, Ordering::Release);
     reset_gesture(state);
+    state.space_down = false;
+    // GetAsyncKeyState is global. Require a release after focus/session loss so a Space held in
+    // another application cannot become a synthetic follow press when TFM2 regains focus.
+    state.space_block_until_release = true;
+    state.last_follow_camera_calls = 0;
     release_pointer_shim();
 }
 
@@ -445,25 +465,69 @@ fn camera_control_step(state: &mut CameraControlState) {
     MATCH_CAMERA_ACTIVE.store(true, Ordering::Release);
 
     let middle_down = unsafe { GetAsyncKeyState(VK_MBUTTON_CODE) < 0 };
-    let space_down = unsafe { GetAsyncKeyState(VK_SPACE_CODE) < 0 };
+    let physical_space_down = unsafe { GetAsyncKeyState(VK_SPACE_CODE) < 0 };
     MMB_UI_LOCK_ACTIVE.store(middle_down, Ordering::Release);
 
-    // Space is a momentary camera lock: while held, continuously close the native camera center
-    // toward the currently controlled champion's authoritative simulation position. Releasing Space
-    // immediately returns camera ownership to ordinary free-pan behavior. Space intentionally wins
-    // over MMB when both are held; releasing Space while MMB remains down starts a fresh drag anchor.
-    if space_down {
+    if state.space_block_until_release {
+        if !physical_space_down {
+            state.space_block_until_release = false;
+        }
+        state.space_down = false;
+    } else {
+        let space_pressed = physical_space_down && !state.space_down;
+        state.space_down = physical_space_down;
+
+        if space_pressed {
+            let now_ms = unsafe { GetTickCount64() };
+            if state.last_space_press_ms != 0
+                && now_ms.saturating_sub(state.last_space_press_ms) <= SPACE_DOUBLE_TAP_MS
+            {
+                state.follow_locked = !state.follow_locked;
+                state.last_space_press_ms = 0;
+            } else {
+                state.last_space_press_ms = now_ms;
+            }
+        }
+    }
+
+    // A deliberate MMB drag always breaks persistent Space lock. Momentary Space still wins while
+    // physically held; after release, a still-held MMB starts from a fresh anchor below.
+    if middle_down && !state.middle_down && !physical_space_down {
+        state.follow_locked = false;
+    }
+
+    let follow_active = (physical_space_down && !state.space_block_until_release)
+        || state.follow_locked;
+
+    if follow_active {
         state.middle_down = false;
         if let Some((sim_x, sim_y)) = crate::control::selected_position() {
-            let desired_x = clamp_center(sim_x as f32 / SIM_UNITS_PER_WORLD_UNIT);
-            let desired_y = clamp_center(sim_y as f32 / SIM_UNITS_PER_WORLD_UNIT);
-            let pan_x = (desired_x - camera.center_x) * FOLLOW_POSITION_GAIN;
-            let pan_y = (desired_y - camera.center_y) * FOLLOW_POSITION_GAIN;
-            publish_pan(state, camera.address, pan_x, pan_y);
+            // Recompute at most once per captured native camera frame. The 2 ms driver can run much
+            // faster than TFM2's camera handler, and repeatedly chasing an unchanged snapshot was
+            // the source of the original jerky/spiraling controller.
+            if camera.calls != state.last_follow_camera_calls {
+                state.last_follow_camera_calls = camera.calls;
+                let desired_x = clamp_center(sim_x as f32 / SIM_UNITS_PER_WORLD_UNIT);
+                let desired_y = clamp_center(sim_y as f32 / SIM_UNITS_PER_WORLD_UNIT);
+                let error_x = desired_x - camera.center_x;
+                let error_y = desired_y - camera.center_y;
+                let pan_x = if error_x.abs() <= FOLLOW_DEADZONE_WORLD {
+                    0.0
+                } else {
+                    error_x * FOLLOW_POSITION_GAIN
+                };
+                let pan_y = if error_y.abs() <= FOLLOW_DEADZONE_WORLD {
+                    0.0
+                } else {
+                    error_y * FOLLOW_POSITION_GAIN
+                };
+                publish_pan(state, camera.address, pan_x, pan_y);
+            }
         } else {
             publish_pan(state, camera.address, 0.0, 0.0);
         }
     } else if middle_down {
+        state.last_follow_camera_calls = 0;
         if !state.middle_down {
             state.middle_down = true;
             state.drag_start_mouse_x = mouse_x;
@@ -490,6 +554,7 @@ fn camera_control_step(state: &mut CameraControlState) {
         publish_pan(state, camera.address, pan_x, pan_y);
     } else {
         state.middle_down = false;
+        state.last_follow_camera_calls = 0;
         publish_pan(state, camera.address, 0.0, 0.0);
     }
 }
