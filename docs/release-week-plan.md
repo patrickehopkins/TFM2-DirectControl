@@ -80,13 +80,17 @@ The release still contains unavoidable loader-required pre-simulation. Do not at
 User-requested release-scope exception: restore the previously deferred Space recenter/follow control before packaging.
 
 Current implementation target:
-- hold Space while a champion is under Direct Control to keep the native camera centered on that champion;
-- release Space to return immediately to free camera;
+- hold Space while a champion is under Direct Control for momentary follow;
+- double-tap Space to toggle persistent follow lock;
+- MMB drag breaks persistent follow lock and returns to free camera;
+- switching controlled champions while locked follows the newly selected champion;
 - reuse the validated native pan-request path; never resume direct camera-center writes;
-- Space takes priority over MMB while both are held, and releasing Space while MMB remains held starts a fresh drag anchor;
+- update the follow controller only once per native camera frame and use damped moving-target correction;
 - no selected champion means Space has no Direct Control camera effect.
 
 **Physical validation pending.**
+
+Immediately after Space follow is validated, add **held-RMB command refresh** as the next control refinement. The intended behavior is to mirror League of Legends as closely as practical: while RMB remains held, continuously refresh the contextual command toward the current cursor/target rather than requiring repeated clicks. Verify League's exact ground-vs-enemy hold semantics before implementation rather than guessing.
 
 ## Diagnostic presentation cleanup
 
