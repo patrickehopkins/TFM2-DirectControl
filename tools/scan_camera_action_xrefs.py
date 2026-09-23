@@ -456,6 +456,130 @@ def emit_descriptor_table_near(
     lines.append("")
 
 
+def decode_action_jump_table(
+    image: PeImage,
+    mapper: RuntimeFunction,
+) -> tuple[int, list[tuple[int, int, str]]] | None:
+    """Recover byte discriminant -> action name from the Rust enum name mapper."""
+
+    try:
+        code = image.bytes_at_rva(mapper.start, min(mapper.end - mapper.start, 0x80))
+    except ValueError:
+        return None
+
+    signature = b"\x49\x63\x0c\x88\x4c\x01\xc1\xff\xe1"
+    sig_at = code.find(signature)
+    if sig_at < 7:
+        return None
+
+    lea_at = sig_at - 7
+    if code[lea_at : lea_at + 3] != b"\x4c\x8d\x05":
+        return None
+    disp = struct.unpack_from("<i", code, lea_at + 3)[0]
+    lea_rva = mapper.start + lea_at
+    table_rva = lea_rva + 7 + disp
+
+    decoded: list[tuple[int, int, str]] = []
+    invalid_run = 0
+    for discriminant in range(256):
+        try:
+            entry = struct.unpack("<i", image.bytes_at_rva(table_rva + discriminant * 4, 4))[0]
+        except ValueError:
+            break
+        target = table_rva + entry
+        if not (mapper.start <= target < mapper.end):
+            invalid_run += 1
+            if decoded and invalid_run >= 4:
+                break
+            continue
+
+        invalid_run = 0
+        try:
+            case = image.bytes_at_rva(target, min(0x30, mapper.end - target))
+        except ValueError:
+            continue
+
+        name = None
+        for i in range(max(0, len(case) - 7)):
+            if case[i : i + 3] != b"\x4c\x8d\x05":
+                continue
+            string_disp = struct.unpack_from("<i", case, i + 3)[0]
+            string_rva = target + i + 7 + string_disp
+            length = None
+            for j in range(i + 7, min(len(case) - 5, i + 0x18)):
+                if case[j : j + 2] == b"\x41\xb9":
+                    length = struct.unpack_from("<I", case, j + 2)[0]
+                    break
+            if length is None or length == 0 or length > 128:
+                continue
+            try:
+                raw = image.bytes_at_rva(string_rva, length)
+            except ValueError:
+                continue
+            if any(byte < 0x20 or byte > 0x7E for byte in raw):
+                continue
+            try:
+                name = raw.decode("ascii")
+            except UnicodeDecodeError:
+                continue
+            break
+
+        if name:
+            decoded.append((discriminant, target, name))
+
+    return table_rva, decoded
+
+
+def enum_immediate_sites(image: PeImage, value: int) -> list[tuple[int, str]]:
+    """Find common x64 encodings that materialize/store a small enum discriminant."""
+
+    if not 0 <= value <= 0xFF:
+        return []
+
+    out: list[tuple[int, str]] = []
+    imm32 = struct.pack("<I", value)
+    imm8 = value.to_bytes(1, "little")
+
+    for section in image.sections:
+        if not section.executable:
+            continue
+        data = image.data[section.raw_offset : section.raw_offset + section.raw_size]
+        base = section.rva
+
+        for reg in range(0xB8, 0xC0):
+            needle = bytes([reg]) + imm32
+            start = 0
+            while True:
+                i = data.find(needle, start)
+                if i < 0:
+                    break
+                out.append((base + i, "mov32"))
+                start = i + 1
+
+            needle = b"\x41" + bytes([reg]) + imm32
+            start = 0
+            while True:
+                i = data.find(needle, start)
+                if i < 0:
+                    break
+                out.append((base + i, "mov32-rex"))
+                start = i + 1
+
+        patterns = (
+            (b"\xc6\x44\x24", "store-stack8", 4),
+            (b"\xc6\x45", "store-local8", 3),
+            (b"\x41\xc6\x44\x24", "store-r12-8", 5),
+        )
+        for prefix, kind, imm_index in patterns:
+            plen = len(prefix)
+            limit = len(data) - max(plen + 2, imm_index + 1)
+            for i in range(max(0, limit)):
+                if data[i : i + plen] == prefix and data[i + imm_index : i + imm_index + 1] == imm8:
+                    out.append((base + i, kind))
+
+    return sorted(set(out))
+
+
 def emit_code_window(
     lines: list[str],
     image: PeImage,
@@ -670,6 +794,97 @@ def main() -> int:
             max(0, min(follow_refs) - 0x300),
             max(follow_refs) + 0x300,
         )
+
+    # Recover enum discriminants from the byte-indexed Rust jump table. The action-name strings
+    # are serialization/debug metadata; discriminants let us search real camera/input code.
+    if follow_refs:
+        mapper_owner_for_ids = owner_of(runtime_functions, min(follow_refs))
+        if mapper_owner_for_ids:
+            decoded = decode_action_jump_table(image, mapper_owner_for_ids)
+            if decoded:
+                jump_table_rva, action_ids = decoded
+                lines.append("===== ACTION ENUM DISCRIMINANTS =====")
+                lines.append(
+                    f"mapper 0x{mapper_owner_for_ids.start:08X}..0x{mapper_owner_for_ids.end:08X}; "
+                    f"jump table=0x{jump_table_rva:08X}; decoded={len(action_ids)}"
+                )
+                for discriminant, target, name in action_ids:
+                    if name.startswith("in_game_"):
+                        lines.append(
+                            f"id={discriminant:3d} (0x{discriminant:02X}) "
+                            f"case=0x{target:08X} name={name}"
+                        )
+                lines.append("")
+
+                id_by_name = {name: discriminant for discriminant, _target, name in action_ids}
+                follow_ids = {
+                    name: id_by_name[name]
+                    for name in follow_names
+                    if name in id_by_name
+                }
+                lines.append("===== FOLLOW ENUM IMMEDIATE CLUSTERS =====")
+                if len(follow_ids) < len(follow_names):
+                    missing = [name for name in follow_names if name not in follow_ids]
+                    lines.append("missing decoded follow ids: " + ", ".join(missing))
+                else:
+                    sites_by_name = {
+                        name: enum_immediate_sites(image, value)
+                        for name, value in follow_ids.items()
+                    }
+                    owners: dict[tuple[int, int], dict[str, list[tuple[int, str]]]] = {}
+                    for name, sites in sites_by_name.items():
+                        for site, kind in sites:
+                            owner = owner_of(runtime_functions, site)
+                            if owner is None:
+                                continue
+                            owners.setdefault((owner.start, owner.end), {}).setdefault(name, []).append(
+                                (site, kind)
+                            )
+
+                    ranked = sorted(
+                        (
+                            (len(by_name), sum(len(v) for v in by_name.values()), start, end, by_name)
+                            for (start, end), by_name in owners.items()
+                            if len(by_name) >= 3
+                        ),
+                        reverse=True,
+                    )
+                    if not ranked:
+                        lines.append("<no function contains patterned immediates for >=3 follow ids>")
+                    for distinct, site_count, start, end, by_name in ranked[:20]:
+                        lines.append(
+                            f"owner 0x{start:08X}..0x{end:08X} size=0x{end-start:X} "
+                            f"distinct_follow_ids={distinct} sites={site_count}"
+                        )
+                        for name in follow_names:
+                            hits = by_name.get(name)
+                            if hits:
+                                value = follow_ids[name]
+                                lines.append(
+                                    f"  {name} id=0x{value:02X}: "
+                                    + ", ".join(f"0x{site:08X}/{kind}" for site, kind in hits[:12])
+                                )
+                        if end - start <= 0x1800:
+                            emit_code_window(
+                                lines,
+                                image,
+                                f"FOLLOW-ID OWNER 0x{start:08X}",
+                                start,
+                                end,
+                            )
+                        else:
+                            flat_hits = sorted(
+                                site for hits in by_name.values() for site, _kind in hits
+                            )
+                            for site in flat_hits[:4]:
+                                emit_code_window(
+                                    lines,
+                                    image,
+                                    f"FOLLOW-ID WINDOW 0x{site:08X}",
+                                    max(start, site - 0x140),
+                                    min(end, site + 0x1C0),
+                                )
+                lines.append("")
 
     # Deeper pass: all semantic action descriptors form one contiguous 16-byte table. References
     # into any address inside that table are more useful than exact references to individual members
