@@ -1,117 +1,144 @@
 # TFM2 Direct Control
 
-Experimental direct champion control for **Teamfight Manager 2**.
+Direct champion control for **Teamfight Manager 2**.
 
-The goal is to expose a small, reusable set of low-level direct-control primitives for the game's ten live actors: real-time simulation pacing, actor selection, mouse/world targeting, and native player inputs. This core deliberately does **not** decide which team a human is allowed to control. Ownership, permissions, game-mode rules, and richer policy belong in higher-level mods that may build on top of this project.
+The mod keeps the watched match simulation running in real time, lets you take control of any of the ten visible champions, and feeds commands back through Teamfight Manager 2's own player-input system. Pick/ban, champion logic, pathing, combat resolution, fog, shopping, and the underlying simulation remain TFM2 systems; Direct Control adds a human command layer on top.
 
-## Status
+Current release target: **Teamfight Manager 2 v0.6.1 on Windows/Steam**.
 
-Bootstrap loading and the full control path are physically verified on Teamfight Manager 2 v0.5.8. The watched-match simulation has been identified and continuous ~60 Hz wall-clock pacing has been physically validated for at least ten visible minutes without a safety fail-open. Native `InputV1::move_to` injection into the paced watched simulation is physically verified: selected actors respond in real time and other AI actors react to the changed behavior.
-
-The native simulation and camera adapters have been relocated and physically validated for v0.6.0 (PE timestamp `0x6AAA07D1`, image size `0x05228000`). A complete in-game pass confirmed real-time pacing, selection, movement and attacks, MMB pan, wheel zoom, pause/resume, skills, return-home, and Ctrl+End release. The source retains the verified v0.5.8 layouts as a separate compatibility profile. See `docs/v0.6.0-migration-validation.md` for the migration evidence and remaining source-build smoke test.
-
-Pause/resume is also physically verified. Opening the game's pause UI freezes Candidate A; closing it resumes from a re-anchored pacing origin, so paused wall time does not become hidden catch-up simulation. Persistent MoveTo commands survive pause/resume and remain responsive afterward.
-
-Visible F1-F10 card order is **not** Candidate A's internal `player_id` order. Selection is therefore resolved through stable athlete identity rather than arithmetic player-id assumptions. The control layer remains deliberately team-neutral.
-
-The direct-control foundation is considered ready for **command expansion**. Higher-priority work can now proceed to attack/cast/return-home primitives without reopening the already-proven pacing architecture.
-
-Two known polish issues are intentionally deferred: startup still requires some pre-simulation progress before the battlefield becomes independent, and the yellow world marker has a constant screen-origin offset from the physical mouse reticle. See `docs/known-issues.md`.
-
-## Core selection contract
-
-F1-F10 refer to the **ten visible match cards**, exactly as Teamfight Manager 2 labels them. They are convenience selectors, not raw simulation `player_id` values.
-
-The current implementation resolves the selected card's displayed athlete to the stable athlete id, then matches `StableAiContext::athlete_id()` on Candidate A. This avoids depending on the game's opaque internal player ordering.
-
-There is intentionally no blue-side/red-side or player-team restriction here. A future mod may impose one without changing the underlying control primitive.
-
-## MVP control contract
+## Control scheme at a glance
 
 | Input | Behavior |
 | --- | --- |
-| F1-F10 | Select the athlete shown on that visible match card |
-| RMB on ground | Move the selected athlete's champion to the clicked world position |
-| RMB on hostile unit | Attack that specific target; normal game movement/range behavior handles approach |
-| Q | Arm Skill 1 |
-| W | Arm Skill 2 |
-| R | Arm Ultimate |
-| LMB while a skill is armed | Confirm target / position / direction at the mouse |
-| RMB or Esc while a skill is armed | Cancel the queued skill |
-| B | Return to base |
-| **Ctrl+End** | **Release manual control and let the simulation finish at full speed. This cannot be undone for the current match.** |
+| **Ctrl+Home** | Start Direct Control once the match has synchronized and the ready prompt appears |
+| **F1-F10** | Select the champion shown on that visible match card |
+| **RMB** | Contextual move/attack; may be held and swept continuously |
+| **RMB on minimap** | Contextual minimap move/attack |
+| **A, then LMB** | Attack-move |
+| **H** | Hold/stop |
+| **B** | Return to base |
+| **Q / W / R** | Use Skill 1 / Skill 2 / Ultimate |
+| **LMB while a targeted skill is armed** | Confirm target / position / direction |
+| **RMB or Esc while a targeted skill is armed** | Cancel skill targeting |
+| **End** | Give the currently controlled champion back to AI and return to spectator control |
+| **Ctrl+End** | Permanently release Direct Control for the current match; confirmation required |
+| **MMB drag** | Grab-and-drag camera |
+| **Mouse wheel** | Zoom camera |
 
-`Ctrl+Home` currently exists as an experimental startup/release diagnostic from the shelved startup-gating work. It is **not** part of the stable 1.0 control contract and higher-level consumers should not depend on zero-pre-simulation startup semantics yet.
+Self-only/cursorless skills cast immediately on Q/W/R instead of requiring a redundant click on the controlled champion.
 
-Skill handling should follow each ability's native casting type:
+### Selection and targeting
 
-- `Targeting` -> click a valid unit.
-- `Position` -> click a world position.
-- `Direction` -> cast from the controlled champion toward the clicked mouse position.
-- `None` -> cast immediately when the key is pressed.
+F1-F10 correspond to the **ten visible player cards**, not raw simulation player IDs. Direct Control resolves the card to stable athlete identity, so selection remains team-neutral: either side can be controlled.
 
-### Releasing manual control
+Contextual RMB uses enlarged **clickable selection geometry only**; it does not change collision or pathing:
 
-`Ctrl+End` is intentionally a deliberate chord rather than a single easy-to-hit gameplay key. It permanently releases direct control for the current match and removes the real-time pacing limit, allowing Teamfight Manager 2's simulation to race to completion normally.
+- Champions: +8 screen px
+- Towers: +28 px
+- Other targetable objectives/buildings: +24 px
+- Minions: +5 px
 
-Once released, **manual control cannot be resumed in that match**. The watched playback can continue, but the authoritative simulation may already be far ahead or finished. Starting a new match resets the release state and permits direct control again.
+When enlarged areas overlap, priority is **Champion > Building/Objective > Minion**. The lightweight rings shown in Direct Control represent those effective clickable regions.
 
-The in-match diagnostic/control UI must keep this consequence visible wherever the release command is offered.
+Held RMB continually republishes the current cursor through the same contextual resolver. Moving the cursor from ground onto an enemy, off an enemy, or onto another enemy updates the command without requiring repeated clicks.
 
-### Explicitly deferred
+### Skills
 
-- Startup polish / true zero-pre-simulation match start.
-- Cursor-origin calibration for precision clicking.
-- Manual shopping. Vanilla automatic item purchasing remains enabled.
-- Pings and sophisticated teammate orders.
-- Multiplayer and replay guarantees.
-- Polished targeting graphics or settings UI.
-- Ownership/team permission policy in the core control primitive.
-- User-facing live simulation-speed selection. Direct-control mode currently targets 1x real-time pacing; optional 0.5x/1.5x/2x/etc. live rates can be added later.
+Direct Control asks TFM2's own runtime validator what input forms a skill currently accepts rather than hard-coding per-champion targeting rules.
 
-## Technical direction
+- Entity-target skill -> click a valid unit.
+- Position skill -> click a world position.
+- Direction skill -> aim from the champion toward the cursor.
+- Cursorless/self-only skill -> casts immediately on keypress.
+- Hostile entity-target skill clicked out of range -> retain that exact target and chase until the cast becomes legal.
+- Q/W/R pressed while the slot is locked or on cooldown -> no queued/delayed cast.
 
-Teamfight Manager 2's recommended stable native mod API exposes per-tick player-input replacement and the game's native move, attack, skill, ultimate, and return-home input types. Runtime probing confirmed that the watched-match simulation normally races far ahead of presentation, and that holding its confirmed worker near 60 ticks per wall-clock second keeps it live alongside the visible match.
+Gambler Skill 1 was investigated before release and does **not** require a special adapter: vanilla AI itself emits it as an entity-target Skill input, and physical retesting confirmed Direct Control can cast it by explicitly targeting an enemy champion.
 
-The input path is:
+## Match startup and release
+
+TFM2 requires some watched-match simulation progress before it can construct the battlefield. Direct Control therefore cannot freeze the match at literal tick 1 without hanging the loader.
+
+The validated startup path is:
+
+1. allow the bounded loader runway;
+2. freeze the live watched simulation at the first usable InGame boundary;
+3. wait for visible presentation to catch that frozen live state;
+4. show **“Direct Control is ready. Press Ctrl+Home to take control and resume the match.”**
+5. start live control only after Ctrl+Home.
+
+`End` is temporary: it releases only the currently controlled champion to AI and leaves Direct Control's live pacing intact.
+
+`Ctrl+End` is global and irreversible for that match. After confirmation, Direct Control relinquishes live control/pacing and the normal simulation may race ahead or finish. Start a new match to regain Direct Control.
+
+## Camera and fog
+
+The release camera controls are the physically validated **MMB drag + mouse-wheel zoom** path. Screen-edge scrolling and Space follow were investigated and deliberately deferred rather than shipping brittle implementations.
+
+While a champion is controlled, Direct Control automatically switches native spectator fog to that champion's simulation team. Releasing the champion with End stops enforcement and leaves the current native spectator view in place.
+
+A known first-release spectator loophole remains: TFM2's native follow UI can still reveal an opposing champion through fog. Direct Control is not an anti-cheat layer.
+
+## Current compatibility notes
+
+Physically validated on v0.6.1 include:
+
+- real-time watched-match pacing;
+- startup synchronization and Ctrl+Home handoff;
+- F1-F10 selection across both teams;
+- ground movement, exact-target attacks, and held contextual RMB;
+- minimap commands;
+- attack-move;
+- Hold and Return;
+- targeted Position/Direction/Target skills;
+- immediate self-only/cursorless skills;
+- Berserker Skill 1 and Monk Skill 1 immediate casting;
+- Ogre automatic/passive behavior remaining non-activatable;
+- Gambler Skill 1 entity-target casting;
+- pause/resume;
+- automatic controlled-team fog;
+- MMB pan and wheel zoom;
+- End temporary AI release;
+- Ctrl+End confirmed global release;
+- background-focus safety for raw keyboard shortcuts.
+
+Known/deferred work is tracked in:
+- `docs/known-issues.md`
+- `docs/deferred-investigations.md`
+- `docs/champion-compatibility.md`
+
+One notable champion-specific gap remains post-release: Gunfighter's native move-while-attacking behavior does not compose correctly with generic attack-move yet.
+
+## Technical overview
+
+The core input path is:
 
 ```text
-Windows mouse / keyboard state
+Windows / stable SDK input
         |
         v
 visible F-key card -> stable athlete identity
         |
         v
-window/client coordinates
+mouse -> battlefield/minimap projection
         |
-        v
-mouse -> match-world transform
-        |
-        +----> entity hit testing
+        +----> contextual entity hit testing
         |
         v
 manual command state
         |
         v
-TFM2 StablePlayerAi -> InputV1
+StablePlayerAi -> InputV1
         |
         v
-watched-match simulation paced near 60 Hz
+watched ClientMatchView simulation paced near 60 Hz
 ```
 
-External live input crosses Teamfight Manager 2's deterministic simulation boundary. Until that architecture is proven replay-safe, this project is intentionally **single-player first**.
+External live input crosses TFM2's deterministic simulation boundary. The first public release is therefore **single-player first**. Multiplayer work remains a separate future task.
 
 ## Development setup
 
-Target platform for the first version: **Windows + Steam**.
-
-The GitHub working copy itself is the development workspace. It can be cloned anywhere; no separate sacrificial or `C:\Dev` copy is required. Switching branches in GitHub Desktop updates this same working directory automatically. All helper scripts resolve paths relative to the repository root.
-
-Default Steam install used by the helper scripts:
-
-```text
-C:\Program Files (x86)\Steam\steamapps\common\Teamfight Manager2
-```
+Target platform: **Windows + Steam**.
 
 The official stable SDK ships with the game under:
 
@@ -119,23 +146,23 @@ The official stable SDK ships with the game under:
 <TFM2 install>\mod-sdk-stable\mod-api-stable
 ```
 
-For local development, `scripts\bootstrap-sdk.ps1` copies that crate into the repository at:
+The helper scripts copy that SDK into the Git-ignored local path:
 
 ```text
-TFM2-DirectControl\
-  sdk\
-    mod-api-stable\
+TFM2-DirectControl\sdk\mod-api-stable
 ```
 
-The entire `sdk\` directory is Git-ignored. It is a local dependency copied from the installed game and is not committed to the repository.
+Default Steam install used by the scripts:
 
-If PowerShell reports that script execution is disabled, allow scripts only for the current PowerShell process:
+```text
+C:\Program Files (x86)\Steam\steamapps\common\Teamfight Manager2
+```
+
+If PowerShell script execution is disabled for the current shell:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```
-
-Closing that PowerShell window restores the previous policy.
 
 ### Build
 
@@ -143,7 +170,7 @@ Closing that PowerShell window restores the previous policy.
 cargo build --release
 ```
 
-Expected Windows artifact:
+Expected artifact:
 
 ```text
 target\release\tfm2_direct_control.dll
@@ -157,50 +184,45 @@ From the repository root:
 .\scripts\install-dev.ps1
 ```
 
-The script refreshes `sdk\mod-api-stable` from the installed game, builds the DLL, and installs these files under:
-
-```text
-<TFM2 install>\mods\tfm2_direct_control\
-  mod.mod_info
-  tfm2_direct_control.dll
-```
-
-Pass `-GameDir` if Teamfight Manager 2 is installed in another Steam library:
+Pass `-GameDir` when TFM2 lives in another Steam library:
 
 ```powershell
 .\scripts\install-dev.ps1 -GameDir "D:\SteamLibrary\steamapps\common\Teamfight Manager2"
 ```
 
-The GitHub repository/folder may remain named `TFM2-DirectControl`; the installed runtime mod id is deliberately lowercase `tfm2_direct_control` so it matches the Rust DLL name and TFM2 mod folder.
+The installed mod lives under:
 
-## Milestones
+```text
+<TFM2 install>\mods\tfm2_direct_control\
+```
 
-1. Build and load the bootstrap DLL with no diagnostics. **Verified on v0.5.8.**
-2. Read physical mouse position/buttons while a match is active. **Verified.**
-3. Prove mouse-screen -> match-world scale with a debug marker. **Scale verified; constant screen-origin calibration remains.**
-4. Identify and pace the watched-match simulation near real time. **Verified at continuous ~60 Hz for 10+ visible minutes.**
-5. Pause/resume Candidate A with presentation without hidden catch-up. **Verified.**
-6. Select arbitrary visible F1-F10 actors without team assumptions. **Verified through stable athlete identity.**
-7. RMB ground -> native `Move` input for an arbitrary actor. **Verified in real time.**
-8. Ctrl+End -> irreversibly release direct control and let the simulation finish. **Verified.**
-9. Startup without unwanted pre-simulation. **Shelved for later polish; not blocking command work.**
-10. RMB hostile -> native `Attack` input against the clicked entity.
-11. Q/W/R + LMB normal-cast targeting.
-12. B -> return to base.
-13. Functional range/direction/position targeting indicators.
+## Release / Workshop
 
-## Validation and known issues
+Use the game's `TFM2ModUploader.exe`.
 
-- `docs/pacing-validation-log.md` — simulation/pacing/startup/pause physical test history.
-- `docs/manual-control-validation.md` — manual MoveTo and actor-selection validation.
-- `docs/core-control-contract.md` — low-policy, team-neutral architecture contract.
-- `docs/known-issues.md` — intentionally deferred startup, cursor, speed, and command-state polish.
+Before upload:
+
+1. build from the release branch;
+2. use **Build Only (No Upload)** first;
+3. inspect the staged mod package;
+4. confirm the DLL and intended runtime metadata are present and source/build junk is absent;
+5. publish privately/unlisted first if a subscriber-installed smoke test is desired;
+6. preserve the generated `mod.workshop_id` for all future updates.
+
+The current release checklist is maintained in `docs/release-week-plan.md`.
+
+## Project documentation
+
+- `docs/release-week-plan.md` — authoritative first-release checklist
+- `docs/core-control-contract.md` — low-level control architecture
+- `docs/control-validation-log.md` — physical control tests
+- `docs/pacing-validation-log.md` — pacing/startup/pause history
+- `docs/camera-controls.md` — validated camera architecture and rejected experiments
+- `docs/skill-targeting.md` — skill-targeting resolver design
+- `docs/champion-compatibility.md` — champion-specific findings
+- `docs/deferred-investigations.md` — exact stopping points for worked-but-deferred features
+- `docs/known-issues.md` — current release limitations
 
 ## Reference
 
-Official modding documentation:
-
-- Team Samoyed, `TeamfightManager2Mod`
-- `docs/stable-native-mods.md`
-- `docs/stable-api-reference.md`
-- `docs/mod-package.md`
+Official SDK/modding documentation: Team Samoyed's `TeamfightManager2Mod` repository, especially `docs/stable-native-mods.md`, `docs/stable-api-reference.md`, and `docs/workshop-upload.md`.
