@@ -220,6 +220,7 @@ struct FollowProbeState {
     held_args: [u64; 6],
     arg_stable: [bool; 6],
     free_ptrs: [usize; FOLLOW_POINTER_ARG_COUNT],
+    free_ptr_valid: [bool; FOLLOW_POINTER_ARG_COUNT],
     held_ptrs: [usize; FOLLOW_POINTER_ARG_COUNT],
     free_ptr_words: [[u64; FOLLOW_ARG_OBJECT_WORDS]; FOLLOW_POINTER_ARG_COUNT],
     held_ptr_words: [[u64; FOLLOW_ARG_OBJECT_WORDS]; FOLLOW_POINTER_ARG_COUNT],
@@ -242,6 +243,7 @@ impl Default for FollowProbeState {
             held_args: [0; 6],
             arg_stable: [false; 6],
             free_ptrs: [0; FOLLOW_POINTER_ARG_COUNT],
+            free_ptr_valid: [false; FOLLOW_POINTER_ARG_COUNT],
             held_ptrs: [0; FOLLOW_POINTER_ARG_COUNT],
             free_ptr_words: [[0; FOLLOW_ARG_OBJECT_WORDS]; FOLLOW_POINTER_ARG_COUNT],
             held_ptr_words: [[0; FOLLOW_ARG_OBJECT_WORDS]; FOLLOW_POINTER_ARG_COUNT],
@@ -672,8 +674,10 @@ unsafe fn update_follow_probe(this: *mut u8, args: [u64; 6]) {
         state.free_valid = true;
         for probe_index in 0..FOLLOW_POINTER_ARG_COUNT {
             state.free_ptrs[probe_index] = pointer_args[probe_index];
+            state.free_ptr_valid[probe_index] = false;
             if let Some(snapshot) = pointer_words[probe_index] {
                 state.free_ptr_words[probe_index] = snapshot;
+                state.free_ptr_valid[probe_index] = true;
             }
         }
         state.last_mask = 0;
@@ -693,7 +697,8 @@ unsafe fn update_follow_probe(this: *mut u8, args: [u64; 6]) {
             state.ptr_stable[probe_index].fill(true);
             state.ptr_valid[probe_index] = false;
 
-            if pointer_args[probe_index] != 0
+            if state.free_ptr_valid[probe_index]
+                && pointer_args[probe_index] != 0
                 && pointer_args[probe_index] == state.free_ptrs[probe_index]
             {
                 if let Some(snapshot) = pointer_words[probe_index] {
@@ -704,14 +709,21 @@ unsafe fn update_follow_probe(this: *mut u8, args: [u64; 6]) {
         }
         state.held_slot = slot;
     } else {
-        for (index, word) in words.iter().enumerate() {
-            if state.held_words[index] != *word {
-                state.stable[index] = false;
+        // Give native follow a few camera callbacks to settle before judging stability. During this
+        // window we simply move the held baseline forward; from the fourth held callback onward,
+        // any further mutation marks that field as dynamic rather than follow ownership/state.
+        let settling = state.held_samples < 3;
+
+        if !settling {
+            for (index, word) in words.iter().enumerate() {
+                if state.held_words[index] != *word {
+                    state.stable[index] = false;
+                }
             }
-        }
-        for index in 0..6 {
-            if state.held_args[index] != args[index] {
-                state.arg_stable[index] = false;
+            for index in 0..6 {
+                if state.held_args[index] != args[index] {
+                    state.arg_stable[index] = false;
+                }
             }
         }
         state.held_words = words;
@@ -728,9 +740,11 @@ unsafe fn update_follow_probe(this: *mut u8, args: [u64; 6]) {
                 state.ptr_valid[probe_index] = false;
                 continue;
             };
-            for word_index in 0..FOLLOW_ARG_OBJECT_WORDS {
-                if state.held_ptr_words[probe_index][word_index] != snapshot[word_index] {
-                    state.ptr_stable[probe_index][word_index] = false;
+            if !settling {
+                for word_index in 0..FOLLOW_ARG_OBJECT_WORDS {
+                    if state.held_ptr_words[probe_index][word_index] != snapshot[word_index] {
+                        state.ptr_stable[probe_index][word_index] = false;
+                    }
                 }
             }
             state.held_ptr_words[probe_index] = snapshot;
