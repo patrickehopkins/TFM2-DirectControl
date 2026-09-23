@@ -71,7 +71,7 @@ The validated startup path is:
 
 `Ctrl+End` is global and irreversible for that match. After confirmation, Direct Control relinquishes live control/pacing and the normal simulation may race ahead or finish. Start a new match to regain Direct Control.
 
-While Direct Control owns the live match, TFM2's native upper-left replay seek/highlight controls are hidden and disabled so they cannot move presentation away from the authoritative live simulation. They are restored after the confirmed `Ctrl+End` release.
+While Direct Control owns the live match, TFM2's native upper-left replay seek/highlight controls are hidden so they cannot be clicked to move presentation away from the authoritative live simulation. They are restored after the confirmed `Ctrl+End` release.
 
 ### Presentation desync indicator
 
