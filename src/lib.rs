@@ -58,6 +58,7 @@ static FINISH_CONFIRM_ACTIVE: AtomicBool = AtomicBool::new(false);
 static FINISH_CONFIRM_LMB_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static STARTUP_VISIBLE_SECONDS: AtomicU16 = AtomicU16::new(u16::MAX);
 static STARTUP_FORCE_SPEED_OK: AtomicBool = AtomicBool::new(false);
+static STARTUP_SPEED_OVERRIDE_ACTIVE: AtomicBool = AtomicBool::new(false);
 static TEMP_RELEASE_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static SELECT_KEYS_WERE_DOWN: AtomicU16 = AtomicU16::new(0);
 static LMB_WAS_DOWN: AtomicBool = AtomicBool::new(false);
@@ -860,20 +861,17 @@ impl DirectControlExtension {
         let mut recognized = 0usize;
         let mut writes_ok = true;
         for path in SPEED_PATHS {
-            if ctx.ui_runner_name(path).is_none() {
+            if ctx.ui_selectable_selected(path).is_none() {
                 continue;
             }
             recognized += 1;
             let selected = path == selected_path;
-            let state = if selected {
-                r#"{"selected":true}"#
-            } else {
-                r#"{"selected":false}"#
-            };
-            writes_ok &= ctx.ui_set_state_json(path, state);
+            writes_ok &= ctx.ui_set_selectable_selected(path, selected);
         }
 
-        recognized > 0 && writes_ok
+        recognized > 0
+            && writes_ok
+            && matches!(ctx.ui_selectable_selected(selected_path), Some(true))
     }
 
     fn update_startup_presentation_sync(ctx: &mut StableClient<'_>) {
@@ -899,17 +897,35 @@ impl DirectControlExtension {
             Ordering::Release,
         );
 
-        // The visible clock is whole-second precision. Reaching floor(live_tick / 60) leaves less
-        // than one second of possible presentation lag; the frozen simulation prevents overshoot.
+        // The visible clock is whole-second precision. Reaching floor(live_tick / 60) proves the
+        // viewer has reached the frozen live second. A sub-second residual cannot be observed through
+        // the stable client API and is deferred to the post-release playback-position watchdog.
         let target_seconds = ready_tick / 60;
         if visible_seconds < target_seconds {
             let ok = Self::set_native_speed_selected(ctx, "ingame.speed_buttons.speed3x");
             STARTUP_FORCE_SPEED_OK.store(ok, Ordering::Release);
+            if ok {
+                STARTUP_SPEED_OVERRIDE_ACTIVE.store(true, Ordering::Release);
+            }
             pacing_probe::set_startup_presentation_synced(false);
         } else {
-            let ok = Self::set_native_speed_selected(ctx, "ingame.speed_buttons.speed1x");
-            STARTUP_FORCE_SPEED_OK.store(ok, Ordering::Release);
-            pacing_probe::set_startup_presentation_synced(ok);
+            let override_active = STARTUP_SPEED_OVERRIDE_ACTIVE.load(Ordering::Acquire);
+            if override_active {
+                let restored = Self::set_native_speed_selected(ctx, "ingame.speed_buttons.speed1x");
+                STARTUP_FORCE_SPEED_OK.store(restored, Ordering::Release);
+                if restored {
+                    STARTUP_SPEED_OVERRIDE_ACTIVE.store(false, Ordering::Release);
+                    pacing_probe::set_startup_presentation_synced(true);
+                } else {
+                    // We successfully changed the native selection earlier, so fail closed until
+                    // 1x can be restored; never hand control over while a forced fast speed remains.
+                    pacing_probe::set_startup_presentation_synced(false);
+                }
+            } else {
+                // If programmatic speed selection is unsupported, do not deadlock startup. The
+                // frozen simulation lets ordinary 1x presentation catch up safely on its own.
+                pacing_probe::set_startup_presentation_synced(true);
+            }
         }
     }
 
@@ -1101,7 +1117,7 @@ impl DirectControlExtension {
             ctx,
             172.0,
             &format!(
-                "LOAD: Match t{} @{}ms | GameMap t{} @{}ms | center_log t{} @{}ms | InGame t{} @{}ms | auto {} wait {}ms | view {}s target {}s speedwrite {}",
+                "LOAD: Match t{} @{}ms | GameMap t{} @{}ms | center_log t{} @{}ms | InGame t{} @{}ms | auto {} wait {}ms | view {}s target {}s speedwrite {} override {}",
                 probe_value(pacing.first_match_render_tick),
                 probe_value(pacing.first_match_render_ms),
                 probe_value(pacing.first_game_map_tick),
@@ -1118,6 +1134,7 @@ impl DirectControlExtension {
                 },
                 pacing_probe::ready_gate_tick().map(|tick| tick / 60).unwrap_or(0),
                 if STARTUP_FORCE_SPEED_OK.load(Ordering::Acquire) { "ok" } else { "no" },
+                if STARTUP_SPEED_OVERRIDE_ACTIVE.load(Ordering::Acquire) { "ON" } else { "off" },
             ),
             0xffd080ff,
         );
@@ -1166,6 +1183,7 @@ impl StableExtension for DirectControlExtension {
                 FINISH_CONFIRM_LMB_WAS_DOWN.store(false, Ordering::Release);
                 STARTUP_VISIBLE_SECONDS.store(u16::MAX, Ordering::Release);
                 STARTUP_FORCE_SPEED_OK.store(false, Ordering::Release);
+                STARTUP_SPEED_OVERRIDE_ACTIVE.store(false, Ordering::Release);
                 TEMP_RELEASE_WAS_DOWN.store(false, Ordering::Release);
                 SELECT_KEYS_WERE_DOWN.store(0, Ordering::Release);
                 LMB_WAS_DOWN.store(false, Ordering::Release);
