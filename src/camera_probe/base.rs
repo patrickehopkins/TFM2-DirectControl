@@ -17,11 +17,16 @@
 
 use std::{
     ffi::c_void,
+    mem::size_of,
     ptr,
     sync::{
         atomic::{AtomicBool, AtomicI32, AtomicU32, AtomicU64, AtomicUsize, Ordering},
         Mutex, OnceLock,
     },
+};
+
+use windows_sys::Win32::System::Memory::{
+    VirtualQuery, MEMORY_BASIC_INFORMATION, PAGE_GUARD, PAGE_NOACCESS,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -131,6 +136,10 @@ const FOLLOW_PROBE_BYTES: usize = 0x430;
 const FOLLOW_PROBE_WORDS: usize = FOLLOW_PROBE_BYTES / 8;
 const VK_F1_CODE: i32 = 0x70;
 const FOLLOW_PROBE_MAX_DIFFS: usize = 16;
+const FOLLOW_ARG_OBJECT_BYTES: usize = 0x400;
+const FOLLOW_ARG_OBJECT_WORDS: usize = FOLLOW_ARG_OBJECT_BYTES / 8;
+const FOLLOW_POINTER_ARG_COUNT: usize = 5;
+const FOLLOW_POINTER_ARG_INDEXES: [usize; FOLLOW_POINTER_ARG_COUNT] = [0, 1, 3, 4, 5];
 
 const MEM_COMMIT: u32 = 0x1000;
 const MEM_RESERVE: u32 = 0x2000;
@@ -181,12 +190,21 @@ pub struct FollowProbeDiff {
     pub held: u64,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct FollowProbePointerDiff {
+    pub arg: usize,
+    pub offset: usize,
+    pub free: u64,
+    pub held: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct FollowProbeReport {
     pub slot: usize,
     pub samples: u32,
     pub diffs: Vec<FollowProbeDiff>,
     pub arg_diffs: Vec<FollowProbeDiff>,
+    pub pointer_diffs: Vec<FollowProbePointerDiff>,
 }
 
 struct FollowProbeState {
@@ -201,6 +219,12 @@ struct FollowProbeState {
     free_args: [u64; 6],
     held_args: [u64; 6],
     arg_stable: [bool; 6],
+    free_ptrs: [usize; FOLLOW_POINTER_ARG_COUNT],
+    held_ptrs: [usize; FOLLOW_POINTER_ARG_COUNT],
+    free_ptr_words: [[u64; FOLLOW_ARG_OBJECT_WORDS]; FOLLOW_POINTER_ARG_COUNT],
+    held_ptr_words: [[u64; FOLLOW_ARG_OBJECT_WORDS]; FOLLOW_POINTER_ARG_COUNT],
+    ptr_stable: [[bool; FOLLOW_ARG_OBJECT_WORDS]; FOLLOW_POINTER_ARG_COUNT],
+    ptr_valid: [bool; FOLLOW_POINTER_ARG_COUNT],
 }
 
 impl Default for FollowProbeState {
@@ -217,6 +241,12 @@ impl Default for FollowProbeState {
             free_args: [0; 6],
             held_args: [0; 6],
             arg_stable: [false; 6],
+            free_ptrs: [0; FOLLOW_POINTER_ARG_COUNT],
+            held_ptrs: [0; FOLLOW_POINTER_ARG_COUNT],
+            free_ptr_words: [[0; FOLLOW_ARG_OBJECT_WORDS]; FOLLOW_POINTER_ARG_COUNT],
+            held_ptr_words: [[0; FOLLOW_ARG_OBJECT_WORDS]; FOLLOW_POINTER_ARG_COUNT],
+            ptr_stable: [[false; FOLLOW_ARG_OBJECT_WORDS]; FOLLOW_POINTER_ARG_COUNT],
+            ptr_valid: [false; FOLLOW_POINTER_ARG_COUNT],
         }
     }
 }
@@ -485,6 +515,59 @@ unsafe fn fkey_mask() -> u16 {
     mask
 }
 
+unsafe fn readable_qwords(address: usize) -> Option<[u64; FOLLOW_ARG_OBJECT_WORDS]> {
+    if address < 0x1_0000 {
+        return None;
+    }
+
+    let mut info = std::mem::zeroed::<MEMORY_BASIC_INFORMATION>();
+    if VirtualQuery(
+        address as *const c_void,
+        &mut info,
+        size_of::<MEMORY_BASIC_INFORMATION>(),
+    ) == 0
+    {
+        return None;
+    }
+    if info.State != MEM_COMMIT
+        || info.Protect & PAGE_GUARD != 0
+        || info.Protect & PAGE_NOACCESS != 0
+    {
+        return None;
+    }
+
+    let region_start = info.BaseAddress as usize;
+    let region_end = region_start.checked_add(info.RegionSize)?;
+    let read_end = address.checked_add(FOLLOW_ARG_OBJECT_BYTES)?;
+    if address < region_start || read_end > region_end {
+        return None;
+    }
+
+    let mut words = [0u64; FOLLOW_ARG_OBJECT_WORDS];
+    for (index, word) in words.iter_mut().enumerate() {
+        *word = ptr::read_unaligned((address + index * 8) as *const u64);
+    }
+    Some(words)
+}
+
+unsafe fn read_pointer_probe_args(
+    args: [u64; 6],
+) -> (
+    [usize; FOLLOW_POINTER_ARG_COUNT],
+    [Option<[u64; FOLLOW_ARG_OBJECT_WORDS]>; FOLLOW_POINTER_ARG_COUNT],
+) {
+    let mut ptrs = [0usize; FOLLOW_POINTER_ARG_COUNT];
+    let mut words: [Option<[u64; FOLLOW_ARG_OBJECT_WORDS]>; FOLLOW_POINTER_ARG_COUNT] =
+        std::array::from_fn(|_| None);
+
+    for (probe_index, arg_index) in FOLLOW_POINTER_ARG_INDEXES.iter().copied().enumerate() {
+        let address = args[arg_index] as usize;
+        ptrs[probe_index] = address;
+        words[probe_index] = readable_qwords(address);
+    }
+    (ptrs, words)
+}
+
 unsafe fn read_follow_probe_words(this: *mut u8) -> [u64; FOLLOW_PROBE_WORDS] {
     let mut words = [0u64; FOLLOW_PROBE_WORDS];
     for (index, word) in words.iter_mut().enumerate() {
@@ -496,6 +579,7 @@ unsafe fn read_follow_probe_words(this: *mut u8) -> [u64; FOLLOW_PROBE_WORDS] {
 unsafe fn update_follow_probe(this: *mut u8, args: [u64; 6]) {
     let mask = fkey_mask();
     let words = read_follow_probe_words(this);
+    let (pointer_args, pointer_words) = read_pointer_probe_args(args);
     let Ok(mut state) = follow_probe_state().lock() else {
         return;
     };
@@ -539,11 +623,45 @@ unsafe fn update_follow_probe(this: *mut u8, args: [u64; 6]) {
                 }
             }
 
+            let mut pointer_diffs = Vec::new();
+            for probe_index in 0..FOLLOW_POINTER_ARG_COUNT {
+                if !state.ptr_valid[probe_index]
+                    || state.free_ptrs[probe_index] == 0
+                    || state.free_ptrs[probe_index] != state.held_ptrs[probe_index]
+                {
+                    continue;
+                }
+
+                let arg_index = FOLLOW_POINTER_ARG_INDEXES[probe_index];
+                for word_index in 0..FOLLOW_ARG_OBJECT_WORDS {
+                    if !state.ptr_stable[probe_index][word_index]
+                        || state.free_ptr_words[probe_index][word_index]
+                            == state.held_ptr_words[probe_index][word_index]
+                    {
+                        continue;
+                    }
+
+                    pointer_diffs.push(FollowProbePointerDiff {
+                        arg: arg_index + 2,
+                        offset: word_index * 8,
+                        free: state.free_ptr_words[probe_index][word_index],
+                        held: state.held_ptr_words[probe_index][word_index],
+                    });
+                    if pointer_diffs.len() >= FOLLOW_PROBE_MAX_DIFFS {
+                        break;
+                    }
+                }
+                if pointer_diffs.len() >= FOLLOW_PROBE_MAX_DIFFS {
+                    break;
+                }
+            }
+
             state.report = Some(FollowProbeReport {
                 slot: state.held_slot,
                 samples: state.held_samples,
                 diffs,
                 arg_diffs,
+                pointer_diffs,
             });
         }
 
@@ -552,6 +670,12 @@ unsafe fn update_follow_probe(this: *mut u8, args: [u64; 6]) {
         state.free_words = words;
         state.free_args = args;
         state.free_valid = true;
+        for probe_index in 0..FOLLOW_POINTER_ARG_COUNT {
+            state.free_ptrs[probe_index] = pointer_args[probe_index];
+            if let Some(snapshot) = pointer_words[probe_index] {
+                state.free_ptr_words[probe_index] = snapshot;
+            }
+        }
         state.last_mask = 0;
         state.held_samples = 0;
         return;
@@ -564,6 +688,20 @@ unsafe fn update_follow_probe(this: *mut u8, args: [u64; 6]) {
         state.held_args = args;
         state.arg_stable.fill(true);
         state.held_samples = 1;
+        for probe_index in 0..FOLLOW_POINTER_ARG_COUNT {
+            state.held_ptrs[probe_index] = pointer_args[probe_index];
+            state.ptr_stable[probe_index].fill(true);
+            state.ptr_valid[probe_index] = false;
+
+            if pointer_args[probe_index] != 0
+                && pointer_args[probe_index] == state.free_ptrs[probe_index]
+            {
+                if let Some(snapshot) = pointer_words[probe_index] {
+                    state.held_ptr_words[probe_index] = snapshot;
+                    state.ptr_valid[probe_index] = true;
+                }
+            }
+        }
         state.held_slot = slot;
     } else {
         for (index, word) in words.iter().enumerate() {
@@ -578,6 +716,26 @@ unsafe fn update_follow_probe(this: *mut u8, args: [u64; 6]) {
         }
         state.held_words = words;
         state.held_args = args;
+
+        for probe_index in 0..FOLLOW_POINTER_ARG_COUNT {
+            if !state.ptr_valid[probe_index]
+                || pointer_args[probe_index] != state.held_ptrs[probe_index]
+            {
+                state.ptr_valid[probe_index] = false;
+                continue;
+            }
+            let Some(snapshot) = pointer_words[probe_index] else {
+                state.ptr_valid[probe_index] = false;
+                continue;
+            };
+            for word_index in 0..FOLLOW_ARG_OBJECT_WORDS {
+                if state.held_ptr_words[probe_index][word_index] != snapshot[word_index] {
+                    state.ptr_stable[probe_index][word_index] = false;
+                }
+            }
+            state.held_ptr_words[probe_index] = snapshot;
+        }
+
         state.held_samples = state.held_samples.saturating_add(1);
     }
     state.last_mask = mask;
