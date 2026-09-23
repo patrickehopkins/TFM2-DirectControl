@@ -4,15 +4,15 @@
 //! Stage 4 proved manual `InputV1::move_to` commands reach that live simulation.
 //!
 //! Startup probing on v0.6.1 proved Candidate A is already the watched ClientMatchView simulation
-//! at tick 1, but the client does not expose GameMap/InGame until that simulation has progressed
-//! further. Blocking at tick 2 therefore deadlocks the loader rather than preserving a clean start.
+//! at tick 1. It also proved the loader behaves materially better with the existing bounded startup
+//! hold: tick 1 completes, the next tick waits up to two seconds, then Candidate A resumes at 60 Hz.
 //!
-//! The current bounded experiment paces Candidate A at the proven 60 Hz during loading, then latches
-//! the first InGame boundary and finishes that already-running simulation tick before holding the next
-//! one for Ctrl+Home. This lets the loader consume only the simulation progress it actually requires
-//! without allowing the watched match to keep advancing after the battlefield becomes interactive.
-//! The worker-local Ctrl+Home escape remains available because post_render may not be pumping while
-//! a Candidate-A callback is held.
+//! The loader auto-release is now distinct from the user's Ctrl+Home start. It opens only enough
+//! runway for the client to reach its first InGame frame. That frame latches the current simulation
+//! tick; the tick is allowed to finish, then Candidate A blocks again until the user explicitly
+//! starts Direct Control. This preserves the loader's physically validated path while preventing
+//! further watched-match progress once the battlefield is actually available.
+//! The worker-local Ctrl+Home escape remains available while a Candidate-A callback is held.
 //!
 //! Pause uses a separate presentation gate. Ctrl+End permanently releases pacing and manual input
 //! for the current match.
@@ -543,8 +543,9 @@ fn wait_until_started() -> bool {
         if !INTERACTIVE_MATCH.load(Ordering::Acquire)
             && now_ms.saturating_sub(wait_started_ms) >= PREMATCH_AUTO_RELEASE_MS
         {
+            // Loader escape only: allow Candidate A to resume at 60 Hz, but keep manual control
+            // unstarted so the first real InGame frame can re-establish a deliberate Ctrl+Home gate.
             START_AUTO_RELEASED.store(true, Ordering::Release);
-            request_start_simulation();
             return true;
         }
 
@@ -604,8 +605,8 @@ fn pace_candidate_a(tick: u64) {
         if INTERACTIVE_MATCH.load(Ordering::Acquire) {
             let ready_tick = READY_GATE_TICK.load(Ordering::Acquire);
 
-            // Finish the simulation tick that was already in progress when the first InGame frame
-            // became visible. Block only on the next tick so the loader is never frozen mid-tick.
+            // Finish the simulation tick already in progress when InGame first becomes visible.
+            // The next tick blocks for the user's actual Ctrl+Home.
             if ready_tick != NO_TICK && tick <= ready_tick {
                 return;
             }
@@ -614,16 +615,33 @@ fn pace_candidate_a(tick: u64) {
                 return;
             }
 
-            // User-started live control begins from the exact held tick; loading/waiting wall time
-            // never becomes catch-up budget.
             reanchor_pacer();
             return pace_candidate_a(tick);
         }
 
-        // Before the battlefield is interactive, do not block Candidate A. The v0.6.1 loader
-        // demonstrably requires watched-match simulation progress before GameMap/InGame exists.
-        // Fall through into the normal 60 Hz pacer so loading receives only real-time progress,
-        // not a fast pre-simulation burst.
+        if !START_AUTO_RELEASED.load(Ordering::Acquire) {
+            let first_tick = FIRST_CANDIDATE_A_TICK.load(Ordering::Acquire);
+
+            // Preserve the loader behavior that physically reached InGame around tick 166:
+            // complete tick 1, hold at the next tick for the bounded 2-second runway gate, then
+            // resume Candidate A at 60 Hz without treating that recovery as the user's start.
+            if first_tick == NO_TICK || tick <= first_tick {
+                return;
+            }
+
+            if !wait_until_started() {
+                return;
+            }
+
+            // Ctrl+Home may have been pressed during the hold. If so, START_REQUESTED is now true
+            // and the recursive call enters ordinary live pacing. Otherwise this was only the
+            // bounded loader auto-release and the next call falls through to the 60 Hz loader runway.
+            reanchor_pacer();
+            return pace_candidate_a(tick);
+        }
+
+        // Loader runway: paced at the proven 60 Hz until the first InGame frame is observed.
+        // START_REQUESTED remains false, so that frame immediately reinstates the user gate.
     }
 
     if PRESENTATION_PHASE.load(Ordering::Acquire) == PHASE_PAUSED {
