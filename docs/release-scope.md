@@ -6,7 +6,7 @@ This file records the current functionality-first scope and implementation prior
 
 **The authoritative first-public-release cut is now `docs/release-week-plan.md`.** The long-form priority list below remains useful design history and backlog detail, but any item below still labeled "pre-release" is superseded by the release-week plan unless that file explicitly keeps it before release.
 
-Current release sequence: **automatic team fog-of-war -> F-key mapping hardening -> click-target hitbox polish -> validated pregame/presentation synchronization -> raw-input foreground-focus safety sweep -> diagnostic presentation cleanup -> Workshop packaging and release.** Synchronized match speeds/death fast-forward were attempted during release week and deliberately moved post-release after physical testing made the release-time pacing/control model less predictable. Everything else moves behind the first public release unless final testing exposes a core release-breaking regression.
+Current release sequence: **automatic team fog-of-war -> F-key mapping hardening -> click-target hitbox polish -> validated pregame/presentation synchronization -> raw-input foreground-focus safety sweep -> held-RMB command refresh -> small champion-hitbox reduction -> diagnostic presentation cleanup -> Workshop packaging and release.** Synchronized match speeds/death fast-forward were attempted during release week and deliberately moved post-release after physical testing made the release-time pacing/control model less predictable. Everything else moves behind the first public release unless final testing exposes a core release-breaking regression.
 
 **Pings/team commands and manual shop control remain explicitly post-release systems.**
 
@@ -155,7 +155,7 @@ Do not silently copy or bundle that mod's implementation. For the eventual Works
 ## Deferred / later polish
 
 - **Screen-edge camera scrolling:** shelved after repeated physical tests showed stationary-edge ticking and top/bottom UI blockage. Revisit only through a deeper native camera/update investigation; do not restore the rejected synthetic-mouse wake workaround.
-- **Space recenter/follow:** desirable camera QoL, but not part of the now-locked camera milestone. Consider exposing native follow/recenter behavior later through the shortcut system.
+- **Space recenter/follow:** deferred after substantial investigation. Resume from `docs/deferred-investigations.md`; do not repeat rejected custom-pan or synthetic-input approaches.
 - **Friendly champion selection cleanup:** do not redesign the visible selection UI here. F1-F10 is sufficient for functionality; only harden how those fixed role slots resolve to athlete ids.
 - **Idle retaliation:** possible later behavior where an otherwise-idle selected champion that is attacked by an enemy already in legal basic-attack range returns fire.
 - **Morgard/ping override investigation:** revisit only if explicit manual orders are still observably overridden after the core command path is stable.
