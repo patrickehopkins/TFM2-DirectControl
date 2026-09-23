@@ -54,6 +54,8 @@ const HOLD_KEY: &str = "H";
 static MATCH_SESSION_ACTIVE: AtomicBool = AtomicBool::new(false);
 static START_CHORD_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static FINISH_CHORD_WAS_DOWN: AtomicBool = AtomicBool::new(false);
+static FINISH_CONFIRM_ACTIVE: AtomicBool = AtomicBool::new(false);
+static FINISH_CONFIRM_LMB_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static TEMP_RELEASE_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static SELECT_KEYS_WERE_DOWN: AtomicU16 = AtomicU16::new(0);
 static LMB_WAS_DOWN: AtomicBool = AtomicBool::new(false);
@@ -194,6 +196,8 @@ impl DirectControlExtension {
     fn poll_finish_chord(ingame: bool) {
         if !ingame {
             FINISH_CHORD_WAS_DOWN.store(false, Ordering::Release);
+            FINISH_CONFIRM_ACTIVE.store(false, Ordering::Release);
+            FINISH_CONFIRM_LMB_WAS_DOWN.store(false, Ordering::Release);
             return;
         }
 
@@ -201,8 +205,37 @@ impl DirectControlExtension {
             GetAsyncKeyState(VK_CONTROL as i32) < 0 && GetAsyncKeyState(VK_END as i32) < 0
         };
         let was_down = FINISH_CHORD_WAS_DOWN.swap(chord_down, Ordering::AcqRel);
-        if chord_down && !was_down {
+        if chord_down && !was_down && !pacing_probe::manual_control_released() {
+            FINISH_CONFIRM_ACTIVE.store(true, Ordering::Release);
+            FINISH_CONFIRM_LMB_WAS_DOWN.store(false, Ordering::Release);
+        }
+    }
+
+    fn poll_finish_confirmation(mouse: MouseSnapshot) {
+        if !FINISH_CONFIRM_ACTIVE.load(Ordering::Acquire) {
+            FINISH_CONFIRM_LMB_WAS_DOWN.store(false, Ordering::Release);
+            return;
+        }
+
+        let was_down = FINISH_CONFIRM_LMB_WAS_DOWN.swap(mouse.left_down, Ordering::AcqRel);
+        if !mouse.valid || !mouse.left_down || was_down {
+            return;
+        }
+
+        let yes = mouse.ui_x >= 760.0
+            && mouse.ui_x <= 930.0
+            && mouse.ui_y >= 590.0
+            && mouse.ui_y <= 646.0;
+        let no = mouse.ui_x >= 990.0
+            && mouse.ui_x <= 1_160.0
+            && mouse.ui_y >= 590.0
+            && mouse.ui_y <= 646.0;
+
+        if yes {
+            FINISH_CONFIRM_ACTIVE.store(false, Ordering::Release);
             pacing_probe::request_finish_simulation();
+        } else if no {
+            FINISH_CONFIRM_ACTIVE.store(false, Ordering::Release);
         }
     }
 
@@ -801,6 +834,73 @@ impl DirectControlExtension {
         );
     }
 
+    fn draw_ready_prompt(ctx: &mut StableClient<'_>) {
+        ctx.draw_rect("UI", 520.0, 160.0, 880.0, 86.0, 30_000, 10.0, 0x101018e8);
+        ctx.draw_text(
+            "UI",
+            "Direct Control is ready. Press Ctrl+Home to take control and resume the match.",
+            "asset/base/font/set/bold",
+            (550.0, 176.0, 820.0, 54.0),
+            30_001,
+            24.0,
+            0xffffffff,
+            TextAlignXV1::Center,
+            TextAlignYV1::Center,
+        );
+    }
+
+    fn draw_finish_confirmation(ctx: &mut StableClient<'_>) {
+        ctx.draw_rect("UI", 610.0, 405.0, 700.0, 290.0, 40_000, 14.0, 0x101018f4);
+        ctx.draw_text(
+            "UI",
+            "Give control back to the AI?",
+            "asset/base/font/set/bold",
+            (650.0, 438.0, 620.0, 46.0),
+            40_001,
+            28.0,
+            0xffffffff,
+            TextAlignXV1::Center,
+            TextAlignYV1::Center,
+        );
+        ctx.draw_text(
+            "UI",
+            "Ctrl+End permanently releases Direct Control for this match. You cannot take control again until the next match.",
+            "asset/base/font/set/regular",
+            (690.0, 495.0, 540.0, 66.0),
+            40_001,
+            17.0,
+            0xd8d8e8ff,
+            TextAlignXV1::Center,
+            TextAlignYV1::Center,
+        );
+
+        ctx.draw_rect("UI", 760.0, 590.0, 170.0, 56.0, 40_001, 8.0, 0x397a4fff);
+        ctx.draw_text(
+            "UI",
+            "YES — RELEASE",
+            "asset/base/font/set/bold",
+            (760.0, 590.0, 170.0, 56.0),
+            40_002,
+            17.0,
+            0xffffffff,
+            TextAlignXV1::Center,
+            TextAlignYV1::Center,
+        );
+
+        ctx.draw_rect("UI", 990.0, 590.0, 170.0, 56.0, 40_001, 8.0, 0x633b47ff);
+        ctx.draw_text(
+            "UI",
+            "NO — KEEP CONTROL",
+            "asset/base/font/set/bold",
+            (990.0, 590.0, 170.0, 56.0),
+            40_002,
+            16.0,
+            0xffffffff,
+            TextAlignXV1::Center,
+            TextAlignYV1::Center,
+        );
+    }
+
     fn draw_status(ctx: &mut StableClient<'_>, pause_ui: &pause_probe::PauseUiSnapshot) {
         let pacing = pacing_probe::snapshot();
         let control_state = control::diagnostics();
@@ -966,6 +1066,8 @@ impl StableExtension for DirectControlExtension {
                 slot_mapping::reset();
                 START_CHORD_WAS_DOWN.store(false, Ordering::Release);
                 FINISH_CHORD_WAS_DOWN.store(false, Ordering::Release);
+                FINISH_CONFIRM_ACTIVE.store(false, Ordering::Release);
+                FINISH_CONFIRM_LMB_WAS_DOWN.store(false, Ordering::Release);
                 TEMP_RELEASE_WAS_DOWN.store(false, Ordering::Release);
                 SELECT_KEYS_WERE_DOWN.store(0, Ordering::Release);
                 LMB_WAS_DOWN.store(false, Ordering::Release);
@@ -991,17 +1093,27 @@ impl StableExtension for DirectControlExtension {
         }
 
         let pause_ui = pause_probe::update(ctx, session_active);
-        // Once an InGame session has started, any temporary non-InGame match scene is fail-closed:
-        // hold Candidate A until the battlefield returns instead of running vanilla AI unseen.
-        let presentation_paused = session_active && (!ingame || pause_ui.paused);
 
         Self::poll_start_chord(control_scene);
-        pacing_probe::set_presentation_state(session_active, presentation_paused);
         Self::poll_finish_chord(ingame);
-        Self::poll_player_selection(ctx, ingame);
-        Self::poll_temporary_release(ingame);
-        Self::poll_return_home(ctx, ingame);
-        Self::poll_hold(ctx, ingame);
+
+        let mouse = self.read_mouse(ctx);
+        Self::poll_finish_confirmation(mouse);
+        let finish_confirm_active = FINISH_CONFIRM_ACTIVE.load(Ordering::Acquire);
+
+        // Once an InGame session has started, any temporary non-InGame match scene is fail-closed.
+        // The Ctrl+End confirmation also holds Candidate A so the user can make the irreversible
+        // choice without the match advancing underneath the dialog.
+        let presentation_paused =
+            session_active && (!ingame || pause_ui.paused || finish_confirm_active);
+        pacing_probe::set_presentation_state(session_active, presentation_paused);
+
+        if !finish_confirm_active {
+            Self::poll_player_selection(ctx, ingame);
+            Self::poll_temporary_release(ingame);
+            Self::poll_return_home(ctx, ingame);
+            Self::poll_hold(ctx, ingame);
+        }
 
         // Automatic fog follows the controlled champion's authoritative simulation team.
         // Stop enforcing on pause/release/spectator without changing the last native view.
@@ -1019,14 +1131,24 @@ impl StableExtension for DirectControlExtension {
             return;
         }
 
-        let mouse = self.read_mouse(ctx);
-        let targeting_consumed_rmb = self.poll_targeting(ctx, mouse, ingame);
-        self.poll_rmb_move(ctx, mouse, ingame, targeting_consumed_rmb);
-        Self::draw_cursor(ctx, mouse);
+        if !finish_confirm_active {
+            let targeting_consumed_rmb = self.poll_targeting(ctx, mouse, ingame);
+            self.poll_rmb_move(ctx, mouse, ingame, targeting_consumed_rmb);
+            Self::draw_cursor(ctx, mouse);
+        }
 
         if ingame {
-            Self::draw_world_cursor_and_skill(ctx, mouse);
+            if !finish_confirm_active {
+                Self::draw_world_cursor_and_skill(ctx, mouse);
+            }
             Self::draw_status(ctx, &pause_ui);
+
+            if !pacing_probe::start_requested() && !pacing_probe::manual_control_released() {
+                Self::draw_ready_prompt(ctx);
+            }
+            if finish_confirm_active {
+                Self::draw_finish_confirmation(ctx);
+            }
         } else {
             Self::draw_start_gate(ctx);
         }
