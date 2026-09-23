@@ -798,7 +798,7 @@ fn pace_candidate_a(tick: u64) {
 }
 
 fn observe_gambler_q_base_input(ctx: &StableAiContext<'_>, base_input: Option<&InputV1>) {
-    if ctx.champion_name() != "gambler" {
+    if ctx.champion_name().as_deref() != Some("gambler") {
         return;
     }
     let Some(input) = base_input else {
