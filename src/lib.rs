@@ -7,7 +7,7 @@ mod pause_probe;
 mod simulation_probe;
 mod slot_mapping;
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 
 use mod_api_stable::{
     declare_stable_mod, ClientSceneKindV1, LogLevel, StableClient, StableExtension, StableHost,
