@@ -296,6 +296,11 @@ impl DirectControlExtension {
             }
         }
 
+        // Native Space-follow is implemented by injecting the selected slot's real F-key into the
+        // Windows input stream. Mask those synthetic bits here so camera follow cannot look like a
+        // fresh Direct Control selection and clear the champion's retained command.
+        down_mask &= !camera_probe::synthetic_follow_fkey_mask();
+
         let previous = SELECT_KEYS_WERE_DOWN.swap(down_mask, Ordering::AcqRel);
         if !pacing_probe::manual_input_enabled() {
             return;
