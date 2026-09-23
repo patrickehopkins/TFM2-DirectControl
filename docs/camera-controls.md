@@ -43,4 +43,4 @@ The compatibility audit should cover multiple 16:9 resolutions/window sizes, bot
 ## Later optional camera polish
 
 - **Screen-edge scrolling:** shelved until/unless a deeper native-camera route is worth revisiting.
-- **Space recenter/follow:** still desirable as optional QoL, but not part of the now-validated camera milestone. Persistent follow/lock already exists natively through TFM2's F-key camera behavior and can later be exposed through the custom shortcut pass.
+- **Space recenter/follow:** deferred after substantial pre-release investigation. Custom pan-follow and synthetic-input approaches were physically rejected, and native follow proved to live upstream of the validated camera object/handler surface. Resume from `docs/deferred-investigations.md`; do not repeat the rejected approaches.
