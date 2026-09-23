@@ -530,9 +530,25 @@ impl DirectControlExtension {
         let Some((game_w, game_h)) = ctx.draw_map_size("Game") else {
             return;
         };
-        if game_w <= 0.0 || game_h <= 0.0 {
+        let (ui_w, ui_h) = ctx
+            .draw_map_size("UI")
+            .unwrap_or((UI_FALLBACK_W, UI_FALLBACK_H));
+        if game_w <= 0.0
+            || game_h <= 0.0
+            || ui_w <= 0.0
+            || ui_h <= 0.0
+            || camera.extent_a <= 0.0
+            || camera.extent_b <= 0.0
+        {
             return;
         }
+
+        let (origin_ui_x, origin_ui_y) =
+            if let Some((x, y, w, h)) = ctx.ui_node_rect("ingame.center_log") {
+                (x + w * 0.5, y + h * 0.5)
+            } else {
+                (ui_w * 0.5, ui_h * 0.5)
+            };
 
         let world_units_per_px =
             ((camera.extent_a / game_w) + (camera.extent_b / game_h)) * 0.5;
@@ -541,14 +557,8 @@ impl DirectControlExtension {
             return;
         }
         let sim_units_per_px = sim_units_per_px_f.round() as u64;
-
-        ctx.draw_set_camera(
-            "Game",
-            camera.center_x,
-            camera.center_y,
-            camera.extent_a,
-            camera.extent_b,
-        );
+        let ui_per_world_x = game_w / camera.extent_a;
+        let ui_per_world_y = game_h / camera.extent_b;
 
         for entity in control::click_target_overlay_snapshot() {
             let radius_sim = control::click_target_effective_radius(
@@ -578,23 +588,29 @@ impl DirectControlExtension {
                 control::EntityKind::Minion => 1.0,
                 _ => 2.0,
             };
-            let line_width_world = line_width_px * world_units_per_px;
+
+            let project = |x: f32, y: f32| {
+                (
+                    origin_ui_x + (x - camera.center_x) * ui_per_world_x,
+                    origin_ui_y + (y - camera.center_y) * ui_per_world_y,
+                )
+            };
 
             let step = std::f32::consts::TAU / PICK_RING_SEGMENTS as f32;
-            let mut previous_x = world_x + world_radius;
-            let mut previous_y = world_y;
+            let (mut previous_x, mut previous_y) = project(world_x + world_radius, world_y);
             for segment in 1..=PICK_RING_SEGMENTS {
                 let angle = segment as f32 * step;
-                let next_x = world_x + world_radius * angle.cos();
-                let next_y = world_y + world_radius * angle.sin();
+                let next_world_x = world_x + world_radius * angle.cos();
+                let next_world_y = world_y + world_radius * angle.sin();
+                let (next_x, next_y) = project(next_world_x, next_world_y);
                 ctx.draw_line(
-                    "Game",
+                    "UI",
                     previous_x,
                     previous_y,
                     next_x,
                     next_y,
-                    line_width_world,
-                    1,
+                    line_width_px,
+                    19_990,
                     color,
                 );
                 previous_x = next_x;
