@@ -853,7 +853,7 @@ impl DirectControlExtension {
             "running"
         };
 
-        ctx.draw_rect("UI", 18.0, 58.0, 1_180.0, 160.0, 19_998, 6.0, 0x101018d8);
+        ctx.draw_rect("UI", 18.0, 58.0, 1_180.0, 184.0, 19_998, 6.0, 0x101018d8);
         Self::draw_text_line(
             ctx,
             62.0,
@@ -901,13 +901,13 @@ impl DirectControlExtension {
             ctx,
             150.0,
             &format!(
-                "STARTUP PROBE: origin {} | ClientMatchView tick {} @ {}ms | match {} replay {} set {}",
+                "STARTUP PROBE: A first t{} | first origin {}@t{} | last origin {} | ClientMatchView t{} @{}ms",
+                probe_value(pacing.first_candidate_a_tick),
+                probe_value(pacing.first_origin_kind),
+                probe_value(pacing.first_origin_tick),
                 probe_value(pacing.startup_origin_kind),
                 probe_value(pacing.client_match_view_tick),
                 probe_value(pacing.client_match_view_ms),
-                probe_value(pacing.client_match_view_match_id),
-                probe_value(pacing.client_match_view_replay_id),
-                probe_value(pacing.client_match_view_set_index),
             ),
             0xffd080ff,
         );
@@ -915,7 +915,7 @@ impl DirectControlExtension {
             ctx,
             172.0,
             &format!(
-                "LOAD: Match t{} @{}ms | GameMap t{} @{}ms | center_log t{} @{}ms | InGame t{} @{}ms",
+                "LOAD: Match t{} @{}ms | GameMap t{} @{}ms | center_log t{} @{}ms | InGame t{} @{}ms | auto {} wait {}ms",
                 probe_value(pacing.first_match_render_tick),
                 probe_value(pacing.first_match_render_ms),
                 probe_value(pacing.first_game_map_tick),
@@ -924,6 +924,8 @@ impl DirectControlExtension {
                 probe_value(pacing.first_center_log_ms),
                 probe_value(pacing.first_ingame_render_tick),
                 probe_value(pacing.first_ingame_render_ms),
+                if pacing.start_auto_released { "YES" } else { "no" },
+                pacing.start_total_wait_ms,
             ),
             0xffd080ff,
         );
