@@ -545,6 +545,11 @@ impl StablePlayerAi for CandidateAObserverAi {
 
         pace_candidate_a(tick);
 
+        // Debug-only click geometry is intentionally throttled; targeting itself remains full-rate.
+        if manual_input_enabled() {
+            control::refresh_click_target_overlay(ctx, tick);
+        }
+
         if manual_input_enabled() && control::selected_athlete() == Some(athlete_id) {
             // Selected means manual authority. `None` from the control layer means "no manual
             // action this tick", not "let vanilla AI decide instead".

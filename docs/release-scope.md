@@ -6,7 +6,7 @@ This file records the current functionality-first scope and implementation prior
 
 **The authoritative first-public-release cut is now `docs/release-week-plan.md`.** The long-form priority list below remains useful design history and backlog detail, but any item below still labeled "pre-release" is superseded by the release-week plan unless that file explicitly keeps it before release.
 
-Current release sequence: **automatic team fog-of-war -> F-key mapping hardening -> synchronized match speeds/death fast-forward -> click-target hitbox polish -> one bounded pregame/startup attempt -> raw-input foreground-focus safety sweep -> diagnostic presentation cleanup -> Workshop packaging and release.** Everything else moves behind the first public release unless final testing exposes a core release-breaking regression.
+Current release sequence: **automatic team fog-of-war -> F-key mapping hardening -> click-target hitbox polish -> one bounded pregame/startup attempt -> raw-input foreground-focus safety sweep -> diagnostic presentation cleanup -> Workshop packaging and release.** Synchronized match speeds/death fast-forward were attempted during release week and deliberately moved post-release after physical testing made the release-time pacing/control model less predictable. Everything else moves behind the first public release unless final testing exposes a core release-breaking regression.
 
 **Pings/team commands and manual shop control remain explicitly post-release systems.**
 
@@ -55,14 +55,14 @@ Current release sequence: **automatic team fog-of-war -> F-key mapping hardening
    - detailed architecture and rejected experiments are recorded in `docs/camera-controls.md`.
 9. **Clicks beyond the playable map edge** — **validated.** Battlefield clicks beyond the legal map express direction by clamping only the requested movement destination into the legal 0..960 world square. TFM2 still receives an ordinary movement request, so native pathfinding, terrain, champion radius, and entity collision remain authoritative; Direct Control never grants permission to leave the map.
    - physical validation passed RMB and attack-move edge/corner movement without bypassing normal pathing/collision.
-   - current rapid-fire queue: **automatic team fog-of-war -> F-key selection hardening -> synchronized match speeds/death fast-forward -> click-target hitbox polish**; then revisit the remaining order.
+   - current release queue after validated click-target polish: **one bounded pregame/startup attempt -> raw-input foreground-focus safety sweep -> diagnostic presentation cleanup -> Workshop packaging/release**; synchronized speeds/death fast-forward are shelved until after the first public release.
 10. **Skill cooldown UI** — expose direct-control-friendly Q/W/R cooldown/readiness information with high visibility so the player does not have to infer cooldowns from the normal spectator presentation. Include explicit red feedback for attempted use while unavailable.
-11. **Click-target hitbox polish**
+11. **Click-target hitbox polish** — **validated.**
    - enlarge only the **clickable/selectable area**; never alter entity collision/pathing geometry;
-   - towers and the final objective need substantially more forgiving selection;
-   - champions should receive modest click forgiveness, especially to reduce rapid-RMB attack orders accidentally becoming ground MoveTo orders;
-   - creeps should receive only enough forgiveness to remain usable without making the lane visually sticky;
-   - when enlarged selectable areas overlap, prefer **Champion > Building/Objective > Creep**.
+   - current screen-space forgiveness: +12 px champions, +28 px towers, +24 px other targetable objective/building-like entities, +5 px minions;
+   - when enlarged selectable areas overlap, prefer **Champion > Building/Objective > Creep**;
+   - physical validation passed the intended selection feel and priority behavior on v0.6.1;
+   - lightweight outline visualization is throttled separately from full-rate targeting so it does not disturb MMB camera behavior.
 12. **Max-range skill radii / ray clipping revisit**
    - radial/ray range must represent current live match values after simulated balance patches;
    - do not hard-code per-champion ranges from one game patch;
