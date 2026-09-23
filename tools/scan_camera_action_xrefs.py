@@ -630,11 +630,26 @@ def nearby_rip_text(
     after: int = 0x10,
 ) -> list[tuple[int, int, str, str]]:
     out: list[tuple[int, int, str, str]] = []
-    for xref, resolved, kind in all_refs:
-        if site_rva - before <= xref <= site_rva + after:
-            text = printable_at(image, resolved)
-            if text:
-                out.append((xref, resolved, kind, text))
+    low = site_rva - before
+    high = site_rva + after
+
+    # collect_rip_refs walks executable sections/address order, so binary-search the xref RVA
+    # instead of rescanning ~470k references for every action site.
+    lo = 0
+    hi = len(all_refs)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if all_refs[mid][0] < low:
+            lo = mid + 1
+        else:
+            hi = mid
+
+    for xref, resolved, kind in all_refs[lo:]:
+        if xref > high:
+            break
+        text = printable_at(image, resolved)
+        if text:
+            out.append((xref, resolved, kind, text))
     return out
 
 
