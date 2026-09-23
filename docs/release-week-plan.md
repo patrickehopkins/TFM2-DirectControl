@@ -75,6 +75,23 @@ Physical validation passed normal startup, presentation catch-up, `Ctrl+Home` re
 The release still contains unavoidable loader-required pre-simulation. Do not attempt to hide it by shifting global spawn/AI schedules around an assumed fixed number of seconds; tests showed the readiness tick/time varies with startup behavior.
 
 
+## Final control polish before cleanup
+
+**Held-RMB command refresh**
+- RMB press still issues the existing contextual command immediately.
+- While RMB remains physically held, continuously publish the current cursor through the existing contextual RMB path.
+- The authoritative 60 Hz simulation callback remains responsible for deciding Attack(entity) vs MoveTo(point).
+- Moving the cursor onto, off, or among hostile entities while RMB remains held should therefore update context live.
+- Do not copy another game's repeat timing; use Direct Control's existing render -> simulation command architecture.
+- If this unexpectedly requires native hooks, executable probes, or changes to validated attack timing, document the stopping point and defer immediately.
+
+**Champion click forgiveness revisit**
+- after held-RMB passes, reduce champion click padding slightly because the current +12 px makes minions directly under champions harder to select;
+- change champion padding only unless testing exposes another problem;
+- the visual champion circle must shrink automatically with the same effective radius.
+
+Space recenter/follow is now deliberately post-release. Its complete investigation history, along with other worked-but-deferred systems, is preserved in `docs/deferred-investigations.md`.
+
 ## Diagnostic presentation cleanup
 
 Do one final cleanup pass immediately before packaging:
@@ -103,7 +120,7 @@ The uploader already knows how to stage native Rust mods and excludes `src/`, `t
 
 ## Everything else moves post-release
 
-After the remaining immediate buglist, the bounded pregame attempt, the input-focus safety sweep, and the diagnostic presentation cleanup, **stop adding pre-release scope**. Package and ship.
+After held-RMB refresh, the small champion-hitbox adjustment, and diagnostic presentation cleanup, **stop adding pre-release scope**. Package and ship.
 
 The following previously listed pre-release work is now post-release unless it turns into a concrete release-breaking regression during final testing:
 
