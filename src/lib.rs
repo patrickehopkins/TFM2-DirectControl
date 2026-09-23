@@ -7,7 +7,7 @@ mod pause_probe;
 mod simulation_probe;
 mod slot_mapping;
 
-use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use mod_api_stable::{
     declare_stable_mod, ClientSceneKindV1, LogLevel, StableClient, StableExtension, StableHost,
@@ -30,7 +30,6 @@ use windows_sys::Win32::{
 const MOD_ID: &str = "tfm2_direct_control";
 const UI_FALLBACK_W: f32 = 1920.0;
 const UI_FALLBACK_H: f32 = 1080.0;
-const CURSOR_WORLD_COLOR: u32 = 0xffd040ff;
 const SKILL_YELLOW: u32 = 0xffd04070;
 const SKILL_SKY_BLUE: u32 = 0x66ccff20;
 const PICK_OVERLAY_ENEMY_CHAMPION: u32 = 0xe04848c0;
@@ -57,8 +56,6 @@ static START_CHORD_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static FINISH_CHORD_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static FINISH_CONFIRM_ACTIVE: AtomicBool = AtomicBool::new(false);
 static FINISH_CONFIRM_LMB_WAS_DOWN: AtomicBool = AtomicBool::new(false);
-static STARTUP_VISIBLE_SECONDS: AtomicU16 = AtomicU16::new(u16::MAX);
-static STARTUP_FORCE_SPEED_OK: AtomicBool = AtomicBool::new(false);
 static STARTUP_SPEED_OVERRIDE_ACTIVE: AtomicBool = AtomicBool::new(false);
 static TEMP_RELEASE_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static SELECT_KEYS_WERE_DOWN: AtomicU16 = AtomicU16::new(0);
@@ -82,7 +79,6 @@ struct CursorWorld {
     world_y: f32,
     sim_x: u64,
     sim_y: u64,
-    marker_units_per_px: f32,
     sim_units_per_px: u64,
 }
 
@@ -396,9 +392,9 @@ impl DirectControlExtension {
             return None;
         }
 
-        let marker_units_per_px =
+        let world_units_per_px =
             ((camera.extent_a / game_w) + (camera.extent_b / game_h)) * 0.5;
-        let sim_units_per_px_f = marker_units_per_px * SIM_UNITS_PER_WORLD_UNIT;
+        let sim_units_per_px_f = world_units_per_px * SIM_UNITS_PER_WORLD_UNIT;
         let sim_units_per_px = if sim_units_per_px_f.is_finite() && sim_units_per_px_f > 0.0 {
             sim_units_per_px_f.round() as u64
         } else {
@@ -410,7 +406,6 @@ impl DirectControlExtension {
             world_y,
             sim_x: sim_x_f.round() as u64,
             sim_y: sim_y_f.round() as u64,
-            marker_units_per_px,
             sim_units_per_px,
         })
     }
@@ -768,41 +763,7 @@ impl DirectControlExtension {
         );
     }
 
-    fn draw_cursor(ctx: &mut StableClient<'_>, mouse: MouseSnapshot) {
-        if !mouse.valid {
-            return;
-        }
-        let color = if mouse.right_down {
-            0xff4040ff
-        } else if mouse.left_down {
-            0x40ff80ff
-        } else {
-            0xffffffff
-        };
-        ctx.draw_line(
-            "UI",
-            mouse.ui_x - 14.0,
-            mouse.ui_y,
-            mouse.ui_x + 14.0,
-            mouse.ui_y,
-            2.0,
-            20_000,
-            color,
-        );
-        ctx.draw_line(
-            "UI",
-            mouse.ui_x,
-            mouse.ui_y - 14.0,
-            mouse.ui_x,
-            mouse.ui_y + 14.0,
-            2.0,
-            20_000,
-            color,
-        );
-        ctx.draw_circle("UI", mouse.ui_x, mouse.ui_y, 3.0, 20_001, color);
-    }
-
-    fn draw_world_cursor_and_skill(ctx: &mut StableClient<'_>, mouse: MouseSnapshot) {
+    fn draw_targeting_overlays(ctx: &mut StableClient<'_>) {
         let Ok(()) = camera_probe::ensure_installed() else {
             return;
         };
@@ -811,32 +772,6 @@ impl DirectControlExtension {
         };
 
         Self::draw_click_target_overlays(ctx, camera);
-
-        if let Some(cursor) = Self::cursor_world(ctx, mouse, camera) {
-            ctx.draw_set_camera(
-                "Game",
-                camera.center_x,
-                camera.center_y,
-                camera.extent_a,
-                camera.extent_b,
-            );
-            ctx.draw_circle(
-                "Game",
-                cursor.world_x,
-                cursor.world_y,
-                11.0 * cursor.marker_units_per_px,
-                100_000,
-                CURSOR_WORLD_COLOR,
-            );
-            ctx.draw_circle(
-                "Game",
-                cursor.world_x,
-                cursor.world_y,
-                7.0 * cursor.marker_units_per_px,
-                100_001,
-                CURSOR_WORLD_COLOR,
-            );
-        }
         Self::draw_skill_preview(ctx, camera);
     }
 
@@ -908,16 +843,10 @@ impl DirectControlExtension {
             return;
         };
         let Some(visible_seconds) = Self::visible_match_seconds(ctx) else {
-            STARTUP_VISIBLE_SECONDS.store(u16::MAX, Ordering::Release);
-            STARTUP_FORCE_SPEED_OK.store(false, Ordering::Release);
             pacing_probe::set_startup_presentation_synced(false);
             return;
         };
 
-        STARTUP_VISIBLE_SECONDS.store(
-            u16::try_from(visible_seconds).unwrap_or(u16::MAX - 1),
-            Ordering::Release,
-        );
 
         // The visible clock is whole-second precision. Reaching floor(live_tick / 60) proves the
         // viewer has reached the frozen live second. A sub-second residual cannot be observed through
@@ -925,7 +854,6 @@ impl DirectControlExtension {
         let target_seconds = ready_tick / 60;
         if visible_seconds < target_seconds {
             let ok = Self::set_native_speed_selected(ctx, "ingame.speed_buttons.speed3x");
-            STARTUP_FORCE_SPEED_OK.store(ok, Ordering::Release);
             if ok {
                 STARTUP_SPEED_OVERRIDE_ACTIVE.store(true, Ordering::Release);
             }
@@ -934,7 +862,6 @@ impl DirectControlExtension {
             let override_active = STARTUP_SPEED_OVERRIDE_ACTIVE.load(Ordering::Acquire);
             if override_active {
                 let restored = Self::set_native_speed_selected(ctx, "ingame.speed_buttons.speed1x");
-                STARTUP_FORCE_SPEED_OK.store(restored, Ordering::Release);
                 if restored {
                     STARTUP_SPEED_OVERRIDE_ACTIVE.store(false, Ordering::Release);
                     pacing_probe::set_startup_presentation_synced(true);
@@ -1026,139 +953,56 @@ impl DirectControlExtension {
     }
 
     fn draw_status(ctx: &mut StableClient<'_>, pause_ui: &pause_probe::PauseUiSnapshot) {
-        let pacing = pacing_probe::snapshot();
         let control_state = control::diagnostics();
         let skill = control::skill_targeting_snapshot();
 
-        let selected = control_state
+        let controlled = control_state
             .selected_athlete
-            .map(|id| id.to_string())
-            .unwrap_or_else(|| "none".to_owned());
-        let selected_team = control::selected_team()
-            .map(|team| team.to_string())
-            .unwrap_or_else(|| "?".to_owned());
-        let native_vision = Self::best_camera()
-            .and_then(|camera| camera.vision_mode)
-            .map(|mode| mode.to_string())
-            .unwrap_or_else(|| "?".to_owned());
+            .and_then(|id| ctx.athlete_name(id))
+            .unwrap_or_else(|| "spectator".to_owned());
+
         let order = if control_state.selected_athlete.is_none() {
-            "AI / spectator".to_owned()
+            "AI".to_owned()
         } else if control_state.returning {
             "return home".to_owned()
         } else if control_state.attack_moving {
-            let destination = control_state
-                .attack_move_destination
-                .map(|(x, y)| format!("({x},{y})"))
-                .unwrap_or_else(|| "(?)".to_owned());
-            match control_state.attack_target {
-                Some(target_id) => format!("attack-move {destination} -> target {target_id}"),
-                None => format!("attack-move {destination}"),
-            }
-        } else if let Some(target_id) = control_state.attack_target {
-            format!("attack {target_id}")
-        } else if let Some((x, y)) = control_state.move_target {
-            format!("move ({x},{y})")
+            "attack-move".to_owned()
+        } else if control_state.attack_target.is_some() {
+            "attack".to_owned()
+        } else if control_state.move_target.is_some() {
+            "move".to_owned()
         } else {
             "hold".to_owned()
         };
-        let armed = skill.armed.map(|slot| slot.label()).unwrap_or("--");
-        let range = skill
-            .range_sim
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "?".to_owned());
+
         let targeting = if control::attack_move_armed() {
-            "A-MOVE ARMED"
+            "A-MOVE ARMED — LMB confirm | RMB/Esc cancel".to_owned()
+        } else if let Some(slot) = skill.armed {
+            format!(
+                "{} {} — LMB confirm | RMB/Esc cancel",
+                slot.label(),
+                skill.mode.label()
+            )
         } else {
-            "A-move --"
-        };
-        let pause_note = if pause_ui.paused {
-            pause_ui.marker.as_deref().unwrap_or("presentation paused")
-        } else {
-            "running"
+            "Targeting ready".to_owned()
         };
 
-        ctx.draw_rect("UI", 18.0, 58.0, 1_180.0, 184.0, 19_998, 6.0, 0x101018d8);
+        ctx.draw_rect("UI", 18.0, 58.0, 1_180.0, 76.0, 19_998, 6.0, 0x101018d8);
         Self::draw_text_line(
             ctx,
             62.0,
             &format!(
-                "DIRECT CONTROL: {} | start {} | {}",
+                "DIRECT CONTROL: {} | CONTROLLED: {controlled} | ORDER: {order}",
                 pacing_probe::presentation_phase_label(),
-                if pacing.start_requested { "YES" } else { "no" },
-                pause_note
             ),
             if pause_ui.paused { 0xffd080ff } else { 0x80ffbfff },
         );
-        Self::draw_text_line(
-            ctx,
-            84.0,
-            &format!(
-                "SELECTED: athlete {selected} | team {selected_team} | native vision {native_vision} | ORDER: {order}"
-            ),
-            0xffffffff,
-        );
+        Self::draw_text_line(ctx, 84.0, &targeting, 0xffffffff);
         Self::draw_text_line(
             ctx,
             106.0,
-            &format!(
-                "SKILL: {armed} | mode {} | range {range} | {targeting} | casts {} | rejected {}",
-                skill.mode.label(),
-                skill.cast_count,
-                skill.reject_count
-            ),
-            if skill.armed.is_some() || control::attack_move_armed() {
-                0xffd080ff
-            } else {
-                0x80d8ffff
-            },
-        );
-        Self::draw_text_line(
-            ctx,
-            128.0,
-            "F1-F10 select | RMB move/attack/minimap | A attack-move + LMB | H hold | B return | Q/W/R arm | End AI release | Ctrl+End global release",
+            "F1-F10 select | RMB move/attack/minimap | A+LMB attack-move | H hold | B return | Q/W/R skills | End AI | Ctrl+End release",
             0x80d8ffff,
-        );
-
-        let probe_value =
-            |value: Option<u64>| value.map(|v| v.to_string()).unwrap_or_else(|| "-".to_owned());
-        Self::draw_text_line(
-            ctx,
-            150.0,
-            &format!(
-                "STARTUP PROBE: A first t{} | first origin {}@t{} | last origin {} | ClientMatchView t{} @{}ms",
-                probe_value(pacing.first_candidate_a_tick),
-                probe_value(pacing.first_origin_kind),
-                probe_value(pacing.first_origin_tick),
-                probe_value(pacing.startup_origin_kind),
-                probe_value(pacing.client_match_view_tick),
-                probe_value(pacing.client_match_view_ms),
-            ),
-            0xffd080ff,
-        );
-        Self::draw_text_line(
-            ctx,
-            172.0,
-            &format!(
-                "LOAD: Match t{} @{}ms | GameMap t{} @{}ms | center_log t{} @{}ms | InGame t{} @{}ms | auto {} wait {}ms | view {}s target {}s speedwrite {} override {}",
-                probe_value(pacing.first_match_render_tick),
-                probe_value(pacing.first_match_render_ms),
-                probe_value(pacing.first_game_map_tick),
-                probe_value(pacing.first_game_map_ms),
-                probe_value(pacing.first_center_log_tick),
-                probe_value(pacing.first_center_log_ms),
-                probe_value(pacing.first_ingame_render_tick),
-                probe_value(pacing.first_ingame_render_ms),
-                if pacing.start_auto_released { "YES" } else { "no" },
-                pacing.start_total_wait_ms,
-                {
-                    let value = STARTUP_VISIBLE_SECONDS.load(Ordering::Acquire);
-                    if value == u16::MAX { "-".to_owned() } else { value.to_string() }
-                },
-                pacing_probe::ready_gate_tick().map(|tick| tick / 60).unwrap_or(0),
-                if STARTUP_FORCE_SPEED_OK.load(Ordering::Acquire) { "ok" } else { "no" },
-                if STARTUP_SPEED_OVERRIDE_ACTIVE.load(Ordering::Acquire) { "ON" } else { "off" },
-            ),
-            0xffd080ff,
         );
     }
 }
@@ -1203,8 +1047,6 @@ impl StableExtension for DirectControlExtension {
                 FINISH_CHORD_WAS_DOWN.store(false, Ordering::Release);
                 FINISH_CONFIRM_ACTIVE.store(false, Ordering::Release);
                 FINISH_CONFIRM_LMB_WAS_DOWN.store(false, Ordering::Release);
-                STARTUP_VISIBLE_SECONDS.store(u16::MAX, Ordering::Release);
-                STARTUP_FORCE_SPEED_OK.store(false, Ordering::Release);
                 STARTUP_SPEED_OVERRIDE_ACTIVE.store(false, Ordering::Release);
                 TEMP_RELEASE_WAS_DOWN.store(false, Ordering::Release);
                 SELECT_KEYS_WERE_DOWN.store(0, Ordering::Release);
@@ -1272,12 +1114,11 @@ impl StableExtension for DirectControlExtension {
         if !finish_confirm_active {
             let targeting_consumed_rmb = self.poll_targeting(ctx, mouse, ingame);
             self.poll_rmb_move(ctx, mouse, ingame, targeting_consumed_rmb);
-            Self::draw_cursor(ctx, mouse);
         }
 
         if ingame {
             if !finish_confirm_active {
-                Self::draw_world_cursor_and_skill(ctx, mouse);
+                Self::draw_targeting_overlays(ctx);
             }
             Self::draw_status(ctx, &pause_ui);
 
@@ -1301,7 +1142,7 @@ fn init(host: &StableHost) -> StableMod {
         ),
         Err(error) => host.log(
             LogLevel::Error,
-            &format!("TFM2 Direct Control simulation task probe failed: {error}"),
+            &format!("TFM2 Direct Control failed to initialize the supported simulation hook: {error}"),
         ),
     }
 
