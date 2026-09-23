@@ -6,7 +6,7 @@ mod pause_probe;
 mod simulation_probe;
 mod slot_mapping;
 
-use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 
 use mod_api_stable::{
     declare_stable_mod, ClientSceneKindV1, LogLevel, StableClient, StableExtension, StableHost,
@@ -59,8 +59,6 @@ static TEMP_RELEASE_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static SELECT_KEYS_WERE_DOWN: AtomicU16 = AtomicU16::new(0);
 static LMB_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static RMB_WAS_DOWN: AtomicBool = AtomicBool::new(false);
-static LAST_GAME_MAP_W_BITS: AtomicU32 = AtomicU32::new(0);
-static LAST_GAME_MAP_H_BITS: AtomicU32 = AtomicU32::new(0);
 
 #[derive(Debug, Clone, Copy, Default)]
 struct MouseSnapshot {
@@ -522,13 +520,14 @@ impl DirectControlExtension {
     fn draw_click_target_overlays(
         ctx: &mut StableClient<'_>,
         camera: camera_probe::CameraSnapshot,
-        game_w: f32,
-        game_h: f32,
     ) {
         if !pacing_probe::manual_input_enabled() || control::selected_athlete().is_none() {
             return;
         }
         let Some(controlled_team) = control::selected_team() else {
+            return;
+        };
+        let Some((game_w, game_h)) = ctx.draw_map_size("Game") else {
             return;
         };
         if game_w <= 0.0 || game_h <= 0.0 {
@@ -730,6 +729,11 @@ impl DirectControlExtension {
             return;
         };
 
+        // Hitbox visualization is outline-only now, so it can safely live in post-render without
+        // covering champion sprites. Keeping it here avoids touching the game's pre-render camera
+        // state, which must remain exclusively owned by the native camera path.
+        Self::draw_click_target_overlays(ctx, camera);
+
         if let Some(cursor) = Self::cursor_world(ctx, mouse, camera) {
             ctx.draw_set_camera(
                 "Game",
@@ -875,30 +879,6 @@ impl DirectControlExtension {
 }
 
 impl StableExtension for DirectControlExtension {
-    fn pre_render(&self, ctx: &mut StableClient<'_>) {
-        if !matches!(ctx.client_scene_kind(), Some(ClientSceneKindV1::InGame)) {
-            return;
-        }
-        if camera_probe::ensure_installed().is_err() {
-            return;
-        }
-        let Some(camera) = Self::best_camera() else {
-            return;
-        };
-
-        // The stable API composes pre-render drawing beneath the game's own match commands, but
-        // draw_map_size("Game") is not guaranteed to exist yet here. Cache the previous frame's
-        // post-render dimensions for pixel-to-world scaling so the hit regions can live underneath
-        // champions and creeps without disappearing.
-        let game_w = f32::from_bits(LAST_GAME_MAP_W_BITS.load(Ordering::Acquire));
-        let game_h = f32::from_bits(LAST_GAME_MAP_H_BITS.load(Ordering::Acquire));
-        if !game_w.is_finite() || !game_h.is_finite() || game_w <= 0.0 || game_h <= 0.0 {
-            return;
-        }
-
-        Self::draw_click_target_overlays(ctx, camera, game_w, game_h);
-    }
-
     fn post_render(&self, ctx: &mut StableClient<'_>) {
         let ingame = matches!(ctx.client_scene_kind(), Some(ClientSceneKindV1::InGame));
         let control_scene = Self::control_scene(ctx);
@@ -940,15 +920,6 @@ impl StableExtension for DirectControlExtension {
 
         if session_active {
             pacing_probe::note_render_heartbeat();
-        }
-
-        if ingame {
-            if let Some((game_w, game_h)) = ctx.draw_map_size("Game") {
-                if game_w.is_finite() && game_h.is_finite() && game_w > 0.0 && game_h > 0.0 {
-                    LAST_GAME_MAP_W_BITS.store(game_w.to_bits(), Ordering::Release);
-                    LAST_GAME_MAP_H_BITS.store(game_h.to_bits(), Ordering::Release);
-                }
-            }
         }
 
         let pause_ui = pause_probe::update(ctx, session_active);
