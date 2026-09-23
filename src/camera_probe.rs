@@ -6,9 +6,9 @@
 //! snap-back, and screen-to-world disagreement.
 //!
 //! MMB drag publishes desired native pan values to `base`; the native hook applies them
-//! synchronously immediately before TFM2's own camera handler runs. Space follow is different:
-//! physical Space transitions are translated into the already-selected slot's native F-key window
-//! events so TFM2 itself owns recenter/follow/lock semantics.
+//! synchronously immediately before TFM2's own camera handler runs. The game stays
+//! authoritative for actual camera-center integration, bounds, follow state, minimap
+//! camera jumps, and rendering.
 //!
 //! MMB drag and wheel zoom are match-view QoL, not manual-control ownership. They remain
 //! available while spectating after `End` releases a champion.
@@ -27,7 +27,7 @@ pub use base::CameraSnapshot;
 use std::{
     ffi::c_void,
     sync::{
-        atomic::{AtomicBool, AtomicI32, AtomicU16, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicI32, AtomicUsize, Ordering},
         Mutex, OnceLock,
     },
     thread,
@@ -48,11 +48,6 @@ const WORLD_MAX: f32 = 960.0;
 const DRAG_POSITION_GAIN: f32 = 60.0;
 const CAMERA_CONTROL_POLL_MS: u64 = 2;
 const VK_MBUTTON_CODE: i32 = 0x04;
-const VK_SPACE_CODE: i32 = 0x20;
-const VK_F1_CODE: usize = 0x70;
-const NO_FOLLOW_SLOT: usize = usize::MAX;
-const MAPVK_VK_TO_VSC: u32 = 0;
-const KEYEVENTF_KEYUP: u32 = 0x0002;
 
 const GWLP_WNDPROC: i32 = -4;
 const WM_MOUSEMOVE: u32 = 0x0200;
@@ -98,8 +93,6 @@ extern "system" {
     fn GetCursorPos(point: *mut WinPoint) -> i32;
     fn ScreenToClient(hwnd: *mut c_void, point: *mut WinPoint) -> i32;
     fn GetClientRect(hwnd: *mut c_void, rect: *mut WinRect) -> i32;
-    fn MapVirtualKeyW(code: u32, map_type: u32) -> u32;
-    fn keybd_event(vk: u8, scan: u8, flags: u32, extra_info: usize);
     fn SetWindowLongPtrW(hwnd: *mut c_void, index: i32, new_long: isize) -> isize;
     fn CallWindowProcW(
         previous: isize,
@@ -124,9 +117,6 @@ struct CameraControlState {
     drag_start_extent_y: f32,
     drag_start_client_w: i32,
     drag_start_client_h: i32,
-    space_down: bool,
-    space_block_until_release: bool,
-    injected_follow_slot: usize,
 }
 
 impl Default for CameraControlState {
@@ -143,9 +133,6 @@ impl Default for CameraControlState {
             drag_start_extent_y: 0.0,
             drag_start_client_w: 1,
             drag_start_client_h: 1,
-            space_down: false,
-            space_block_until_release: false,
-            injected_follow_slot: NO_FOLLOW_SLOT,
         }
     }
 }
@@ -166,9 +153,6 @@ static VIRTUAL_HOVER_FLIP: AtomicBool = AtomicBool::new(false);
 static SWALLOWED_LBUTTON: AtomicBool = AtomicBool::new(false);
 static SWALLOWED_RBUTTON: AtomicBool = AtomicBool::new(false);
 static WHEEL_REMAINDER: AtomicI32 = AtomicI32::new(0);
-// Synthetic native-follow F-keys update global keyboard state just like real input. Mask them from
-// Direct Control's own F1-F10 selector so following the camera never republishes/reset champion input.
-static SYNTHETIC_FKEY_SUPPRESS_MASK: AtomicU16 = AtomicU16::new(0);
 
 fn driver_state() -> &'static Mutex<CameraControlState> {
     DRIVER_STATE.get_or_init(|| Mutex::new(CameraControlState::default()))
@@ -417,81 +401,14 @@ fn publish_pan(state: &mut CameraControlState, address: usize, pan_x: f32, pan_y
     }
 }
 
-fn inject_native_fkey(slot: usize, down: bool) -> bool {
-    if slot >= 10 {
-        return false;
-    }
-
-    let vk = VK_F1_CODE + slot;
-    let bit = 1u16 << slot;
-    if down {
-        // Publish suppression before the key enters the OS input stream so the render thread can
-        // never mistake our native-follow event for a user's Direct Control selection press.
-        SYNTHETIC_FKEY_SUPPRESS_MASK.fetch_or(bit, Ordering::AcqRel);
-    }
-
-    let scan = unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC) } as u8;
-    unsafe {
-        keybd_event(
-            vk as u8,
-            scan,
-            if down { 0 } else { KEYEVENTF_KEYUP },
-            0,
-        );
-    }
-    true
-}
-
-fn refresh_synthetic_fkey_suppression() {
-    let mask = SYNTHETIC_FKEY_SUPPRESS_MASK.load(Ordering::Acquire);
-    if mask == 0 {
-        return;
-    }
-
-    let mut clear = 0u16;
-    for slot in 0..10usize {
-        let bit = 1u16 << slot;
-        if mask & bit == 0 {
-            continue;
-        }
-        let vk = (VK_F1_CODE + slot) as i32;
-        if unsafe { GetAsyncKeyState(vk) } >= 0 {
-            clear |= bit;
-        }
-    }
-    if clear != 0 {
-        SYNTHETIC_FKEY_SUPPRESS_MASK.fetch_and(!clear, Ordering::AcqRel);
-    }
-}
-
-fn release_injected_follow_key(state: &mut CameraControlState) {
-    if state.injected_follow_slot == NO_FOLLOW_SLOT {
-        return;
-    }
-
-    let _ = inject_native_fkey(state.injected_follow_slot, false);
-    state.injected_follow_slot = NO_FOLLOW_SLOT;
-}
-
-pub fn synthetic_follow_fkey_mask() -> u16 {
-    SYNTHETIC_FKEY_SUPPRESS_MASK.load(Ordering::Acquire)
-}
-
 fn disable_match_camera(state: &mut CameraControlState) {
     MATCH_CAMERA_ACTIVE.store(false, Ordering::Release);
     ACTIVE_CAMERA_ADDRESS.store(0, Ordering::Release);
     reset_gesture(state);
-    release_injected_follow_key(state);
-    state.space_down = false;
-    // GetAsyncKeyState is global. Require a release after focus/session loss so a Space held in
-    // another application cannot become a synthetic native-follow press when TFM2 regains focus.
-    state.space_block_until_release = true;
     release_pointer_shim();
 }
 
 fn camera_control_step(state: &mut CameraControlState) {
-    refresh_synthetic_fkey_suppression();
-
     // MMB and wheel zoom remain available throughout the interactive match, regardless
     // of whether a champion is currently under manual control. Screen-edge panning is
     // intentionally absent from this driver while that feature is shelved.
@@ -526,55 +443,8 @@ fn camera_control_step(state: &mut CameraControlState) {
     MATCH_CAMERA_ACTIVE.store(true, Ordering::Release);
 
     let middle_down = unsafe { GetAsyncKeyState(VK_MBUTTON_CODE) < 0 };
-    let physical_space_down = unsafe { GetAsyncKeyState(VK_SPACE_CODE) < 0 };
     MMB_UI_LOCK_ACTIVE.store(middle_down, Ordering::Release);
 
-    // Space is a translation layer, not a second camera controller. Forward Space transitions as
-    // real synthetic keyboard input for the native F-key belonging to the selected Direct Control
-    // slot. The suppression mask keeps our own GetAsyncKeyState F1-F10 selector from consuming the
-    // injected key while TFM2's native input stack receives the same key stream as ordinary input.
-    if state.space_block_until_release {
-        if !physical_space_down {
-            state.space_block_until_release = false;
-        }
-        state.space_down = false;
-        release_injected_follow_key(state);
-    } else {
-        let selected_slot = crate::control::selected_fkey_slot();
-
-        if physical_space_down && !state.space_down {
-            if let Some(slot) = selected_slot {
-                if inject_native_fkey(slot, true) {
-                    state.injected_follow_slot = slot;
-                }
-            }
-        } else if physical_space_down && state.space_down {
-            // If the user changes the controlled champion while continuing to hold Space, hand the
-            // native follow hold from the old role key to the newly selected role immediately.
-            if let Some(slot) = selected_slot {
-                if state.injected_follow_slot != NO_FOLLOW_SLOT
-                    && state.injected_follow_slot != slot
-                {
-                    let _ = inject_native_fkey(state.injected_follow_slot, false);
-                    state.injected_follow_slot = NO_FOLLOW_SLOT;
-                }
-                if state.injected_follow_slot == NO_FOLLOW_SLOT
-                    && inject_native_fkey(slot, true)
-                {
-                    state.injected_follow_slot = slot;
-                }
-            } else {
-                release_injected_follow_key(state);
-            }
-        } else if !physical_space_down && state.space_down {
-            release_injected_follow_key(state);
-        }
-
-        state.space_down = physical_space_down;
-    }
-
-    // MMB remains exactly the previously validated free-camera controller. Any native follow-lock
-    // cancellation caused by manual pan is therefore TFM2's own behavior, not custom lock math.
     if middle_down {
         if !state.middle_down {
             state.middle_down = true;
