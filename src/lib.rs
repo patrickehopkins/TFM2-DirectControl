@@ -1072,7 +1072,7 @@ impl DirectControlExtension {
             "running"
         };
 
-        ctx.draw_rect("UI", 18.0, 58.0, 1_180.0, 244.0, 19_998, 6.0, 0x101018d8);
+        ctx.draw_rect("UI", 18.0, 58.0, 1_180.0, 266.0, 19_998, 6.0, 0x101018d8);
         Self::draw_text_line(
             ctx,
             62.0,
@@ -1157,8 +1157,8 @@ impl DirectControlExtension {
         );
 
         if let Some(report) = camera_probe::follow_probe_report() {
-            let summary = if report.diffs.is_empty() {
-                "<no stable changed qwords>".to_owned()
+            let object_summary = if report.diffs.is_empty() {
+                "<no stable changed camera qwords>".to_owned()
             } else {
                 report
                     .diffs
@@ -1180,26 +1180,51 @@ impl DirectControlExtension {
                     "FOLLOW PROBE: F{} | held samples {} | {}",
                     report.slot + 1,
                     report.samples,
-                    summary
+                    object_summary
                 ),
                 0xffd080ff,
             );
 
-            if report.diffs.len() > 4 {
-                let overflow = report
-                    .diffs
+            let arg_summary = if report.arg_diffs.is_empty() {
+                "<no stable changed handler args>".to_owned()
+            } else {
+                report
+                    .arg_diffs
                     .iter()
-                    .skip(4)
-                    .take(4)
+                    .take(3)
                     .map(|diff| {
+                        let arg = diff.offset.saturating_sub(0xF00) + 2;
                         format!(
-                            "+{:03X}:{:016X}>{:016X}",
-                            diff.offset, diff.free, diff.held
+                            "a{}:{:016X}>{:016X}",
+                            arg, diff.free, diff.held
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            };
+            Self::draw_text_line(
+                ctx,
+                216.0,
+                &format!("FOLLOW ARGS: {arg_summary}"),
+                0xffd080ff,
+            );
+
+            if report.arg_diffs.len() > 3 {
+                let overflow = report
+                    .arg_diffs
+                    .iter()
+                    .skip(3)
+                    .take(3)
+                    .map(|diff| {
+                        let arg = diff.offset.saturating_sub(0xF00) + 2;
+                        format!(
+                            "a{}:{:016X}>{:016X}",
+                            arg, diff.free, diff.held
                         )
                     })
                     .collect::<Vec<_>>()
                     .join(" | ");
-                Self::draw_text_line(ctx, 216.0, &overflow, 0xffd080ff);
+                Self::draw_text_line(ctx, 238.0, &overflow, 0xffd080ff);
             }
         }
     }
