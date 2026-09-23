@@ -1226,6 +1226,29 @@ impl DirectControlExtension {
                     .join(" | ");
                 Self::draw_text_line(ctx, 238.0, &overflow, 0xffd080ff);
             }
+
+            let pointer_summary = if report.pointer_diffs.is_empty() {
+                "<no stable changed pointee qwords>".to_owned()
+            } else {
+                report
+                    .pointer_diffs
+                    .iter()
+                    .take(3)
+                    .map(|diff| {
+                        format!(
+                            "a{}+{:03X}:{:016X}>{:016X}",
+                            diff.arg, diff.offset, diff.free, diff.held
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            };
+            Self::draw_text_line(
+                ctx,
+                238.0,
+                &format!("FOLLOW PTRS: {pointer_summary}"),
+                0xffd080ff,
+            );
         }
     }
 }
