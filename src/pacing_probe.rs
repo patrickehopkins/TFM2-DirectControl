@@ -545,6 +545,13 @@ impl StablePlayerAi for CandidateAObserverAi {
 
         pace_candidate_a(tick);
 
+        // Keep click-target geometry live independently of the selected champion's life state.
+        // Candidate A continues to visit other athletes while the selected champion is dead, and
+        // those callbacks expose the same authoritative StableSim snapshot.
+        if manual_input_enabled() {
+            control::refresh_click_target_overlay(ctx, tick);
+        }
+
         if manual_input_enabled() && control::selected_athlete() == Some(athlete_id) {
             // Selected means manual authority. `None` from the control layer means "no manual
             // action this tick", not "let vanilla AI decide instead".

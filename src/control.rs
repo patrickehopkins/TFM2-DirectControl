@@ -112,7 +112,7 @@ fn clear_click_target_overlay() {
     }
 }
 
-fn refresh_click_target_overlay(ctx: &mut StableAiContext<'_>, tick: u64) {
+pub fn refresh_click_target_overlay(ctx: &mut StableAiContext<'_>, tick: u64) {
     if LAST_CLICK_TARGET_OVERLAY_TICK.load(Ordering::Acquire) == tick {
         return;
     }
@@ -764,11 +764,6 @@ fn active_manual_input(
 /// that losing its acquired target resumes the original attack-move destination and permits a new
 /// in-range target to be acquired later.
 pub fn manual_input_for(ctx: &mut StableAiContext<'_>, tick: u64) -> Option<InputV1> {
-    // Keep the visual click-target snapshot alive even while the selected champion is dead.
-    // Any player's paced AI callback can supply StableSim; visibility still uses the selected
-    // champion's authoritative team, and the tick guard limits this to one refresh per sim tick.
-    refresh_click_target_overlay(ctx, tick);
-
     if selected_athlete() != Some(ctx.athlete_id()) {
         return None;
     }
