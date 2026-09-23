@@ -19,19 +19,14 @@
 mod entity_picker;
 mod skill_targeting;
 
-use std::sync::{
-    atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
-    Mutex, OnceLock,
-};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 
-use entity_picker::{
-    effective_pick_radius, pick_hostile_entity, visible_targetable_entities,
-};
+use entity_picker::pick_hostile_entity;
 use mod_api_stable::{
     InputKindV1, InputTargetKindV1, InputTargetV1, InputV1, StableAiContext,
 };
 
-pub use entity_picker::{ClickableEntityGeometry, EntityKind};
+pub use entity_picker::EntityKind;
 pub use skill_targeting::{SkillPreviewMode, SkillSlot, SkillTargetingSnapshot};
 
 const NO_ATHLETE: usize = usize::MAX;
@@ -99,51 +94,6 @@ static TARGET_DROP_VISION_COUNT: AtomicU64 = AtomicU64::new(0);
 static TARGET_DROP_DEAD_COUNT: AtomicU64 = AtomicU64::new(0);
 static TARGET_DROP_INVALID_COUNT: AtomicU64 = AtomicU64::new(0);
 static LAST_MANUAL_TICK: AtomicU64 = AtomicU64::new(NO_TICK);
-static LAST_CLICK_TARGET_OVERLAY_TICK: AtomicU64 = AtomicU64::new(NO_TICK);
-static CLICK_TARGET_OVERLAY: OnceLock<Mutex<Vec<ClickableEntityGeometry>>> = OnceLock::new();
-
-fn click_target_overlay_storage() -> &'static Mutex<Vec<ClickableEntityGeometry>> {
-    CLICK_TARGET_OVERLAY.get_or_init(|| Mutex::new(Vec::new()))
-}
-
-fn clear_click_target_overlay() {
-    if let Ok(mut snapshot) = click_target_overlay_storage().lock() {
-        snapshot.clear();
-    }
-}
-
-pub fn refresh_click_target_overlay(ctx: &mut StableAiContext<'_>, tick: u64) {
-    if LAST_CLICK_TARGET_OVERLAY_TICK.load(Ordering::Acquire) == tick {
-        return;
-    }
-    let Some(controlled_team) = selected_team() else {
-        return;
-    };
-    let Some(sim) = ctx.sim() else {
-        return;
-    };
-    let next = visible_targetable_entities(&sim, controlled_team);
-    if let Ok(mut snapshot) = click_target_overlay_storage().lock() {
-        *snapshot = next;
-        LAST_CLICK_TARGET_OVERLAY_TICK.store(tick, Ordering::Release);
-    }
-}
-
-pub fn click_target_overlay_snapshot() -> Vec<ClickableEntityGeometry> {
-    click_target_overlay_storage()
-        .lock()
-        .map(|snapshot| snapshot.clone())
-        .unwrap_or_default()
-}
-
-pub fn click_target_effective_radius(
-    kind: EntityKind,
-    collision_radius: usize,
-    sim_units_per_px: u64,
-) -> u64 {
-    effective_pick_radius(kind, collision_radius, sim_units_per_px)
-}
-
 #[derive(Debug, Clone, Copy)]
 pub struct ControlDiagnostics {
     pub selected_athlete: Option<usize>,
@@ -297,7 +247,6 @@ pub fn reset() {
     clear_move_target();
     HOLD_BREAK_RETURN_PENDING.store(false, Ordering::Release);
     clear_last_self_position();
-    clear_click_target_overlay();
     skill_targeting::reset();
     SELECT_COUNT.store(0, Ordering::Release);
     MOVE_COMMAND_COUNT.store(0, Ordering::Release);
@@ -314,7 +263,6 @@ pub fn reset() {
     TARGET_DROP_DEAD_COUNT.store(0, Ordering::Release);
     TARGET_DROP_INVALID_COUNT.store(0, Ordering::Release);
     LAST_MANUAL_TICK.store(NO_TICK, Ordering::Release);
-    LAST_CLICK_TARGET_OVERLAY_TICK.store(NO_TICK, Ordering::Release);
 }
 
 pub fn selected_athlete() -> Option<usize> {
@@ -339,8 +287,6 @@ pub fn select_athlete(athlete_id: usize) {
     ATTACK_MOVE_ARMED.store(false, Ordering::Release);
     clear_move_target();
     clear_last_self_position();
-    clear_click_target_overlay();
-    LAST_CLICK_TARGET_OVERLAY_TICK.store(NO_TICK, Ordering::Release);
     skill_targeting::on_selection_changed();
     SELECTED_ATHLETE.store(athlete_id, Ordering::Release);
     SELECT_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -773,7 +719,6 @@ pub fn manual_input_for(ctx: &mut StableAiContext<'_>, tick: u64) -> Option<Inpu
     // click-target overlay. A newly selected champion publishes its team before the second
     // refresh so the overlay appears immediately rather than waiting for the next tick.
     SELECTED_TEAM.store(ctx.team(), Ordering::Release);
-    refresh_click_target_overlay(ctx, tick);
 
     let self_position = current_champion_position(ctx);
     if let Some((x, y)) = self_position {
