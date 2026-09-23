@@ -797,7 +797,7 @@ fn pace_candidate_a(tick: u64) {
     }
 }
 
-fn observe_gambler_q_base_input(ctx: &StableAiContext<'_>, base_input: Option<InputV1>) {
+fn observe_gambler_q_base_input(ctx: &StableAiContext<'_>, base_input: Option<&InputV1>) {
     if ctx.champion_name() != "gambler" {
         return;
     }
@@ -868,7 +868,7 @@ impl StablePlayerAi for CandidateAObserverAi {
         }
 
         observe_sim_origin(ctx, tick);
-        observe_gambler_q_base_input(ctx, base_input);
+        observe_gambler_q_base_input(ctx, base_input.as_ref());
         pace_candidate_a(tick);
 
         // Debug-only click geometry is intentionally throttled; targeting itself remains full-rate.
