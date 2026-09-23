@@ -19,19 +19,24 @@
 mod entity_picker;
 mod skill_targeting;
 
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use std::sync::{
+    atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
+    Mutex, OnceLock,
+};
 
-use entity_picker::pick_hostile_entity;
+use entity_picker::{effective_pick_radius, pick_hostile_entity, visible_targetable_entities};
 use mod_api_stable::{
     InputKindV1, InputTargetKindV1, InputTargetV1, InputV1, StableAiContext,
 };
 
+pub use entity_picker::{ClickableEntityGeometry, EntityKind};
 pub use skill_targeting::{SkillPreviewMode, SkillSlot, SkillTargetingSnapshot};
 
 const NO_ATHLETE: usize = usize::MAX;
 const NO_TEAM: usize = usize::MAX;
 const NO_TARGET: usize = usize::MAX;
 const NO_TICK: u64 = u64::MAX;
+const CLICK_TARGET_OVERLAY_REFRESH_TICKS: u64 = 6;
 
 const COMMAND_NONE: u8 = 0;
 const COMMAND_MOVE: u8 = 1;
@@ -40,8 +45,7 @@ const COMMAND_RETURN: u8 = 3;
 const COMMAND_HOLD: u8 = 4;
 const COMMAND_ATTACK_MOVE: u8 = 5;
 
-// Exact entity collision geometry first. Screen-pixel click forgiveness remains a later polish item.
-const MINIMUM_PICK_RADIUS_SIM: u64 = 0;
+// Battlefield RMB now carries live camera scale so the picker can add screen-pixel forgiveness.
 // There is no native Stop input. When H interrupts Return we issue one movement tick toward the map
 // center, then anchor Hold on the following tick. The destination can be far away because it is only
 // emitted once; actual displacement is bounded to a single simulation tick.
@@ -59,6 +63,7 @@ static ATTACK_MOVE_ARMED: AtomicBool = AtomicBool::new(false);
 static RMB_ACTIVE: AtomicBool = AtomicBool::new(false);
 static RMB_X: AtomicU64 = AtomicU64::new(0);
 static RMB_Y: AtomicU64 = AtomicU64::new(0);
+static RMB_SIM_UNITS_PER_PX: AtomicU64 = AtomicU64::new(0);
 static RMB_VERSION: AtomicU64 = AtomicU64::new(0);
 static RESOLVED_RMB_VERSION: AtomicU64 = AtomicU64::new(0);
 
@@ -93,6 +98,52 @@ static TARGET_DROP_VISION_COUNT: AtomicU64 = AtomicU64::new(0);
 static TARGET_DROP_DEAD_COUNT: AtomicU64 = AtomicU64::new(0);
 static TARGET_DROP_INVALID_COUNT: AtomicU64 = AtomicU64::new(0);
 static LAST_MANUAL_TICK: AtomicU64 = AtomicU64::new(NO_TICK);
+static LAST_CLICK_TARGET_OVERLAY_TICK: AtomicU64 = AtomicU64::new(NO_TICK);
+static CLICK_TARGET_OVERLAY: OnceLock<Mutex<Vec<ClickableEntityGeometry>>> = OnceLock::new();
+
+fn click_target_overlay_storage() -> &'static Mutex<Vec<ClickableEntityGeometry>> {
+    CLICK_TARGET_OVERLAY.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn clear_click_target_overlay() {
+    if let Ok(mut snapshot) = click_target_overlay_storage().lock() {
+        snapshot.clear();
+    }
+}
+
+pub fn refresh_click_target_overlay(ctx: &mut StableAiContext<'_>, tick: u64) {
+    let last = LAST_CLICK_TARGET_OVERLAY_TICK.load(Ordering::Acquire);
+    if last != NO_TICK && tick >= last && tick - last < CLICK_TARGET_OVERLAY_REFRESH_TICKS {
+        return;
+    }
+
+    let Some(controlled_team) = selected_team() else {
+        return;
+    };
+    let Some(sim) = ctx.sim() else {
+        return;
+    };
+    let next = visible_targetable_entities(&sim, controlled_team);
+    if let Ok(mut snapshot) = click_target_overlay_storage().lock() {
+        *snapshot = next;
+        LAST_CLICK_TARGET_OVERLAY_TICK.store(tick, Ordering::Release);
+    }
+}
+
+pub fn click_target_overlay_snapshot() -> Vec<ClickableEntityGeometry> {
+    click_target_overlay_storage()
+        .lock()
+        .map(|snapshot| snapshot.clone())
+        .unwrap_or_default()
+}
+
+pub fn click_target_effective_radius(
+    kind: EntityKind,
+    collision_radius: usize,
+    sim_units_per_px: u64,
+) -> u64 {
+    effective_pick_radius(kind, collision_radius, sim_units_per_px)
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct ControlDiagnostics {
@@ -247,6 +298,8 @@ pub fn reset() {
     clear_move_target();
     HOLD_BREAK_RETURN_PENDING.store(false, Ordering::Release);
     clear_last_self_position();
+    clear_click_target_overlay();
+    LAST_CLICK_TARGET_OVERLAY_TICK.store(NO_TICK, Ordering::Release);
     skill_targeting::reset();
     SELECT_COUNT.store(0, Ordering::Release);
     MOVE_COMMAND_COUNT.store(0, Ordering::Release);
@@ -287,6 +340,8 @@ pub fn select_athlete(athlete_id: usize) {
     ATTACK_MOVE_ARMED.store(false, Ordering::Release);
     clear_move_target();
     clear_last_self_position();
+    clear_click_target_overlay();
+    LAST_CLICK_TARGET_OVERLAY_TICK.store(NO_TICK, Ordering::Release);
     skill_targeting::on_selection_changed();
     SELECTED_ATHLETE.store(athlete_id, Ordering::Release);
     SELECT_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -371,10 +426,19 @@ pub fn request_hold() {
 /// The point is an unresolved contextual RMB request. The paced simulation callback decides whether
 /// it means Attack(entity) or MoveTo(point).
 pub fn publish_move_target(x: u64, y: u64) {
+    publish_move_target_with_pick_scale(x, y, 0);
+}
+
+/// Publishes an unresolved contextual RMB request together with the current camera scale.
+///
+/// `sim_units_per_px` is used only to expand click/select geometry in the simulation callback.
+/// Passing zero preserves exact collision geometry, which is useful for minimap commands.
+pub fn publish_move_target_with_pick_scale(x: u64, y: u64, sim_units_per_px: u64) {
     ATTACK_MOVE_ARMED.store(false, Ordering::Release);
     RMB_VERSION.fetch_add(1, Ordering::AcqRel); // odd = write in progress
     RMB_X.store(x, Ordering::Relaxed);
     RMB_Y.store(y, Ordering::Relaxed);
+    RMB_SIM_UNITS_PER_PX.store(sim_units_per_px, Ordering::Relaxed);
     RMB_ACTIVE.store(true, Ordering::Relaxed);
     RMB_VERSION.fetch_add(1, Ordering::Release); // even = stable snapshot/new request id
     MOVE_COMMAND_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -385,6 +449,7 @@ fn clear_rmb_request() {
     RMB_ACTIVE.store(false, Ordering::Relaxed);
     RMB_X.store(0, Ordering::Relaxed);
     RMB_Y.store(0, Ordering::Relaxed);
+    RMB_SIM_UNITS_PER_PX.store(0, Ordering::Relaxed);
     let stable_version = RMB_VERSION.fetch_add(1, Ordering::Release) + 1;
     RESOLVED_RMB_VERSION.store(stable_version, Ordering::Release);
 }
@@ -395,7 +460,7 @@ pub fn clear_move_target() {
     set_active_hold();
 }
 
-fn rmb_request() -> Option<(u64, u64, u64)> {
+fn rmb_request() -> Option<(u64, u64, u64, u64)> {
     for _ in 0..4 {
         let before = RMB_VERSION.load(Ordering::Acquire);
         if before & 1 != 0 {
@@ -406,10 +471,11 @@ fn rmb_request() -> Option<(u64, u64, u64)> {
         let active = RMB_ACTIVE.load(Ordering::Relaxed);
         let x = RMB_X.load(Ordering::Relaxed);
         let y = RMB_Y.load(Ordering::Relaxed);
+        let sim_units_per_px = RMB_SIM_UNITS_PER_PX.load(Ordering::Relaxed);
         let after = RMB_VERSION.load(Ordering::Acquire);
 
         if before == after && after & 1 == 0 {
-            return active.then_some((x, y, after));
+            return active.then_some((x, y, sim_units_per_px, after));
         }
     }
 
@@ -417,7 +483,7 @@ fn rmb_request() -> Option<(u64, u64, u64)> {
 }
 
 pub fn move_target() -> Option<(u64, u64)> {
-    rmb_request().map(|(x, y, _)| (x, y))
+    rmb_request().map(|(x, y, _, _)| (x, y))
 }
 
 fn current_champion_position(ctx: &mut StableAiContext<'_>) -> Option<(u64, u64)> {
@@ -429,7 +495,7 @@ fn current_champion_position(ctx: &mut StableAiContext<'_>) -> Option<(u64, u64)
 }
 
 fn resolve_latest_rmb(ctx: &mut StableAiContext<'_>) {
-    let Some((x, y, request_version)) = rmb_request() else {
+    let Some((x, y, sim_units_per_px, request_version)) = rmb_request() else {
         return;
     };
 
@@ -443,13 +509,9 @@ fn resolve_latest_rmb(ctx: &mut StableAiContext<'_>) {
         return;
     };
 
-    if let Some(picked) = pick_hostile_entity(
-        &sim,
-        controlled_team,
-        x,
-        y,
-        MINIMUM_PICK_RADIUS_SIM,
-    ) {
+    if let Some(picked) =
+        pick_hostile_entity(&sim, controlled_team, x, y, sim_units_per_px)
+    {
         set_active_attack(picked.id);
         ATTACK_RESOLVE_COUNT.fetch_add(1, Ordering::Relaxed);
     } else {
@@ -708,7 +770,9 @@ pub fn manual_input_for(ctx: &mut StableAiContext<'_>, tick: u64) -> Option<Inpu
     }
 
     // Resolve the selected champion's actual simulation side rather than inferring it from
-    // F-key position or the user's starting team. This is consumed by the spectator fog helper.
+    // F-key position or the user's starting team. This is consumed by spectator fog and the
+    // click-target overlay. A newly selected champion publishes its team before the second
+    // refresh so the overlay appears immediately rather than waiting for the next tick.
     SELECTED_TEAM.store(ctx.team(), Ordering::Release);
 
     let self_position = current_champion_position(ctx);

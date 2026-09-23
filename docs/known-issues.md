@@ -43,11 +43,13 @@ This must be corrected before precise actor/entity hit testing is considered pro
 
 ## Playback-speed controls during live pacing
 
-Status: **immediate release-week buglist**.
+Status: **post-release experiment; intentionally not in the first public release**.
 
-While Candidate A is held near 60 Hz, the game's normal 0.5x/1x/1.5x/2x/3x replay controls do not meaningfully change live presentation speed. The UI may remember/display another speed, but the visible match effectively hugs the live simulation edge at about 1x.
+While Candidate A is held near 60 Hz, the game's normal 0.5x/1x/1.5x/2x/3x replay controls do not meaningfully change live presentation speed. A release-week synchronization experiment did not produce a control model worth shipping: ordinary speeds remained unreliable, while Highlight could pause on champion death and then accelerate toward respawn when selected.
 
-Before the first public release, Direct Control should synchronize the presentation rate and Candidate-A pacer rate together. The same work includes the preferred death-timer fast-forward behavior. Broader playback-desync watchdog/settings polish may move post-release under `docs/release-week-plan.md`.
+The first Workshop release therefore preserves the proven 1x/60 Hz pacing baseline. Synchronized ordinary speeds and controlled-champion death fast-forward are shelved for post-release testing rather than risking a less predictable relationship between presentation and simulation authority.
+
+If speed-changing features return later, they must remain completely disabled in multiplayer; Direct Control's multiplayer speed policy is fixed 1x.
 
 ## Persistent MoveTo state
 
