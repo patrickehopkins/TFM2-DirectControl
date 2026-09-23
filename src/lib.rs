@@ -10,8 +10,8 @@ mod slot_mapping;
 use std::sync::atomic::{AtomicBool, AtomicU16, Ordering};
 
 use mod_api_stable::{
-    declare_stable_mod, ClientSceneKindV1, LogLevel, StableClient, StableExtension, StableHost,
-    StableMod, TextAlignXV1, TextAlignYV1,
+    declare_stable_mod, ClientSceneKindV1, InputTargetKindV1, LogLevel, StableClient,
+    StableExtension, StableHost, StableMod, TextAlignXV1, TextAlignYV1,
 };
 use windows_sys::Win32::{
     Foundation::{POINT, RECT},
@@ -1077,7 +1077,7 @@ impl DirectControlExtension {
             "running"
         };
 
-        ctx.draw_rect("UI", 18.0, 58.0, 1_180.0, 184.0, 19_998, 6.0, 0x101018d8);
+        ctx.draw_rect("UI", 18.0, 58.0, 1_180.0, 206.0, 19_998, 6.0, 0x101018d8);
         Self::draw_text_line(
             ctx,
             62.0,
@@ -1157,6 +1157,40 @@ impl DirectControlExtension {
                 pacing_probe::ready_gate_tick().map(|tick| tick / 60).unwrap_or(0),
                 if STARTUP_FORCE_SPEED_OK.load(Ordering::Acquire) { "ok" } else { "no" },
                 if STARTUP_SPEED_OVERRIDE_ACTIVE.load(Ordering::Acquire) { "ON" } else { "off" },
+            ),
+            0xffd080ff,
+        );
+
+        let gambler_kind = pacing.gambler_q_target_kind.map(|kind| {
+            if kind == InputTargetKindV1::None.code() as u64 {
+                "None".to_owned()
+            } else if kind == InputTargetKindV1::Target.code() as u64 {
+                "Target".to_owned()
+            } else if kind == InputTargetKindV1::Dir.code() as u64 {
+                "Dir".to_owned()
+            } else if kind == InputTargetKindV1::Pos.code() as u64 {
+                "Pos".to_owned()
+            } else {
+                format!("kind#{kind}")
+            }
+        });
+        let gambler_target = pacing
+            .gambler_q_target_id
+            .map(|id| id.to_string())
+            .unwrap_or_else(|| "-".to_owned());
+        Self::draw_text_line(
+            ctx,
+            194.0,
+            &format!(
+                "GAMBLER Q VANILLA: {} | target {} | pos ({},{}) | dir ({},{})",
+                gambler_kind.unwrap_or_else(|| {
+                    if pacing.gambler_q_seen { "unknown".to_owned() } else { "waiting for AI cast".to_owned() }
+                }),
+                gambler_target,
+                pacing.gambler_q_x,
+                pacing.gambler_q_y,
+                pacing.gambler_q_dir_x,
+                pacing.gambler_q_dir_y,
             ),
             0xffd080ff,
         );
