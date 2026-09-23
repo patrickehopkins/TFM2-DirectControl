@@ -1,5 +1,6 @@
 mod camera_probe;
 mod control;
+mod input_focus;
 mod minimap;
 mod pacing_probe;
 mod pause_probe;
@@ -186,6 +187,10 @@ impl DirectControlExtension {
             START_CHORD_WAS_DOWN.store(false, Ordering::Release);
             return;
         }
+        if !input_focus::process_owns_foreground_window() {
+            START_CHORD_WAS_DOWN.store(true, Ordering::Release);
+            return;
+        }
 
         let chord_down = unsafe {
             GetAsyncKeyState(VK_CONTROL as i32) < 0 && GetAsyncKeyState(VK_HOME as i32) < 0
@@ -201,6 +206,10 @@ impl DirectControlExtension {
             FINISH_CHORD_WAS_DOWN.store(false, Ordering::Release);
             FINISH_CONFIRM_ACTIVE.store(false, Ordering::Release);
             FINISH_CONFIRM_LMB_WAS_DOWN.store(false, Ordering::Release);
+            return;
+        }
+        if !input_focus::process_owns_foreground_window() {
+            FINISH_CHORD_WAS_DOWN.store(true, Ordering::Release);
             return;
         }
 
@@ -247,6 +256,10 @@ impl DirectControlExtension {
             TEMP_RELEASE_WAS_DOWN.store(false, Ordering::Release);
             return;
         }
+        if !input_focus::process_owns_foreground_window() {
+            TEMP_RELEASE_WAS_DOWN.store(true, Ordering::Release);
+            return;
+        }
 
         let end_down = unsafe { GetAsyncKeyState(VK_END as i32) < 0 };
         let ctrl_down = unsafe { GetAsyncKeyState(VK_CONTROL as i32) < 0 };
@@ -268,6 +281,10 @@ impl DirectControlExtension {
     fn poll_player_selection(ctx: &StableClient<'_>, ingame: bool) {
         if !ingame {
             SELECT_KEYS_WERE_DOWN.store(0, Ordering::Release);
+            return;
+        }
+        if !input_focus::process_owns_foreground_window() {
+            SELECT_KEYS_WERE_DOWN.store((1u16 << PLAYER_SLOT_COUNT) - 1, Ordering::Release);
             return;
         }
 
