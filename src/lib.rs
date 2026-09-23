@@ -32,14 +32,13 @@ const UI_FALLBACK_H: f32 = 1080.0;
 const CURSOR_WORLD_COLOR: u32 = 0xffd040ff;
 const SKILL_YELLOW: u32 = 0xffd04070;
 const SKILL_SKY_BLUE: u32 = 0x66ccff20;
-const PICK_OVERLAY_ENEMY_CHAMPION: u32 = 0xc838385c;
-const PICK_OVERLAY_ALLY_CHAMPION: u32 = 0x60e87854;
-const PICK_OVERLAY_ENEMY_CHAMPION_CORE: u32 = 0xe0484868;
-const PICK_OVERLAY_ALLY_CHAMPION_CORE: u32 = 0x78f09060;
-const PICK_OVERLAY_ENEMY: u32 = 0x8f202038;
-const PICK_OVERLAY_ALLY: u32 = 0x48b86030;
-const PICK_OVERLAY_ENEMY_CREEP: u32 = 0x8f202024;
-const PICK_OVERLAY_ALLY_CREEP: u32 = 0x48b86020;
+const PICK_OVERLAY_ENEMY_CHAMPION: u32 = 0xe04848c0;
+const PICK_OVERLAY_ALLY_CHAMPION: u32 = 0x78f090c0;
+const PICK_OVERLAY_ENEMY: u32 = 0x8f202080;
+const PICK_OVERLAY_ALLY: u32 = 0x48b86080;
+const PICK_OVERLAY_ENEMY_CREEP: u32 = 0x8f20204c;
+const PICK_OVERLAY_ALLY_CREEP: u32 = 0x48b8604c;
+const PICK_RING_SEGMENTS: usize = 48;
 const VK_F1_CODE: i32 = 0x70;
 const PLAYER_SLOT_COUNT: usize = 10;
 const SIM_UNITS_PER_WORLD_UNIT: f32 = 1000.0;
@@ -575,30 +574,32 @@ impl DirectControlExtension {
             let world_x = entity.x as f32 / SIM_UNITS_PER_WORLD_UNIT;
             let world_y = entity.y as f32 / SIM_UNITS_PER_WORLD_UNIT;
             let world_radius = radius_sim as f32 / SIM_UNITS_PER_WORLD_UNIT;
+            let line_width_px = match entity.kind {
+                control::EntityKind::Champion => 3.0,
+                control::EntityKind::Minion => 1.0,
+                _ => 2.0,
+            };
+            let line_width_world = line_width_px * world_units_per_px;
 
-            ctx.draw_circle(
-                "Game",
-                world_x,
-                world_y,
-                world_radius,
-                1,
-                color,
-            );
-
-            if entity.kind == control::EntityKind::Champion {
-                let core_color = if friendly {
-                    PICK_OVERLAY_ALLY_CHAMPION_CORE
-                } else {
-                    PICK_OVERLAY_ENEMY_CHAMPION_CORE
-                };
-                ctx.draw_circle(
+            let step = std::f32::consts::TAU / PICK_RING_SEGMENTS as f32;
+            let mut previous_x = world_x + world_radius;
+            let mut previous_y = world_y;
+            for segment in 1..=PICK_RING_SEGMENTS {
+                let angle = segment as f32 * step;
+                let next_x = world_x + world_radius * angle.cos();
+                let next_y = world_y + world_radius * angle.sin();
+                ctx.draw_line(
                     "Game",
-                    world_x,
-                    world_y,
-                    world_radius * 0.62,
-                    2,
-                    core_color,
+                    previous_x,
+                    previous_y,
+                    next_x,
+                    next_y,
+                    line_width_world,
+                    1,
+                    color,
                 );
+                previous_x = next_x;
+                previous_y = next_y;
             }
         }
     }
