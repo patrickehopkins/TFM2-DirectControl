@@ -580,6 +580,76 @@ def enum_immediate_sites(image: PeImage, value: int) -> list[tuple[int, str]]:
     return sorted(set(out))
 
 
+def first_rel32_call_after(
+    image: PeImage,
+    site_rva: int,
+    max_distance: int = 0x28,
+) -> tuple[int, int] | None:
+    """Return the first direct call shortly after an action-id materialization."""
+
+    try:
+        block = image.bytes_at_rva(site_rva, max_distance)
+    except ValueError:
+        return None
+    for i in range(len(block) - 4):
+        if block[i] != 0xE8:
+            continue
+        disp = struct.unpack_from("<i", block, i + 1)[0]
+        call_rva = site_rva + i
+        return call_rva, call_rva + 5 + disp
+    return None
+
+
+def printable_at(image: PeImage, rva: int, limit: int = 72) -> str | None:
+    """Return a short printable run when an RVA appears to point at text."""
+
+    try:
+        raw = image.bytes_at_rva(rva, limit)
+    except ValueError:
+        return None
+    out = bytearray()
+    for byte in raw:
+        if byte == 0:
+            break
+        if byte < 0x20 or byte > 0x7E:
+            break
+        out.append(byte)
+    if len(out) < 4:
+        return None
+    try:
+        return out.decode("ascii")
+    except UnicodeDecodeError:
+        return None
+
+
+def nearby_rip_text(
+    image: PeImage,
+    all_refs: list[tuple[int, int, str]],
+    site_rva: int,
+    before: int = 0x28,
+    after: int = 0x10,
+) -> list[tuple[int, int, str, str]]:
+    out: list[tuple[int, int, str, str]] = []
+    for xref, resolved, kind in all_refs:
+        if site_rva - before <= xref <= site_rva + after:
+            text = printable_at(image, resolved)
+            if text:
+                out.append((xref, resolved, kind, text))
+    return out
+
+
+def normalized_enum_sites(image: PeImage, value: int) -> list[tuple[int, str]]:
+    """Remove the overlapping mov32 hit inside each REX-prefixed mov32 instruction."""
+
+    sites = enum_immediate_sites(image, value)
+    rex_starts = {site for site, kind in sites if kind == "mov32-rex"}
+    return [
+        (site, kind)
+        for site, kind in sites
+        if not (kind == "mov32" and site - 1 in rex_starts)
+    ]
+
+
 def emit_code_window(
     lines: list[str],
     image: PeImage,
@@ -885,6 +955,123 @@ def main() -> int:
                                     min(end, site + 0x1C0),
                                 )
                 lines.append("")
+
+    # Group real code sites by the direct callee immediately following an action-id load. A native
+    # action-state query should recur for several follow ids at the same callee, whereas generated
+    # enum serialization tends to fan out through unrelated per-variant code.
+    if follow_refs and 'action_ids' in locals():
+        ingame_ids = {
+            name: discriminant
+            for discriminant, _target, name in action_ids
+            if name.startswith("in_game_")
+        }
+        follow_name_set = set(follow_names)
+        call_groups: dict[
+            tuple[int, int, int],
+            dict[str, list[tuple[int, str, int]]],
+        ] = {}
+
+        for name, value in ingame_ids.items():
+            for site, kind in normalized_enum_sites(image, value):
+                owner = owner_of(runtime_functions, site)
+                if owner is None:
+                    continue
+                call = first_rel32_call_after(image, site)
+                if call is None:
+                    continue
+                call_rva, callee = call
+                key = (owner.start, owner.end, callee)
+                call_groups.setdefault(key, {}).setdefault(name, []).append(
+                    (site, kind, call_rva)
+                )
+
+        ranked_call_groups = sorted(
+            (
+                (
+                    len(follow_name_set.intersection(by_name)),
+                    len(by_name),
+                    sum(len(v) for v in by_name.values()),
+                    owner_start,
+                    owner_end,
+                    callee,
+                    by_name,
+                )
+                for (owner_start, owner_end, callee), by_name in call_groups.items()
+                if len(follow_name_set.intersection(by_name)) >= 3
+            ),
+            reverse=True,
+        )
+
+        lines.append("===== ACTION-ID NEAR-CALL GROUPS =====")
+        if not ranked_call_groups:
+            lines.append("<no direct callee is paired with >=3 distinct follow ids>")
+        for (
+            follow_count,
+            all_count,
+            occurrence_count,
+            owner_start,
+            owner_end,
+            callee,
+            by_name,
+        ) in ranked_call_groups[:24]:
+            callee_owner = owner_of(runtime_functions, callee)
+            callee_text = (
+                f"0x{callee_owner.start:08X}..0x{callee_owner.end:08X}"
+                if callee_owner
+                else "<no .pdata owner>"
+            )
+            lines.append(
+                f"owner 0x{owner_start:08X}..0x{owner_end:08X} "
+                f"callee=0x{callee:08X} callee_owner={callee_text} "
+                f"follow_ids={follow_count} all_ingame_ids={all_count} occurrences={occurrence_count}"
+            )
+            ordered_names = sorted(
+                by_name,
+                key=lambda item: (ingame_ids.get(item, 0xFFFF), item),
+            )
+            for name in ordered_names:
+                hits = by_name[name]
+                hit_text = ", ".join(
+                    f"0x{site:08X}/{kind}->call@0x{call_rva:08X}"
+                    for site, kind, call_rva in hits[:8]
+                )
+                lines.append(
+                    f"  id=0x{ingame_ids[name]:02X} {name}: {hit_text}"
+                )
+                for site, _kind, _call_rva in hits[:1]:
+                    texts = nearby_rip_text(image, all_refs, site)
+                    for xref, resolved, ref_kind, text_value in texts[:4]:
+                        lines.append(
+                            f"    nearby {ref_kind} 0x{xref:08X}->0x{resolved:08X}: {text_value!r}"
+                        )
+            lines.append("")
+
+        # Dump the callees behind the strongest groups once. If one is the native action-state
+        # predicate, this exposes the exact ABI/prologue needed for a version-checked detour.
+        dumped_callees: set[int] = set()
+        for (
+            _follow_count,
+            _all_count,
+            _occurrence_count,
+            _owner_start,
+            _owner_end,
+            callee,
+            _by_name,
+        ) in ranked_call_groups[:12]:
+            if callee in dumped_callees:
+                continue
+            dumped_callees.add(callee)
+            callee_owner = owner_of(runtime_functions, callee)
+            if callee_owner is None:
+                continue
+            span = callee_owner.end - callee_owner.start
+            emit_code_window(
+                lines,
+                image,
+                f"ACTION-ID CALLEE 0x{callee_owner.start:08X}",
+                callee_owner.start,
+                min(callee_owner.end, callee_owner.start + min(span, 0x700)),
+            )
 
     # Deeper pass: all semantic action descriptors form one contiguous 16-byte table. References
     # into any address inside that table are more useful than exact references to individual members
