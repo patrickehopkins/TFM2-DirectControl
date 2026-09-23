@@ -75,8 +75,6 @@ struct MouseSnapshot {
 
 #[derive(Debug, Clone, Copy)]
 struct CursorWorld {
-    world_x: f32,
-    world_y: f32,
     sim_x: u64,
     sim_y: u64,
     sim_units_per_px: u64,
@@ -402,8 +400,6 @@ impl DirectControlExtension {
         };
 
         Some(CursorWorld {
-            world_x,
-            world_y,
             sim_x: sim_x_f.round() as u64,
             sim_y: sim_y_f.round() as u64,
             sim_units_per_px,
