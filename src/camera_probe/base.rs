@@ -186,6 +186,7 @@ pub struct FollowProbeReport {
     pub slot: usize,
     pub samples: u32,
     pub diffs: Vec<FollowProbeDiff>,
+    pub arg_diffs: Vec<FollowProbeDiff>,
 }
 
 struct FollowProbeState {
@@ -197,6 +198,9 @@ struct FollowProbeState {
     held_samples: u32,
     held_slot: usize,
     report: Option<FollowProbeReport>,
+    free_args: [u64; 6],
+    held_args: [u64; 6],
+    arg_stable: [bool; 6],
 }
 
 impl Default for FollowProbeState {
@@ -210,6 +214,9 @@ impl Default for FollowProbeState {
             held_samples: 0,
             held_slot: 0,
             report: None,
+            free_args: [0; 6],
+            held_args: [0; 6],
+            arg_stable: [false; 6],
         }
     }
 }
@@ -310,7 +317,17 @@ unsafe extern "system" fn camera_handler_hook(
     // click cannot override the controlled champion's required team vision mid-frame.
     inject_requested_vision(this);
     capture(this);
-    update_follow_probe(this);
+    update_follow_probe(
+        this,
+        [
+            arg2 as u64,
+            arg3 as u64,
+            arg4.to_bits() as u64,
+            arg5 as u64,
+            arg6 as u64,
+            arg7 as u64,
+        ],
+    );
 }
 
 unsafe fn inject_requested_zoom(this: *mut u8) {
@@ -476,7 +493,7 @@ unsafe fn read_follow_probe_words(this: *mut u8) -> [u64; FOLLOW_PROBE_WORDS] {
     words
 }
 
-unsafe fn update_follow_probe(this: *mut u8) {
+unsafe fn update_follow_probe(this: *mut u8, args: [u64; 6]) {
     let mask = fkey_mask();
     let words = read_follow_probe_words(this);
     let Ok(mut state) = follow_probe_state().lock() else {
@@ -510,16 +527,30 @@ unsafe fn update_follow_probe(this: *mut u8) {
                 }
             }
 
+            let mut arg_diffs = Vec::new();
+            for index in 0..6 {
+                if state.arg_stable[index] && state.free_args[index] != state.held_args[index] {
+                    arg_diffs.push(FollowProbeDiff {
+                        // 0xF00+N is a HUD-only namespace for handler arguments, not object memory.
+                        offset: 0xF00 + index,
+                        free: state.free_args[index],
+                        held: state.held_args[index],
+                    });
+                }
+            }
+
             state.report = Some(FollowProbeReport {
                 slot: state.held_slot,
                 samples: state.held_samples,
                 diffs,
+                arg_diffs,
             });
         }
 
         // Keep the most recent genuinely free-camera frame as the baseline. The report is retained
         // until the next completed F-key hold so the render HUD can show it after release.
         state.free_words = words;
+        state.free_args = args;
         state.free_valid = true;
         state.last_mask = 0;
         state.held_samples = 0;
@@ -530,6 +561,8 @@ unsafe fn update_follow_probe(this: *mut u8) {
     if state.last_mask == 0 || state.last_mask != mask {
         state.held_words = words;
         state.stable.fill(true);
+        state.held_args = args;
+        state.arg_stable.fill(true);
         state.held_samples = 1;
         state.held_slot = slot;
     } else {
@@ -538,7 +571,13 @@ unsafe fn update_follow_probe(this: *mut u8) {
                 state.stable[index] = false;
             }
         }
+        for index in 0..6 {
+            if state.held_args[index] != args[index] {
+                state.arg_stable[index] = false;
+            }
+        }
         state.held_words = words;
+        state.held_args = args;
         state.held_samples = state.held_samples.saturating_add(1);
     }
     state.last_mask = mask;
