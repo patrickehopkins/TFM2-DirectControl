@@ -1072,7 +1072,7 @@ impl DirectControlExtension {
             "running"
         };
 
-        ctx.draw_rect("UI", 18.0, 58.0, 1_180.0, 266.0, 19_998, 6.0, 0x101018d8);
+        ctx.draw_rect("UI", 18.0, 58.0, 1_180.0, 288.0, 19_998, 6.0, 0x101018d8);
         Self::draw_text_line(
             ctx,
             62.0,
@@ -1224,7 +1224,7 @@ impl DirectControlExtension {
                     })
                     .collect::<Vec<_>>()
                     .join(" | ");
-                Self::draw_text_line(ctx, 238.0, &overflow, 0xffd080ff);
+                Self::draw_text_line(ctx, 260.0, &overflow, 0xffd080ff);
             }
 
             let pointer_summary = if report.pointer_diffs.is_empty() {
