@@ -4,14 +4,15 @@
 //! Stage 4 proved manual `InputV1::move_to` commands reach that live simulation.
 //!
 //! Startup probing on v0.6.1 proved Candidate A is already the watched ClientMatchView simulation
-//! at tick 1, and that a total hold deadlocks the loader. The first successful readiness gate also
-//! proved we can stop precisely at the first InGame frame once the battlefield exists.
+//! at tick 1. It also proved the loader behaves materially better with the existing bounded startup
+//! hold: tick 1 completes, the next tick waits up to two seconds, then Candidate A resumes at 60 Hz.
 //!
-//! This bounded experiment asks how much simulation progress the loader truly needs: Candidate A
-//! advances at 10 Hz during loading, then falls back to the proven 60 Hz runway after 15 seconds if
-//! the map still is not ready. The first InGame frame latches the current tick; that tick completes,
-//! and the next blocks until the user's explicit Ctrl+Home. Live play remains the validated 60 Hz.
-//! The worker-local Ctrl+Home escape is available throughout startup and the held ready gate.
+//! The loader auto-release is now distinct from the user's Ctrl+Home start. It opens only enough
+//! runway for the client to reach its first InGame frame. That frame latches the current simulation
+//! tick; the tick is allowed to finish, then Candidate A blocks again until the user explicitly
+//! starts Direct Control. This preserves the loader's physically validated path while preventing
+//! further watched-match progress once the battlefield is actually available.
+//! The worker-local Ctrl+Home escape remains available while a Candidate-A callback is held.
 //!
 //! Pause uses a separate presentation gate. Ctrl+End permanently releases pacing and manual input
 //! for the current match.
@@ -39,8 +40,7 @@ const MAX_SLEEP_SLICE_MS: u64 = 2;
 const MAX_SINGLE_CALLBACK_WAIT_MS: u64 = 250;
 const RENDER_HEARTBEAT_STALE_MS: u64 = 500;
 const BLOCK_SLEEP_SLICE_MS: u64 = 2;
-const STARTUP_PACE_HZ: u64 = 10;
-const STARTUP_PACE_FALLBACK_MS: u64 = 15_000;
+const PREMATCH_AUTO_RELEASE_MS: u64 = 2_000;
 
 const PHASE_WAITING_START: u8 = 0;
 const PHASE_RUNNING: u8 = 1;
@@ -519,6 +519,8 @@ fn ctrl_home_down() -> bool {
 }
 
 fn wait_until_started() -> bool {
+    let wait_started_ms = unsafe { GetTickCount64() };
+
     loop {
         if manual_control_released() {
             return false;
@@ -527,10 +529,23 @@ fn wait_until_started() -> bool {
             return true;
         }
 
-        // The client is already interactive here. Keep polling on the Candidate-A worker so
-        // Ctrl+Home can release the gate even if this held callback prevents another render pass.
+        // `post_render` is not guaranteed to run while Start Match waits. Poll the escape chord on
+        // this worker too, so Ctrl+Home can always release a rejected prematch gate experiment.
         if ctrl_home_down() {
             request_start_simulation();
+            return true;
+        }
+
+        // If the one-tick runway was insufficient, recover automatically before Windows decides
+        // the process is hung. Once InGame is actually visible, do NOT auto-start: leave the held
+        // tick waiting for the user's deliberate Ctrl+Home.
+        let now_ms = unsafe { GetTickCount64() };
+        if !INTERACTIVE_MATCH.load(Ordering::Acquire)
+            && now_ms.saturating_sub(wait_started_ms) >= PREMATCH_AUTO_RELEASE_MS
+        {
+            // Loader escape only: allow Candidate A to resume at 60 Hz, but keep manual control
+            // unstarted so the first real InGame frame can re-establish a deliberate Ctrl+Home gate.
+            START_AUTO_RELEASED.store(true, Ordering::Release);
             return true;
         }
 
@@ -604,23 +619,29 @@ fn pace_candidate_a(tick: u64) {
             return pace_candidate_a(tick);
         }
 
-        // During loading, keep Candidate A moving slowly rather than either deadlocking it or
-        // consuming watched-match time at the full live 60 Hz. Ctrl+Home remains an emergency
-        // escape: if the user presses it here, ordinary 60 Hz pacing begins immediately.
-        if ctrl_home_down() {
-            request_start_simulation();
+        if !START_AUTO_RELEASED.load(Ordering::Acquire) {
+            let first_tick = FIRST_CANDIDATE_A_TICK.load(Ordering::Acquire);
+
+            // Preserve the loader behavior that physically reached InGame around tick 166:
+            // complete tick 1, hold at the next tick for the bounded 2-second runway gate, then
+            // resume Candidate A at 60 Hz without treating that recovery as the user's start.
+            if first_tick == NO_TICK || tick <= first_tick {
+                return;
+            }
+
+            if !wait_until_started() {
+                return;
+            }
+
+            // Ctrl+Home may have been pressed during the hold. If so, START_REQUESTED is now true
+            // and the recursive call enters ordinary live pacing. Otherwise this was only the
+            // bounded loader auto-release and the next call falls through to the 60 Hz loader runway.
             reanchor_pacer();
             return pace_candidate_a(tick);
         }
 
-        let startup_elapsed = startup_elapsed_ms().unwrap_or(0);
-        if startup_elapsed >= STARTUP_PACE_FALLBACK_MS
-            && !START_AUTO_RELEASED.swap(true, Ordering::AcqRel)
-        {
-            // If the loader actually requires a large fixed number of simulation ticks, do not
-            // strand Start Match at 10 Hz. Re-anchor and fall back to the proven 60 Hz runway.
-            reanchor_pacer();
-        }
+        // Loader runway: paced at the proven 60 Hz until the first InGame frame is observed.
+        // START_REQUESTED remains false, so that frame immediately reinstates the user gate.
     }
 
     if PRESENTATION_PHASE.load(Ordering::Acquire) == PHASE_PAUSED {
@@ -659,15 +680,7 @@ fn pace_candidate_a(tick: u64) {
     }
 
     let sim_delta_ticks = tick.saturating_sub(origin_tick);
-    let target_hz = if !START_REQUESTED.load(Ordering::Acquire)
-        && !INTERACTIVE_MATCH.load(Ordering::Acquire)
-        && !START_AUTO_RELEASED.load(Ordering::Acquire)
-    {
-        STARTUP_PACE_HZ
-    } else {
-        60
-    };
-    let target_elapsed_ms = sim_delta_ticks.saturating_mul(1_000) / target_hz;
+    let target_elapsed_ms = sim_delta_ticks.saturating_mul(1_000) / 60;
     let callback_wait_start_ms = now_ms;
 
     loop {
