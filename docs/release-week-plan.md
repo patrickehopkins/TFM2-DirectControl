@@ -77,13 +77,13 @@ The release still contains unavoidable loader-required pre-simulation. Do not at
 
 ## Final control polish before cleanup
 
-**Held-RMB command refresh**
+**Held-RMB command refresh — validated**
 - RMB press still issues the existing contextual command immediately.
 - While RMB remains physically held, continuously publish the current cursor through the existing contextual RMB path.
 - The authoritative 60 Hz simulation callback remains responsible for deciding Attack(entity) vs MoveTo(point).
-- Moving the cursor onto, off, or among hostile entities while RMB remains held should therefore update context live.
-- Do not copy another game's repeat timing; use Direct Control's existing render -> simulation command architecture.
-- If this unexpectedly requires native hooks, executable probes, or changes to validated attack timing, document the stopping point and defer immediately.
+- Moving the cursor onto, off, or among hostile entities while RMB remains held therefore updates context live.
+- No copied external repeat interval, native hook, or alternate attack path was required.
+- **Physically validated on v0.6.1:** held RMB feels correct with no noted regressions; single-click contextual behavior remains intact.
 
 **Champion click forgiveness revisit**
 - after held-RMB passes, reduce champion click padding slightly because the current +12 px makes minions directly under champions harder to select;
