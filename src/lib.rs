@@ -853,7 +853,7 @@ impl DirectControlExtension {
             "running"
         };
 
-        ctx.draw_rect("UI", 18.0, 58.0, 1_030.0, 112.0, 19_998, 6.0, 0x101018d8);
+        ctx.draw_rect("UI", 18.0, 58.0, 1_180.0, 160.0, 19_998, 6.0, 0x101018d8);
         Self::draw_text_line(
             ctx,
             62.0,
@@ -894,14 +894,61 @@ impl DirectControlExtension {
             "F1-F10 select | RMB move/attack/minimap | A attack-move + LMB | H hold | B return | Q/W/R arm | End AI release | Ctrl+End global release",
             0x80d8ffff,
         );
+
+        let probe_value =
+            |value: Option<u64>| value.map(|v| v.to_string()).unwrap_or_else(|| "-".to_owned());
+        Self::draw_text_line(
+            ctx,
+            150.0,
+            &format!(
+                "STARTUP PROBE: origin {} | ClientMatchView tick {} @ {}ms | match {} replay {} set {}",
+                probe_value(pacing.startup_origin_kind),
+                probe_value(pacing.client_match_view_tick),
+                probe_value(pacing.client_match_view_ms),
+                probe_value(pacing.client_match_view_match_id),
+                probe_value(pacing.client_match_view_replay_id),
+                probe_value(pacing.client_match_view_set_index),
+            ),
+            0xffd080ff,
+        );
+        Self::draw_text_line(
+            ctx,
+            172.0,
+            &format!(
+                "LOAD: Match t{} @{}ms | GameMap t{} @{}ms | center_log t{} @{}ms | InGame t{} @{}ms",
+                probe_value(pacing.first_match_render_tick),
+                probe_value(pacing.first_match_render_ms),
+                probe_value(pacing.first_game_map_tick),
+                probe_value(pacing.first_game_map_ms),
+                probe_value(pacing.first_center_log_tick),
+                probe_value(pacing.first_center_log_ms),
+                probe_value(pacing.first_ingame_render_tick),
+                probe_value(pacing.first_ingame_render_ms),
+            ),
+            0xffd080ff,
+        );
     }
 }
 
 impl StableExtension for DirectControlExtension {
     fn post_render(&self, ctx: &mut StableClient<'_>) {
-        let ingame = matches!(ctx.client_scene_kind(), Some(ClientSceneKindV1::InGame));
+        let scene = ctx.client_scene_kind();
+        let ingame = matches!(scene, Some(ClientSceneKindV1::InGame));
         let control_scene = Self::control_scene(ctx);
         let session_was_active = MATCH_SESSION_ACTIVE.load(Ordering::Acquire);
+
+        if matches!(scene, Some(ClientSceneKindV1::Match)) {
+            pacing_probe::note_match_render();
+        }
+        if ctx.draw_map_size("Game").is_some() {
+            pacing_probe::note_game_map_ready();
+        }
+        if ctx.ui_node_rect("ingame.center_log").is_some() {
+            pacing_probe::note_center_log_ready();
+        }
+        if ingame {
+            pacing_probe::note_ingame_render();
+        }
 
         // Match and InGame are both part of the live match-view lifecycle. Do not treat a
         // temporary transition from InGame -> Match (for example a pause/menu presentation state)
