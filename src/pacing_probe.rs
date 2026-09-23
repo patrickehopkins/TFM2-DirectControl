@@ -31,7 +31,7 @@ use windows_sys::Win32::{
     UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_CONTROL, VK_HOME},
 };
 
-use crate::{control, simulation_probe};
+use crate::{control, input_focus, simulation_probe};
 
 const NO_TICK: u64 = u64::MAX;
 const NO_PLAYER: usize = usize::MAX;
@@ -105,6 +105,7 @@ static START_WAIT_COUNT: AtomicU64 = AtomicU64::new(0);
 static START_TOTAL_WAIT_MS: AtomicU64 = AtomicU64::new(0);
 static PAUSE_WAIT_COUNT: AtomicU64 = AtomicU64::new(0);
 static PAUSE_TOTAL_WAIT_MS: AtomicU64 = AtomicU64::new(0);
+static WORKER_START_CHORD_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Copy)]
 pub struct PacingProbeSnapshot {
@@ -182,6 +183,7 @@ fn reset_job_runtime() {
     START_TOTAL_WAIT_MS.store(0, Ordering::Release);
     PAUSE_WAIT_COUNT.store(0, Ordering::Release);
     PAUSE_TOTAL_WAIT_MS.store(0, Ordering::Release);
+    WORKER_START_CHORD_WAS_DOWN.store(false, Ordering::Release);
 
     STARTUP_JOB_START_MS.store(0, Ordering::Release);
     LAST_ORIGIN_PROBE_TICK.store(NO_TICK, Ordering::Release);
@@ -533,10 +535,19 @@ fn candidate_a_probe_for_thread(thread_id: u32) -> Option<simulation_probe::Simu
         .then_some(candidate_a)
 }
 
-fn ctrl_home_down() -> bool {
-    unsafe {
-        GetAsyncKeyState(VK_CONTROL as i32) < 0 && GetAsyncKeyState(VK_HOME as i32) < 0
+fn ctrl_home_pressed_in_foreground() -> bool {
+    if !input_focus::process_owns_foreground_window() {
+        // Swallow a Ctrl+Home that was pressed while another application owned focus. The chord
+        // must be released and pressed again after TFM2 becomes foreground before it can count.
+        WORKER_START_CHORD_WAS_DOWN.store(true, Ordering::Release);
+        return false;
     }
+
+    let chord_down = unsafe {
+        GetAsyncKeyState(VK_CONTROL as i32) < 0 && GetAsyncKeyState(VK_HOME as i32) < 0
+    };
+    let was_down = WORKER_START_CHORD_WAS_DOWN.swap(chord_down, Ordering::AcqRel);
+    chord_down && !was_down
 }
 
 fn wait_until_started() -> bool {
@@ -552,7 +563,7 @@ fn wait_until_started() -> bool {
 
         // `post_render` is not guaranteed to run while Start Match waits. Poll the escape chord on
         // this worker too, so Ctrl+Home can always release a rejected prematch gate experiment.
-        if ctrl_home_down() {
+        if ctrl_home_pressed_in_foreground() {
             request_start_simulation();
             return true;
         }
