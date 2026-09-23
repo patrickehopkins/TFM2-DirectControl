@@ -538,10 +538,15 @@ impl DirectControlExtension {
             return;
         }
 
-        let was_down = RMB_WAS_DOWN.swap(mouse.right_down, Ordering::AcqRel);
+        // Keep edge state current for the shared targeting layer, but unlike the original
+        // click-only implementation do not require a rising edge here. While RMB remains held,
+        // republish the current cursor every render pass. Candidate A consumes only the latest
+        // coherent request on its next simulation tick and performs the same authoritative
+        // contextual Attack-vs-Move resolution it already uses for single clicks.
+        RMB_WAS_DOWN.store(mouse.right_down, Ordering::Release);
         if suppress_rmb
             || !mouse.right_down
-            || was_down
+            || !mouse.valid
             || !pacing_probe::manual_input_enabled()
             || control::selected_athlete().is_none()
         {
