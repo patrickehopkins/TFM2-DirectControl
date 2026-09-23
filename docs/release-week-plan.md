@@ -37,7 +37,7 @@ Do these in order unless a newly discovered crash/data-corruption-level regressi
    - When enlarged areas overlap, priority is **Champion > Building/Objective > Creep**.
    - The purpose is to reduce rapid RMB attacks accidentally becoming ground MoveTo orders.
    - Current implementation uses live camera scale rather than fixed simulation padding: +12 px champion, +28 px tower, +24 px other targetable objective/building-like entity, +5 px minion. Minimap commands retain exact collision geometry.
-   - **Physical validation pending.**
+   - **Physically validated on v0.6.1:** the enlarged regions and Champion > Building/Objective > Creep overlap priority behave as intended. The optional visual hitbox rings remain lightweight by throttling geometry snapshots and using low-segment outlines; full-rate targeting itself is unchanged.
 
 ## Input-focus safety sweep before release
 
