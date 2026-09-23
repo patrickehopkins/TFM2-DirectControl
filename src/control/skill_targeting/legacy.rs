@@ -652,6 +652,49 @@ fn legal_target_exists(ctx: &mut StableAiContext<'_>, slot: SkillSlot) -> bool {
     hostile || friendly
 }
 
+fn immediate_self_cast(
+    ctx: &mut StableAiContext<'_>,
+    slot: SkillSlot,
+    self_position: (u64, u64),
+) -> Option<InputV1> {
+    // CastingType::None is inherently cursorless. If the runtime accepts it now, key press is the
+    // complete command and there is no reason to enter Direct Control's click-confirm flow.
+    let none = action(slot, target_none());
+    if ctx.is_valid_input(&none) {
+        PREVIEW_MODE.store(MODE_NONE, Ordering::Release);
+        return Some(none);
+    }
+
+    // Some vanilla self buffs are encoded as Targeting + AllyOnlySelf rather than CastingType::None.
+    // StableAiContext does not expose the live base action definition, so classify conservatively
+    // from validator evidence: self must be legal, every other currently visible entity target must
+    // be illegal, and the Position/Direction forms must also reject. Ordinary entity-target skills
+    // therefore retain their existing click-confirm path whenever another legal target exists.
+    let self_id = own_entity_id(ctx)?;
+    let self_targeted = action(slot, target_entity(self_id));
+    if !ctx.is_valid_input(&self_targeted) {
+        return None;
+    }
+
+    for (id, _) in visible_target_ids(ctx).into_iter().take(64) {
+        if id != self_id && ctx.is_valid_input(&action(slot, target_entity(id))) {
+            return None;
+        }
+    }
+
+    if ctx.is_valid_input(&action(slot, target_dir(self_position, self_position)))
+        || ctx.is_valid_input(&action(
+            slot,
+            target_pos(self_position.0, self_position.1),
+        ))
+    {
+        return None;
+    }
+
+    PREVIEW_MODE.store(MODE_TARGET, Ordering::Release);
+    Some(self_targeted)
+}
+
 /// Returns true only when an invalid hostile Target click has enough runtime evidence to mean
 /// "correct target shape, currently out of range" rather than "this slot is Direction/Position/etc".
 /// When another legal entity target exists, relation is authoritative. When every entity is out of
@@ -874,6 +917,12 @@ pub fn manual_skill_input(
         REJECT_COUNT.fetch_add(1, Ordering::Relaxed);
         clear_targeting_state();
         return None;
+    }
+
+    if let Some(input) = immediate_self_cast(ctx, slot, self_position) {
+        CAST_COUNT.fetch_add(1, Ordering::Relaxed);
+        clear_targeting_state();
+        return Some(input);
     }
 
     update_preview(ctx, slot, self_position);
