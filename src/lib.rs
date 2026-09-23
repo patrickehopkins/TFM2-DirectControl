@@ -56,6 +56,8 @@ static START_CHORD_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static FINISH_CHORD_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static FINISH_CONFIRM_ACTIVE: AtomicBool = AtomicBool::new(false);
 static FINISH_CONFIRM_LMB_WAS_DOWN: AtomicBool = AtomicBool::new(false);
+static STARTUP_VISIBLE_SECONDS: AtomicU16 = AtomicU16::new(u16::MAX);
+static STARTUP_FORCE_SPEED_OK: AtomicBool = AtomicBool::new(false);
 static TEMP_RELEASE_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static SELECT_KEYS_WERE_DOWN: AtomicU16 = AtomicU16::new(0);
 static LMB_WAS_DOWN: AtomicBool = AtomicBool::new(false);
@@ -834,11 +836,95 @@ impl DirectControlExtension {
         );
     }
 
+    fn visible_match_seconds(ctx: &StableClient<'_>) -> Option<u64> {
+        let text = ctx
+            .ui_text("ingame.header.game_time.value")
+            .or_else(|| ctx.ui_text("header.game_time.value"))?;
+        let mut total = 0u64;
+        for part in text.trim().split(':') {
+            let value = part.trim().parse::<u64>().ok()?;
+            total = total.checked_mul(60)?.checked_add(value)?;
+        }
+        Some(total)
+    }
+
+    fn set_native_speed_selected(ctx: &mut StableClient<'_>, selected_path: &str) -> bool {
+        const SPEED_PATHS: [&str; 5] = [
+            "ingame.speed_buttons.speed05x",
+            "ingame.speed_buttons.speed1x",
+            "ingame.speed_buttons.speed15x",
+            "ingame.speed_buttons.speed2x",
+            "ingame.speed_buttons.speed3x",
+        ];
+
+        let mut recognized = 0usize;
+        let mut writes_ok = true;
+        for path in SPEED_PATHS {
+            if ctx.ui_runner_name(path).is_none() {
+                continue;
+            }
+            recognized += 1;
+            let selected = path == selected_path;
+            let state = if selected {
+                r#"{"selected":true}"#
+            } else {
+                r#"{"selected":false}"#
+            };
+            writes_ok &= ctx.ui_set_state_json(path, state);
+        }
+
+        recognized > 0 && writes_ok
+    }
+
+    fn update_startup_presentation_sync(ctx: &mut StableClient<'_>) {
+        if !matches!(ctx.client_scene_kind(), Some(ClientSceneKindV1::InGame))
+            || pacing_probe::start_requested()
+            || pacing_probe::manual_control_released()
+        {
+            return;
+        }
+
+        let Some(ready_tick) = pacing_probe::ready_gate_tick() else {
+            return;
+        };
+        let Some(visible_seconds) = Self::visible_match_seconds(ctx) else {
+            STARTUP_VISIBLE_SECONDS.store(u16::MAX, Ordering::Release);
+            STARTUP_FORCE_SPEED_OK.store(false, Ordering::Release);
+            pacing_probe::set_startup_presentation_synced(false);
+            return;
+        };
+
+        STARTUP_VISIBLE_SECONDS.store(
+            u16::try_from(visible_seconds).unwrap_or(u16::MAX - 1),
+            Ordering::Release,
+        );
+
+        // The visible clock is whole-second precision. Reaching floor(live_tick / 60) leaves less
+        // than one second of possible presentation lag; the frozen simulation prevents overshoot.
+        let target_seconds = ready_tick / 60;
+        if visible_seconds < target_seconds {
+            let ok = Self::set_native_speed_selected(ctx, "ingame.speed_buttons.speed3x");
+            STARTUP_FORCE_SPEED_OK.store(ok, Ordering::Release);
+            pacing_probe::set_startup_presentation_synced(false);
+        } else {
+            let ok = Self::set_native_speed_selected(ctx, "ingame.speed_buttons.speed1x");
+            STARTUP_FORCE_SPEED_OK.store(ok, Ordering::Release);
+            pacing_probe::set_startup_presentation_synced(ok);
+        }
+    }
+
     fn draw_ready_prompt(ctx: &mut StableClient<'_>) {
+        let synced = pacing_probe::startup_presentation_synced();
+        let message = if synced {
+            "Direct Control is ready. Press Ctrl+Home to take control and resume the match."
+        } else {
+            "Synchronizing Direct Control with the live match..."
+        };
+
         ctx.draw_rect("UI", 520.0, 160.0, 880.0, 86.0, 30_000, 10.0, 0x101018e8);
         ctx.draw_text(
             "UI",
-            "Direct Control is ready. Press Ctrl+Home to take control and resume the match.",
+            message,
             "asset/base/font/set/bold",
             (550.0, 176.0, 820.0, 54.0),
             30_001,
@@ -1015,7 +1101,7 @@ impl DirectControlExtension {
             ctx,
             172.0,
             &format!(
-                "LOAD: Match t{} @{}ms | GameMap t{} @{}ms | center_log t{} @{}ms | InGame t{} @{}ms | auto {} wait {}ms",
+                "LOAD: Match t{} @{}ms | GameMap t{} @{}ms | center_log t{} @{}ms | InGame t{} @{}ms | auto {} wait {}ms | view {}s target {}s speedwrite {}",
                 probe_value(pacing.first_match_render_tick),
                 probe_value(pacing.first_match_render_ms),
                 probe_value(pacing.first_game_map_tick),
@@ -1026,6 +1112,12 @@ impl DirectControlExtension {
                 probe_value(pacing.first_ingame_render_ms),
                 if pacing.start_auto_released { "YES" } else { "no" },
                 pacing.start_total_wait_ms,
+                {
+                    let value = STARTUP_VISIBLE_SECONDS.load(Ordering::Acquire);
+                    if value == u16::MAX { "-".to_owned() } else { value.to_string() }
+                },
+                pacing_probe::ready_gate_tick().map(|tick| tick / 60).unwrap_or(0),
+                if STARTUP_FORCE_SPEED_OK.load(Ordering::Acquire) { "ok" } else { "no" },
             ),
             0xffd080ff,
         );
@@ -1033,6 +1125,10 @@ impl DirectControlExtension {
 }
 
 impl StableExtension for DirectControlExtension {
+    fn post_update(&self, ctx: &mut StableClient<'_>, _dt_micros: u64) {
+        Self::update_startup_presentation_sync(ctx);
+    }
+
     fn post_render(&self, ctx: &mut StableClient<'_>) {
         let scene = ctx.client_scene_kind();
         let ingame = matches!(scene, Some(ClientSceneKindV1::InGame));
@@ -1068,6 +1164,8 @@ impl StableExtension for DirectControlExtension {
                 FINISH_CHORD_WAS_DOWN.store(false, Ordering::Release);
                 FINISH_CONFIRM_ACTIVE.store(false, Ordering::Release);
                 FINISH_CONFIRM_LMB_WAS_DOWN.store(false, Ordering::Release);
+                STARTUP_VISIBLE_SECONDS.store(u16::MAX, Ordering::Release);
+                STARTUP_FORCE_SPEED_OK.store(false, Ordering::Release);
                 TEMP_RELEASE_WAS_DOWN.store(false, Ordering::Release);
                 SELECT_KEYS_WERE_DOWN.store(0, Ordering::Release);
                 LMB_WAS_DOWN.store(false, Ordering::Release);
