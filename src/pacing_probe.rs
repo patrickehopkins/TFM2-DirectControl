@@ -24,7 +24,7 @@ use std::{
 };
 
 use mod_api_stable::{
-    InputV1, SimOriginKindV1, StableAiContext, StableAiInit, StablePlayerAi,
+    InputKindV1, InputV1, SimOriginKindV1, StableAiContext, StableAiInit, StablePlayerAi,
 };
 use windows_sys::Win32::{
     System::Threading::GetCurrentThreadId,
@@ -59,6 +59,14 @@ static LAST_CANDIDATE_A_PLAYER: AtomicUsize = AtomicUsize::new(NO_PLAYER);
 static LAST_CANDIDATE_A_ATHLETE: AtomicUsize = AtomicUsize::new(NO_PLAYER);
 static LAST_CANDIDATE_A_THREAD: AtomicU64 = AtomicU64::new(0);
 static SEEN_PLAYER_MASK: AtomicU64 = AtomicU64::new(0);
+
+static GAMBLER_Q_SEEN: AtomicBool = AtomicBool::new(false);
+static GAMBLER_Q_TARGET_KIND: AtomicU64 = AtomicU64::new(u64::MAX);
+static GAMBLER_Q_TARGET_ID: AtomicUsize = AtomicUsize::new(NO_PLAYER);
+static GAMBLER_Q_X: AtomicU64 = AtomicU64::new(0);
+static GAMBLER_Q_Y: AtomicU64 = AtomicU64::new(0);
+static GAMBLER_Q_DIR_X: AtomicU64 = AtomicU64::new(0);
+static GAMBLER_Q_DIR_Y: AtomicU64 = AtomicU64::new(0);
 
 // Candidate-A's detoured wrapper gives us a stable job identity before StablePlayerAi executes.
 // Reset the per-match latches at that boundary rather than at the later InGame scene transition.
@@ -117,6 +125,13 @@ pub struct PacingProbeSnapshot {
     pub last_candidate_a_athlete: Option<usize>,
     pub last_candidate_a_thread: u32,
     pub seen_player_mask: u64,
+    pub gambler_q_seen: bool,
+    pub gambler_q_target_kind: Option<u64>,
+    pub gambler_q_target_id: Option<usize>,
+    pub gambler_q_x: u64,
+    pub gambler_q_y: u64,
+    pub gambler_q_dir_x: i64,
+    pub gambler_q_dir_y: i64,
     pub pacer_origin_tick: Option<u64>,
     pub pacer_elapsed_ms: u64,
     pub start_requested: bool,
@@ -167,6 +182,14 @@ fn reset_job_runtime() {
     LAST_CANDIDATE_A_ATHLETE.store(NO_PLAYER, Ordering::Release);
     LAST_CANDIDATE_A_THREAD.store(0, Ordering::Release);
     SEEN_PLAYER_MASK.store(0, Ordering::Release);
+
+    GAMBLER_Q_SEEN.store(false, Ordering::Release);
+    GAMBLER_Q_TARGET_KIND.store(u64::MAX, Ordering::Release);
+    GAMBLER_Q_TARGET_ID.store(NO_PLAYER, Ordering::Release);
+    GAMBLER_Q_X.store(0, Ordering::Release);
+    GAMBLER_Q_Y.store(0, Ordering::Release);
+    GAMBLER_Q_DIR_X.store(0, Ordering::Release);
+    GAMBLER_Q_DIR_Y.store(0, Ordering::Release);
 
     START_REQUESTED.store(false, Ordering::Release);
     START_AUTO_RELEASED.store(false, Ordering::Release);
@@ -440,6 +463,19 @@ pub fn snapshot() -> PacingProbeSnapshot {
         last_candidate_a_athlete: (last_athlete != NO_PLAYER).then_some(last_athlete),
         last_candidate_a_thread: LAST_CANDIDATE_A_THREAD.load(Ordering::Acquire) as u32,
         seen_player_mask: SEEN_PLAYER_MASK.load(Ordering::Acquire),
+        gambler_q_seen: GAMBLER_Q_SEEN.load(Ordering::Acquire),
+        gambler_q_target_kind: {
+            let value = GAMBLER_Q_TARGET_KIND.load(Ordering::Acquire);
+            (value != u64::MAX).then_some(value)
+        },
+        gambler_q_target_id: {
+            let value = GAMBLER_Q_TARGET_ID.load(Ordering::Acquire);
+            (value != NO_PLAYER).then_some(value)
+        },
+        gambler_q_x: GAMBLER_Q_X.load(Ordering::Acquire),
+        gambler_q_y: GAMBLER_Q_Y.load(Ordering::Acquire),
+        gambler_q_dir_x: GAMBLER_Q_DIR_X.load(Ordering::Acquire) as i64,
+        gambler_q_dir_y: GAMBLER_Q_DIR_Y.load(Ordering::Acquire) as i64,
         pacer_origin_tick: (pacer_origin_tick != NO_TICK).then_some(pacer_origin_tick),
         pacer_elapsed_ms: if pacer_origin_ms == 0 {
             0
@@ -761,6 +797,26 @@ fn pace_candidate_a(tick: u64) {
     }
 }
 
+fn observe_gambler_q_base_input(ctx: &StableAiContext<'_>, base_input: Option<InputV1>) {
+    if ctx.champion_name() != "gambler" {
+        return;
+    }
+    let Some(input) = base_input else {
+        return;
+    };
+    if input.kind != InputKindV1::Skill.code() {
+        return;
+    }
+
+    GAMBLER_Q_TARGET_KIND.store(input.target.kind as u64, Ordering::Relaxed);
+    GAMBLER_Q_TARGET_ID.store(input.target.target_id, Ordering::Relaxed);
+    GAMBLER_Q_X.store(input.target.x, Ordering::Relaxed);
+    GAMBLER_Q_Y.store(input.target.y, Ordering::Relaxed);
+    GAMBLER_Q_DIR_X.store(input.target.dir_x as u64, Ordering::Relaxed);
+    GAMBLER_Q_DIR_Y.store(input.target.dir_y as u64, Ordering::Relaxed);
+    GAMBLER_Q_SEEN.store(true, Ordering::Release);
+}
+
 impl StablePlayerAi for CandidateAObserverAi {
     fn clone_box(&self) -> Box<dyn StablePlayerAi> {
         Box::new(self.clone())
@@ -812,6 +868,7 @@ impl StablePlayerAi for CandidateAObserverAi {
         }
 
         observe_sim_origin(ctx, tick);
+        observe_gambler_q_base_input(ctx, base_input);
         pace_candidate_a(tick);
 
         // Debug-only click geometry is intentionally throttled; targeting itself remains full-rate.
