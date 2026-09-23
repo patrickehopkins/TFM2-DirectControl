@@ -67,6 +67,8 @@ static ACTIVE_JOB_ENTRY: AtomicU64 = AtomicU64::new(0);
 // Read-only pregame readiness probe. None of these fields affect pacing or control.
 static STARTUP_JOB_START_MS: AtomicU64 = AtomicU64::new(0);
 static LAST_ORIGIN_PROBE_TICK: AtomicU64 = AtomicU64::new(NO_TICK);
+static FIRST_ORIGIN_KIND: AtomicU64 = AtomicU64::new(u64::MAX);
+static FIRST_ORIGIN_TICK: AtomicU64 = AtomicU64::new(NO_TICK);
 static LAST_ORIGIN_KIND: AtomicU64 = AtomicU64::new(u64::MAX);
 static FIRST_CLIENT_MATCH_VIEW_TICK: AtomicU64 = AtomicU64::new(NO_TICK);
 static FIRST_CLIENT_MATCH_VIEW_MS: AtomicU64 = AtomicU64::new(NO_TICK);
@@ -124,6 +126,8 @@ pub struct PacingProbeSnapshot {
     pub interactive_match: bool,
     pub active_job_context: usize,
     pub active_job_entry: u64,
+    pub first_origin_kind: Option<u64>,
+    pub first_origin_tick: Option<u64>,
     pub startup_origin_kind: Option<u64>,
     pub client_match_view_tick: Option<u64>,
     pub client_match_view_ms: Option<u64>,
@@ -173,6 +177,8 @@ fn reset_job_runtime() {
 
     STARTUP_JOB_START_MS.store(0, Ordering::Release);
     LAST_ORIGIN_PROBE_TICK.store(NO_TICK, Ordering::Release);
+    FIRST_ORIGIN_KIND.store(u64::MAX, Ordering::Release);
+    FIRST_ORIGIN_TICK.store(NO_TICK, Ordering::Release);
     LAST_ORIGIN_KIND.store(u64::MAX, Ordering::Release);
     FIRST_CLIENT_MATCH_VIEW_TICK.store(NO_TICK, Ordering::Release);
     FIRST_CLIENT_MATCH_VIEW_MS.store(NO_TICK, Ordering::Release);
@@ -256,7 +262,17 @@ fn observe_sim_origin(ctx: &mut StableAiContext<'_>, tick: u64) {
         return;
     };
 
-    LAST_ORIGIN_KIND.store(origin.kind as u64, Ordering::Release);
+    let origin_kind = origin.kind as u64;
+    LAST_ORIGIN_KIND.store(origin_kind, Ordering::Release);
+    if FIRST_ORIGIN_TICK.load(Ordering::Acquire) == NO_TICK {
+        FIRST_ORIGIN_KIND.store(origin_kind, Ordering::Relaxed);
+        let _ = FIRST_ORIGIN_TICK.compare_exchange(
+            NO_TICK,
+            tick,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+    }
 
     if origin.kind != SimOriginKindV1::ClientMatchView.code()
         || FIRST_CLIENT_MATCH_VIEW_TICK.load(Ordering::Acquire) != NO_TICK
@@ -407,6 +423,14 @@ pub fn snapshot() -> PacingProbeSnapshot {
         interactive_match: INTERACTIVE_MATCH.load(Ordering::Acquire),
         active_job_context: ACTIVE_JOB_CONTEXT.load(Ordering::Acquire),
         active_job_entry: ACTIVE_JOB_ENTRY.load(Ordering::Acquire),
+        first_origin_kind: {
+            let value = FIRST_ORIGIN_KIND.load(Ordering::Acquire);
+            (value != u64::MAX).then_some(value)
+        },
+        first_origin_tick: {
+            let value = FIRST_ORIGIN_TICK.load(Ordering::Acquire);
+            (value != NO_TICK).then_some(value)
+        },
         startup_origin_kind: {
             let value = LAST_ORIGIN_KIND.load(Ordering::Acquire);
             (value != u64::MAX).then_some(value)
