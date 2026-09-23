@@ -6,7 +6,7 @@ This file records the current functionality-first scope and implementation prior
 
 **The authoritative first-public-release cut is now `docs/release-week-plan.md`.** The long-form priority list below remains useful design history and backlog detail, but any item below still labeled "pre-release" is superseded by the release-week plan unless that file explicitly keeps it before release.
 
-Current release sequence: **automatic team fog-of-war -> F-key mapping hardening -> click-target hitbox polish -> validated pregame/presentation synchronization -> raw-input foreground-focus safety sweep -> held-RMB command refresh (validated) -> champion-hitbox reduction (validated) -> self-only skill auto-cast -> diagnostic presentation cleanup -> Workshop packaging and release.** Synchronized match speeds/death fast-forward were attempted during release week and deliberately moved post-release after physical testing made the release-time pacing/control model less predictable. Everything else moves behind the first public release unless final testing exposes a core release-breaking regression.
+Current release sequence: **automatic team fog-of-war -> F-key mapping hardening -> click-target hitbox polish -> validated pregame/presentation synchronization -> raw-input foreground-focus safety sweep -> held-RMB command refresh (validated) -> champion-hitbox reduction (validated) -> self-only skill auto-cast (validated) -> diagnostic presentation cleanup -> Workshop packaging and release.** Synchronized match speeds/death fast-forward were attempted during release week and deliberately moved post-release after physical testing made the release-time pacing/control model less predictable. Everything else moves behind the first public release unless final testing exposes a core release-breaking regression.
 
 **Pings/team commands and manual shop control remain explicitly post-release systems.**
 
@@ -55,7 +55,7 @@ Current release sequence: **automatic team fog-of-war -> F-key mapping hardening
    - detailed architecture and rejected experiments are recorded in `docs/camera-controls.md`.
 9. **Clicks beyond the playable map edge** — **validated.** Battlefield clicks beyond the legal map express direction by clamping only the requested movement destination into the legal 0..960 world square. TFM2 still receives an ordinary movement request, so native pathfinding, terrain, champion radius, and entity collision remain authoritative; Direct Control never grants permission to leave the map.
    - physical validation passed RMB and attack-move edge/corner movement without bypassing normal pathing/collision.
-   - current release queue after validated pregame/presentation synchronization: **raw-input foreground-focus safety sweep -> diagnostic presentation cleanup -> Workshop packaging/release**; synchronized speeds/death fast-forward are shelved until after the first public release.
+   - current release queue after validated control polish: **diagnostic presentation cleanup -> Workshop packaging/release**; synchronized speeds/death fast-forward are shelved until after the first public release.
 10. **Skill cooldown UI** — expose direct-control-friendly Q/W/R cooldown/readiness information with high visibility so the player does not have to infer cooldowns from the normal spectator presentation. Include explicit red feedback for attempted use while unavailable.
 11. **Click-target hitbox polish** — **validated.**
    - enlarge only the **clickable/selectable area**; never alter entity collision/pathing geometry;
@@ -109,9 +109,9 @@ Current release sequence: **automatic team fog-of-war -> F-key mapping hardening
    - global schedule offsets/spawn delays were rejected because startup readiness is not a fixed wall-clock time;
    - robust playback-position watchdog, seek suppression, and snap-to-live enforcement remain post-release architecture.
 
-19. **Champion-specific compatibility sweep** — pre-release, universal-first. See `docs/champion-compatibility.md`.
-   - **Gambler Skill 1:** confirmed completely nonfunctional under Direct Control. Identify whether it belongs to a broader native action/target family first; use an isolated Gambler adapter only if its skill is genuinely unique.
-   - **Gunfighter attack-move:** confirmed that `A + LMB` currently produces either attacking or walking rather than his intended move-while-attacking behavior. Revisit `can_use_with_move` and native move-compatible attack semantics first; add unique handling only if required.
+19. **Champion-specific compatibility** — universal-first. See `docs/champion-compatibility.md`.
+   - **Gambler Skill 1:** cleared. A temporary stable-API probe captured vanilla Q as a normal entity-target `Skill` input, and physical retest confirmed Direct Control casts it when an enemy champion is explicitly targeted. No Gambler-specific fix is required.
+   - **Gunfighter attack-move:** remains post-release. `A + LMB` currently produces either attacking or walking rather than his intended move-while-attacking behavior. Revisit `can_use_with_move` and native move-compatible attack semantics first; add unique handling only if required.
    - do not distort already validated generic champion behavior to accommodate one unusual champion.
 20. **Pause/menu and early-results safety audit** — pre-release playback integrity.
    - reproduce long pause-menu states and verify Candidate A actually stops rather than presentation pausing while live simulation continues ahead;
