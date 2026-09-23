@@ -308,7 +308,7 @@ impl DirectControlExtension {
 
         let slot = rising.trailing_zeros() as usize;
         if let Some(athlete_id) = slot_mapping::resolve_fkey(ctx, slot) {
-            control::select_athlete(athlete_id);
+            control::select_athlete(athlete_id, slot);
         }
     }
 
