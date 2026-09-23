@@ -155,7 +155,7 @@ pub struct ControlDiagnostics {
     pub attack_moving: bool,
     pub attack_move_destination: Option<(u64, u64)>,
     pub select_count: u64,
-    /// Physical RMB requests; name retained for compatibility with the current overlay.
+    /// Published RMB contextual requests/refreshes; name retained for compatibility with the overlay.
     pub move_command_count: u64,
     pub rmb_resolve_count: u64,
     pub move_resolve_count: u64,
