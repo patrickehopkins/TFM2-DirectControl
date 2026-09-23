@@ -772,12 +772,12 @@ impl DirectControlExtension {
     }
 
     fn draw_start_gate(ctx: &mut StableClient<'_>) {
-        ctx.draw_rect("UI", 18.0, 58.0, 820.0, 74.0, 19_998, 6.0, 0x101018dd);
+        ctx.draw_rect("UI", 18.0, 58.0, 720.0, 74.0, 19_998, 6.0, 0x101018dd);
         Self::draw_text_line(
             ctx,
             64.0,
             &format!(
-                "DIRECT CONTROL: {} | Ctrl+Home starts live simulation",
+                "DIRECT CONTROL: {}",
                 pacing_probe::presentation_phase_label()
             ),
             0x80ffbfff,
@@ -785,8 +785,8 @@ impl DirectControlExtension {
         Self::draw_text_line(
             ctx,
             88.0,
-            "Waiting for match view. Ctrl+End is the emergency permanent release.",
-            0xffd080ff,
+            "Waiting for the battlefield to become ready...",
+            0xd8d8e8ff,
         );
     }
 
