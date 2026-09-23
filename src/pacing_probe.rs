@@ -377,19 +377,17 @@ pub fn presentation_phase_label() -> &'static str {
     match PRESENTATION_PHASE.load(Ordering::Acquire) {
         PHASE_WAITING_START => {
             if INTERACTIVE_MATCH.load(Ordering::Acquire) {
-                "READY / WAITING CTRL+HOME"
+                "READY"
             } else {
-                "HOLDING AFTER 1 STARTUP TICK"
+                "PREPARING MATCH"
             }
         }
         PHASE_PAUSED => "PAUSED",
         PHASE_RUNNING => {
             if INTERACTIVE_MATCH.load(Ordering::Acquire) {
                 "RUNNING"
-            } else if START_AUTO_RELEASED.load(Ordering::Acquire) {
-                "PREMATCH / AUTO-RELEASED TO 60HZ"
             } else {
-                "PREMATCH / RUNNING"
+                "LOADING MATCH"
             }
         }
         _ => "UNKNOWN",
