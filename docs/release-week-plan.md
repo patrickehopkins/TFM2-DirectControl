@@ -39,7 +39,7 @@ Do these in order unless a newly discovered crash/data-corruption-level regressi
    - Current implementation uses live camera scale rather than fixed simulation padding: +12 px champion, +28 px tower, +24 px other targetable objective/building-like entity, +5 px minion. Minimap commands retain exact collision geometry.
    - **Physically validated on v0.6.1:** the enlarged regions and Champion > Building/Objective > Creep overlap priority behave as intended. The optional visual hitbox rings remain lightweight by throttling geometry snapshots and using low-segment outlines; full-rate targeting itself is unchanged.
 
-## Input-focus safety sweep before release
+## Input-focus safety sweep before release — validated
 
 The apparent "long pause released control" regression was reproduced and traced to **global raw keyboard polling**, not pause duration itself. `GetAsyncKeyState` sees keys even while another application owns focus, so using `Ctrl+End` while typing in another program can trigger Direct Control's global release in the background.
 
@@ -53,9 +53,9 @@ Current raw-key paths requiring the same foreground-process gate before release:
 
 Mouse/RMB/LMB and MMB/wheel code already verifies that the TFM2 process owns the foreground window before consuming raw Win32 input. A/B/Q/W/R/B/H/Escape use the stable SDK's contextual key input rather than these global raw keyboard polls.
 
-**Pre-release requirement:** add one shared foreground-focus test (or equivalent safe helper) to every raw keyboard path, then physically verify that Direct Control does nothing when the user presses those shortcuts while TFM2 is unfocused.
+**Physically validated on v0.6.1:** one shared foreground-process gate now protects every raw-key path listed above. Ctrl+Home, Ctrl+End, End, F1-F10, and the worker-thread startup escape do nothing while TFM2 is unfocused. Shortcuts held while focus returns are swallowed until released and pressed again, preventing a background chord from becoming a synthetic in-game rising edge.
 
-The pause/session hardening added during investigation physically passed and may remain as defensive protection, but it was not the root cause of the observed releases.
+The pause/session hardening added during investigation remains as defensive protection, but it was not the root cause of the observed releases.
 
 ## Pregame / pre-simulation issue — validated release solution
 

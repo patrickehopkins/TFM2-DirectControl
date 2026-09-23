@@ -2,11 +2,11 @@
 
 ## Unfocused raw-key polling
 
-Status: **pre-release fix required**.
+Status: **fixed and physically validated**.
 
-Direct Control currently polls several keyboard controls with Win32 `GetAsyncKeyState`, which is global rather than scoped to the Teamfight Manager 2 foreground window. Physical testing confirmed that using `Ctrl+End` in another application while TFM2 remains open can silently trigger the mod's global release.
+All raw Win32 keyboard paths now share a foreground-process gate. Ctrl+Home, Ctrl+End, End, F1-F10, and the worker-thread startup Ctrl+Home escape are ignored unless Teamfight Manager 2 owns the foreground window. A key/chord held while focus returns is also swallowed until it is released and pressed again, preventing background shortcuts from firing on refocus.
 
-The focus-safety sweep must cover Ctrl+Home, Ctrl+End, End, F1-F10, and the worker-thread prematch Ctrl+Home escape. Mouse/MMB paths already perform a foreground-process check; SDK `key_pressed` controls are not part of this raw-key issue.
+Mouse/MMB paths already had their own foreground-window protection; SDK `key_pressed` controls remain contextual and are not part of this raw-key issue.
 
 ## Enemy follow can reveal a fogged champion
 
