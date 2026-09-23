@@ -59,7 +59,7 @@ Current release sequence: **automatic team fog-of-war -> F-key mapping hardening
 10. **Skill cooldown UI** — expose direct-control-friendly Q/W/R cooldown/readiness information with high visibility so the player does not have to infer cooldowns from the normal spectator presentation. Include explicit red feedback for attempted use while unavailable.
 11. **Click-target hitbox polish** — **validated.**
    - enlarge only the **clickable/selectable area**; never alter entity collision/pathing geometry;
-   - current screen-space forgiveness: +12 px champions, +28 px towers, +24 px other targetable objective/building-like entities, +5 px minions;
+   - current screen-space forgiveness: +8 px champions, +28 px towers, +24 px other targetable objective/building-like entities, +5 px minions; champion padding was reduced from +12 px after playtesting showed it could make minions underneath champions awkward to select;
    - when enlarged selectable areas overlap, prefer **Champion > Building/Objective > Creep**;
    - physical validation passed the intended selection feel and priority behavior on v0.6.1;
    - lightweight outline visualization is throttled separately from full-rate targeting so it does not disturb MMB camera behavior.
