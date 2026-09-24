@@ -5,6 +5,8 @@ mod minimap;
 mod pacing_probe;
 mod pause_probe;
 mod replay_ui_probe;
+#[cfg(feature = "replay-native-trace")]
+mod replay_native_trace;
 mod simulation_probe;
 mod slot_mapping;
 
@@ -1079,6 +1081,8 @@ impl StableExtension for DirectControlExtension {
     fn post_update(&self, ctx: &mut StableClient<'_>, _dt_micros: u64) {
         Self::update_startup_presentation_sync(ctx);
         Self::update_native_seek_controls(ctx);
+        #[cfg(feature = "replay-native-trace")]
+        replay_native_trace::poll_hotkey_and_dump(ctx);
         if let Ok(cached) = NATIVE_SEEK_CONTROL_NODES.lock() {
             replay_ui_probe::maybe_capture(ctx, &cached);
         }
@@ -1207,6 +1211,12 @@ impl StableExtension for DirectControlExtension {
 }
 
 fn init(host: &StableHost) -> StableMod {
+    #[cfg(feature = "replay-native-trace")]
+    match replay_native_trace::install() {
+        Ok(()) => host.log(LogLevel::Info, "TFM2 replay diagnostic native lookup trace enabled (Ctrl+Alt+F12)"),
+        Err(error) => host.log(LogLevel::Error, &format!("TFM2 replay trace unavailable: {error}")),
+    }
+
     match simulation_probe::ensure_installed() {
         Ok(()) => host.log(
             LogLevel::Info,
