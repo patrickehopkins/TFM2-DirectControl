@@ -116,37 +116,13 @@ No validated gameplay-control path was intentionally changed by cleanup. Perform
 
 ## Release blocker: binding-independent replay seek suppression
 
-**Status: OPEN — UI-only cleanup passed; native action gate not yet implemented.**
+**Status: implementation staged; standard Windows compilation and physical regression pending.**
 
-On v0.6.1, the visible replay/navigation toolbar is hidden and its buttons are
-not clickable during Direct Control. However, the game's **customizable keyboard
-shortcuts still invoke rewind and highlight navigation**, decoupling presentation
-from the live paced simulation. Physically reproduced with the user's remapped
-`M` (Back 10 Seconds) and `6` (Previous Highlight) shortcuts.
+The initial UI-only fix was a partial pass: replay buttons disappeared and were not clickable, but user-rebound `M` (Back 10 Seconds) and `6` (Previous Highlight) still desynchronized live circles from replay presentation. The first screen-rectangle UI filter also hid an unrelated player-detail button. Exact confirmed stable UI paths are now used, with targeted Zoom In/Out tooltip cleanup and the bottom Highlight playback button hidden.
 
-The 2026-09-23 read-only UI probe provided the exact native paths:
-`ingame.time_control.prev_time`, `next_time`, `prev_highlight`,
-`next_highlight`, `pause`, `zoom_in`, and `zoom_out`. The former
-rectangle-based hiding logic also accidentally hid a player-detail button;
-release cleanup now uses exact paths and hides only the stale native zoom
-tooltip, plus the bottom Highlight playback-mode button.
+Disassembly of the *uploaded exact v0.6.1 executable* identified the **actual runtime semantic action-to-current-key getter** at RVA `0x021C4CE0`, called from the live match handler immediately before the corresponding seek action. A guarded native detour in `src/replay_action_gate.rs` now supplies an unbound key for semantic replay actions while the live match is owned, irrespective of the user's remapped shortcuts. It forwards ordinary input and camera zoom untouched and restores native bindings after confirmed Ctrl+End, **not** temporary End. `tools/verify_replay_action_gate.py` physically-independent static checks passed offline on that executable; neither the new DLL nor gameplay behavior has yet been Windows-tested.
 
-The executable string inventory found the native action identifiers
-`in_game_prev_time`, `in_game_next_time`,
-`in_game_prev_highlight`, `in_game_next_highlight`, and
-`in_game_highlight_mode`. The inventory **does not identify the native
-action-dispatch function or prove a safe hook site**. Use
-`tools/probe_replay_dispatch.py` to locate its xrefs on the user's exact
-v0.6.1 executable before attempting a guarded native action-level gate.
-Do not substitute a hardcoded M/6/D/7 key blacklist: user-configurable
-bindings make that incomplete and may break unrelated gameplay input.
-
-Release acceptance requires a physical pass showing that previous/next
-time, previous/next highlight, and Highlight playback mode cannot seek via
-**any rebound key or native UI** while Direct Control owns the match;
-ordinary camera MMB/wheel and synchronized pause still work; and all native
-replay actions return after confirmed `Ctrl+End`. Test once with keys
-remapped from their defaults before closing this blocker.
+Release acceptance requires physical confirmation that every rebound previous/next time and previous/next highlight key plus Highlight mode is inert while owned, native UI is inaccessible, camera/pause/manual controls remain functional, temporary End keeps seeking blocked, and confirmed Ctrl+End restores ordinary native replay. If this fails, retain the release block and inspect installer output or log.log. Follow `docs/replay-native-action-analysis.md` for the exact verification and smoke-test protocol.
 
 ## Packaging / Workshop release path
 
