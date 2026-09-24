@@ -832,7 +832,8 @@ impl DirectControlExtension {
                     && w <= 90.0
                     && h <= 90.0
                 {
-                    found.push((path, ctx.ui_visible(&path).unwrap_or(true)));
+                    let was_visible = ctx.ui_visible(&path).unwrap_or(true);
+                    found.push((path, was_visible));
                 }
             }
         }
