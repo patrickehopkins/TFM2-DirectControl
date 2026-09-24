@@ -7,6 +7,10 @@ publish = false
 [lib]
 crate-type = ["cdylib"]
 
+[features]
+# Diagnostic-only native hook. Never enable for Workshop packaging.
+replay-native-trace = []
+
 [dependencies]
 mod-api-stable = { path = "sdk/mod-api-stable" }
 windows-sys = { version = "0.61", features = [
