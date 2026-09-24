@@ -80,13 +80,13 @@ Current release sequence: **automatic team fog-of-war -> F-key mapping hardening
    - investigate piggy-backing the base game's existing Follow Own / Follow Enemy role tracking;
    - A/B test against the working UI/name mapper and retain the existing mapper if the native route introduces complications.
 15. **Custom Direct Control keybinds / shortcut-mode separation** — full design inventory is in `docs/keybind-plan.md`.
-   - preferred design: dedicated **Direct Control** shortcut category/control scheme active only while a champion is manually controlled; native spectator shortcuts resume immediately when `End` releases control;
+   - **current release behavior supersedes the historical shortcut-mode proposal:** replay seek/highlight keyboard actions stay suppressed for the entire owned live-paced match, including after temporary `End` spectator yield. Only confirmed global `Ctrl+End` restores native replay shortcuts. First-class Direct Control keybind settings remain post-release;
    - acceptable fallback: normal shortcut settings namespace with conflict handling and clear labeling;
    - rejected design: globally override native shortcuts regardless of mode;
    - catalogue all injected player-facing actions and camera gestures;
    - **playback-desync safety is mandatory:** suppress native commands that seek/jump/pause presentation away from the live controlled simulation, including Back/Forward 10 Seconds and Previous/Next Highlight;
    - ordinary speed controls are an exception only when Harbinger synchronizes presentation speed and live simulation pacing together;
-   - **snap-to-live watchdog is mandatory:** detect divergence between presentation/playback position and live paced simulation while Direct Control owns a champion, snap presentation directly back to live, and restore the selected synchronized speed;
+   - **post-release hardening (not required for the tested first release):** a snap-to-live watchdog could detect any future playback/live divergence and re-align presentation; the verified v0.6.1 native replay-action gate and release smoke test currently address user-driven seeking;
    - do **not** repair desync by temporarily speeding playback until it catches up;
    - prefer event-driven detection from the native playback controller; lightweight polling is the fallback.
 16. **Current-gold HUD** — pre-release readability polish.
