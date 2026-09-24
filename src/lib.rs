@@ -5,6 +5,7 @@ mod minimap;
 mod pacing_probe;
 mod pause_probe;
 mod replay_ui_probe;
+mod replay_action_gate;
 #[cfg(feature = "replay-native-trace")]
 mod replay_native_trace;
 mod simulation_probe;
@@ -943,7 +944,9 @@ impl DirectControlExtension {
 
     fn draw_ready_prompt(ctx: &mut StableClient<'_>) {
         let synced = pacing_probe::startup_presentation_synced();
-        let message = if synced {
+        let message = if !replay_action_gate::installed() {
+            "Replay shortcut protection unavailable. Direct Control cannot start. Check log.log."
+        } else if synced {
             "Direct Control is ready. Press Ctrl+Home to take control and resume the match."
         } else {
             "Synchronizing Direct Control with the live match..."
@@ -1079,6 +1082,10 @@ impl DirectControlExtension {
 
 impl StableExtension for DirectControlExtension {
     fn post_update(&self, ctx: &mut StableClient<'_>, _dt_micros: u64) {
+        // The native gate is owned for the whole live-paced match, including
+        // End spectator yield. Ctrl+End releases the flag immediately inside
+        // the hook without needing to wait for this next post_update.
+        replay_action_gate::set_match_owned(Self::replay_ui_owned(ctx));
         Self::update_startup_presentation_sync(ctx);
         Self::update_native_seek_controls(ctx);
         #[cfg(feature = "replay-native-trace")]
@@ -1211,6 +1218,19 @@ impl StableExtension for DirectControlExtension {
 }
 
 fn init(host: &StableHost) -> StableMod {
+    // Fail closed: an unsupported game or unexpected binary must not enter
+    // live control with working replay shortcuts.
+    match replay_action_gate::install() {
+        Ok(()) => host.log(
+            LogLevel::Info,
+            "TFM2 replay shortcut gate installed (semantic action lookup; v0.6.1)",
+        ),
+        Err(error) => host.log(
+            LogLevel::Error,
+            &format!("TFM2 Direct Control replay safety gate FAILED: {error}"),
+        ),
+    }
+
     #[cfg(feature = "replay-native-trace")]
     match replay_native_trace::install() {
         Ok(()) => host.log(LogLevel::Info, "TFM2 replay diagnostic native lookup trace enabled (Ctrl+Alt+F12)"),
