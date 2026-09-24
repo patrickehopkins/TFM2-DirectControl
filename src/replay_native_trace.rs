@@ -1,8 +1,9 @@
-//! Opt-in, read-only v0.6.1 replay action-lookup trace.
+//! Opt-in, observational v0.6.1 replay action-lookup trace.
 //!
 //! This is NOT seek suppression. It records which native code calls the verified
 //! action-enum hasher for replay/navigation actions, including while M/6 is held.
-//! The hook never modifies input or the returned hash. Keep it feature gated;
+//! The native hook patches its target but never modifies game input or the returned hash.
+//! It is a temporary diagnostic only. Keep it feature gated;
 //! never ship the diagnostic in the Workshop build.
 //!
 //! Enable with: .\scripts\install-dev.ps1 -ReplayTrace
@@ -180,7 +181,7 @@ pub fn install() -> Result<(), String> {
             ));
         }
         let target = module.add(HASH_RVA);
-        if std::slice::from_raw_parts(target, PATCH_LEN) != HASH_PROLOGUE {
+        if std::slice::from_raw_parts(target, PATCH_LEN) != &HASH_PROLOGUE[..] {
             return Err("native action hasher prologue mismatch; trace not installed".into());
         }
 
