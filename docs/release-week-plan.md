@@ -114,6 +114,40 @@ Release cleanup now:
 
 No validated gameplay-control path was intentionally changed by cleanup. Perform one final physical smoke test before packaging.
 
+## Release blocker: binding-independent replay seek suppression
+
+**Status: OPEN — UI-only cleanup passed; native action gate not yet implemented.**
+
+On v0.6.1, the visible replay/navigation toolbar is hidden and its buttons are
+not clickable during Direct Control. However, the game's **customizable keyboard
+shortcuts still invoke rewind and highlight navigation**, decoupling presentation
+from the live paced simulation. Physically reproduced with the user's remapped
+`M` (Back 10 Seconds) and `6` (Previous Highlight) shortcuts.
+
+The 2026-09-23 read-only UI probe provided the exact native paths:
+`ingame.time_control.prev_time`, `next_time`, `prev_highlight`,
+`next_highlight`, `pause`, `zoom_in`, and `zoom_out`. The former
+rectangle-based hiding logic also accidentally hid a player-detail button;
+release cleanup now uses exact paths and hides only the stale native zoom
+tooltip, plus the bottom Highlight playback-mode button.
+
+The executable string inventory found the native action identifiers
+`in_game_prev_time`, `in_game_next_time`,
+`in_game_prev_highlight`, `in_game_next_highlight`, and
+`in_game_highlight_mode`. The inventory **does not identify the native
+action-dispatch function or prove a safe hook site**. Use
+`tools/probe_replay_dispatch.py` to locate its xrefs on the user's exact
+v0.6.1 executable before attempting a guarded native action-level gate.
+Do not substitute a hardcoded M/6/D/7 key blacklist: user-configurable
+bindings make that incomplete and may break unrelated gameplay input.
+
+Release acceptance requires a physical pass showing that previous/next
+time, previous/next highlight, and Highlight playback mode cannot seek via
+**any rebound key or native UI** while Direct Control owns the match;
+ordinary camera MMB/wheel and synchronized pause still work; and all native
+replay actions return after confirmed `Ctrl+End`. Test once with keys
+remapped from their defaults before closing this blocker.
+
 ## Packaging / Workshop release path
 
 Workshop packaging is part of the release task, not a new engineering subsystem.
