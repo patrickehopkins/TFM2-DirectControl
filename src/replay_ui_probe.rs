@@ -2,7 +2,7 @@
 //! solely because their rectangles happen to fall under the top-left HUD.
 //!
 //! Hold Ctrl+Shift+F12 while TFM2 is the foreground window during an InGame match.
-//! A bounded report is written to %TEMP%\\tfm2_replay_ui_probe.txt.
+//! A bounded report is written to %TEMP%\tfm2_replay_ui_probe.txt.
 
 use std::collections::HashSet;
 use std::fmt::Write as _;
@@ -56,7 +56,7 @@ pub fn maybe_capture(ctx: &StableClient<'_>, hidden_nodes: &[(String, bool)]) {
     }
 
     let mut report = String::from(
-        "TFM2 Replay UI Probe — Ctrl+Shift+F12\\n\\n         The listed rectangles are logical game UI coordinates. UI paths are read-only.\\n         The probe does not modify the game or disable shortcuts.\\n\\n",
+        "TFM2 Replay UI Probe — Ctrl+Shift+F12\n\n         The listed rectangles are logical game UI coordinates. UI paths are read-only.\n         The probe does not modify the game or disable shortcuts.\n\n",
     );
     let _ = writeln!(
         report,
@@ -70,7 +70,7 @@ pub fn maybe_capture(ctx: &StableClient<'_>, hidden_nodes: &[(String, bool)]) {
             ctx.ui_visible(path), ctx.ui_runner_name(path), ctx.ui_node_rect(path)
         );
     }
-    report.push_str("\\nRelevant live UI nodes:\\n");
+    report.push_str("\nRelevant live UI nodes:\n");
 
     let mut visited = HashSet::new();
     let mut pending = vec![("".to_owned(), 0usize), ("ingame".to_owned(), 0usize)];
@@ -112,7 +112,7 @@ pub fn maybe_capture(ctx: &StableClient<'_>, hidden_nodes: &[(String, bool)]) {
         }
     }
 
-    let _ = writeln!(report, "\\nTraversed {count} unique UI nodes.");
+    let _ = writeln!(report, "\nTraversed {count} unique UI nodes.");
     let output = std::env::temp_dir().join("tfm2_replay_ui_probe.txt");
     let _ = fs::write(output, report);
 }
