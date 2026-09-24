@@ -144,7 +144,9 @@ External live input crosses TFM2's deterministic simulation boundary. The first 
 
 ## Development setup
 
-Target platform: **Windows + Steam**.
+Target platform: **Windows + Steam**. Current runtime validation applies to the tested v0.6.1 executable; an updated game build requires independent native-hook verification and physical testing.
+
+Prerequisites: a Windows installation of Teamfight Manager 2 with its bundled stable mod SDK, a Rust toolchain (`cargo` and `rustfmt`), and PowerShell. Python is only needed for optional investigation/compatibility utilities in `tools/`.
 
 The official stable SDK ships with the game under:
 
@@ -172,9 +174,14 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 ### Build
 
+From the repository root, copy the SDK from your **installed** game before running Cargo (the local `sdk/` directory is intentionally Git-ignored):
+
 ```powershell
+.\scripts\bootstrap-sdk.ps1
 cargo build --release
 ```
+
+Pass `-GameDir` to `bootstrap-sdk.ps1` if the game is installed in another Steam library. `scripts/install-dev.ps1` performs its own SDK bootstrap and release build, so you can alternatively use that one-command development-install route below.
 
 Expected artifact:
 
@@ -215,11 +222,13 @@ Before upload:
 5. publish privately/unlisted first if a subscriber-installed smoke test is desired;
 6. preserve the generated `mod.workshop_id` for all future updates.
 
-The current release checklist is maintained in `docs/release-week-plan.md`.
+The original release checklist is preserved **as a historical record** in `docs/release-week-plan.md`. It is not an active backlog or the authoritative description of current behavior.
 
 ## Project documentation
 
-- `docs/release-week-plan.md` — authoritative first-release checklist
+- `CONTRIBUTING.md` — contributor setup, validation, and PR guidance
+- `AGENTS.md` — current agent/contributor implementation guardrails
+- `docs/release-week-plan.md` — historical first-release checklist (not current instructions)
 - `docs/core-control-contract.md` — low-level control architecture
 - `docs/control-validation-log.md` — physical control tests
 - `docs/pacing-validation-log.md` — pacing/startup/pause history
@@ -227,7 +236,10 @@ The current release checklist is maintained in `docs/release-week-plan.md`.
 - `docs/skill-targeting.md` — skill-targeting resolver design
 - `docs/champion-compatibility.md` — champion-specific findings
 - `docs/deferred-investigations.md` — exact stopping points for worked-but-deferred features
-- `docs/known-issues.md` — current release limitations
+- `docs/known-issues.md` — current documented limitations
+- `docs/replay-native-action-analysis.md` — validated native replay-shortcut suppression and retest requirements
+- `docs/keybind-plan.md` — **future proposal**; not shipping shortcut behavior
+- `docs/release-scope.md` — historical scope and backlog, not current priorities
 
 ## Reference
 
