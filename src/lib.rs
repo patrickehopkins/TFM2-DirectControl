@@ -790,83 +790,61 @@ impl DirectControlExtension {
         );
     }
 
-    fn native_seek_control_candidates(ctx: &StableClient<'_>) -> Vec<(String, bool)> {
-        const MAX_DEPTH: usize = 6;
-        const MAX_NODES: usize = 768;
+    // Explicit native paths from the v0.6.1 UI probe. Never discover controls by screen
+    // rectangle again: that also hid a player-detail button in the wide match layout.
+    // This only removes clickable affordances. Binding-independent native action
+    // suppression is a separate task and must not be claimed based on UI hiding.
+    const REPLAY_UI_PATHS: [&'static str; 8] = [
+        "ingame.time_control.prev_highlight",
+        "ingame.time_control.prev_time",
+        "ingame.time_control.pause",
+        "ingame.time_control.next_time",
+        "ingame.time_control.next_highlight",
+        "ingame.time_control.zoom_in",
+        "ingame.time_control.zoom_out",
+        "ingame.speed_buttons.speed_highlight",
+    ];
 
-        let mut found = Vec::new();
-        let mut pending = vec![("ingame".to_owned(), 0usize)];
-        let mut visited = 0usize;
-
-        while let Some((parent, depth)) = pending.pop() {
-            if depth >= MAX_DEPTH || visited >= MAX_NODES {
-                continue;
-            }
-
-            for child in ctx.ui_child_names(&parent) {
-                if visited >= MAX_NODES {
-                    break;
-                }
-                visited += 1;
-
-                let path = format!("{parent}.{child}");
-                if depth + 1 < MAX_DEPTH {
-                    pending.push((path.clone(), depth + 1));
-                }
-
-                let runner = ctx.ui_runner_name(&path).unwrap_or_default();
-                if !(runner.contains("button") || runner.contains("selectable")) {
-                    continue;
-                }
-
-                let Some((x, y, w, h)) = ctx.ui_node_rect(&path) else {
-                    continue;
-                };
-                let center_x = x + w * 0.5;
-                let center_y = y + h * 0.5;
-
-                // TFM2's native replay seek/highlight toolbar sits directly under the blue-team
-                // header in the upper-left of the 1920x1080 UI map. Restrict discovery to small
-                // interactive widgets in that strip so the rest of the match UI remains untouched.
-                if (0.0..=430.0).contains(&center_x)
-                    && (58.0..=132.0).contains(&center_y)
-                    && w <= 90.0
-                    && h <= 90.0
-                {
-                    let was_visible = ctx.ui_visible(&path).unwrap_or(true);
-                    found.push((path, was_visible));
-                }
-            }
-        }
-
-        found
-    }
-
-    fn update_native_seek_controls(ctx: &mut StableClient<'_>) {
+    fn replay_ui_owned(ctx: &StableClient<'_>) -> bool {
         let scene = ctx.client_scene_kind();
         let live_session = matches!(scene, Some(ClientSceneKindV1::InGame))
             || (MATCH_SESSION_ACTIVE.load(Ordering::Acquire) && Self::control_scene(ctx));
-        let should_suppress = live_session && !pacing_probe::manual_control_released();
+        live_session && !pacing_probe::manual_control_released()
+    }
 
-        if should_suppress {
+    fn update_native_seek_controls(ctx: &mut StableClient<'_>) {
+        if Self::replay_ui_owned(ctx) {
             if !NATIVE_SEEK_CONTROLS_SUPPRESSED.load(Ordering::Acquire) {
-                let nodes = Self::native_seek_control_candidates(ctx);
+                let nodes: Vec<(String, bool)> = Self::REPLAY_UI_PATHS
+                    .iter()
+                    .filter_map(|path| {
+                        let visible = ctx.ui_visible(path)?;
+                        Some(((*path).to_owned(), visible))
+                    })
+                    .collect();
+
                 if nodes.is_empty() {
                     return;
                 }
-
-                for (path, _) in &nodes {
-                    let _ = ctx.ui_set_visible(path, false);
-                }
-
                 if let Ok(mut cached) = NATIVE_SEEK_CONTROL_NODES.lock() {
                     *cached = nodes;
                     NATIVE_SEEK_CONTROLS_SUPPRESSED.store(true, Ordering::Release);
                 }
-            } else if let Ok(cached) = NATIVE_SEEK_CONTROL_NODES.lock() {
-                // Reassert suppression in case the match UI rebuilt a runner while paused.
-                for (path, _) in cached.iter() {
+            }
+
+            // TFM2 can rebuild a button or restore its native visible flag mid-match.
+            // Keep only the verified replay controls hidden, never nearby dynamic cards.
+            for path in Self::REPLAY_UI_PATHS {
+                if ctx.ui_visible(path) == Some(true) {
                     let _ = ctx.ui_set_visible(path, false);
+                }
+            }
+
+            // Native hover processing still runs on a hidden zoom icon's stale hit region.
+            // Hide only those two stale tooltips; preserve all other game tooltips.
+            if let Some(label) = ctx.ui_text("ingame.tooltip.text") {
+                if label.starts_with("Zoom In(") || label.starts_with("Zoom Out(") {
+                    let _ = ctx.ui_set_visible("ingame.tooltip", false);
                 }
             }
             return;
@@ -882,6 +860,8 @@ impl DirectControlExtension {
             }
             cached.clear();
         }
+        // Only restore a zoom tooltip if the game's own hover state is still active:
+        // otherwise a stale Zoom Out label would flash over the released spectator UI.
     }
 
     fn visible_match_seconds(ctx: &StableClient<'_>) -> Option<u64> {
