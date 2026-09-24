@@ -38,7 +38,7 @@ class PE:
     def __init__(self, data):
         self.data = data
         p = struct.unpack_from("<I", data, 0x3C)[0]
-        assert data[:2] == b"MZ" and data[p:p+4] == b"PE\\x00\\x00", "Not a PE image"
+        assert data[:2] == b"MZ" and data[p:p+4] == b"PE\x00\x00", "Not a PE image"
         self.timestamp = struct.unpack_from("<I", data, p+8)[0]
         h = p+24
         self.image_size = struct.unpack_from("<I", data, h+56)[0]
@@ -73,7 +73,7 @@ def verify(exe):
             assert pe.read(site-2, 2) == bytes((0xB2, action)), "Action argument changed"
             assert pe.call_target(site) == LOOKUP_RVA, "Runtime lookup target changed"
             following = pe.read(site+5, 28)
-            assert b"\\x41\\x38\\xC6" in following or b"\\x41\\x38\\xC7" in following, (
+            assert b"\x41\x38\xC6" in following or b"\x41\x38\xC7" in following, (
                 f"Incoming-key comparison absent near 0x{site:X}"
             )
     for action, (site, target) in ACTIONS_TO_NATIVE_OPS.items():
