@@ -85,3 +85,64 @@ safely hookable action dispatcher or seek setter with a verified calling
 convention**. Do not install a guessed native detour merely from an xref cluster.
 If static control-flow analysis remains ambiguous, collect a narrowly scoped
 runtime trace from a known action invocation on this same executable.
+
+## Verified generic action hash and opt-in native runtime trace
+
+Offline inspection of the *user-supplied* v0.6.1 executable further identified
+RVA `0x00BA3A30` as a generic single-byte key/action hasher. Its first 13
+bytes are exactly:
+
+```text
+48 83 EC 78              sub rsp, 78h
+F3 0F 6F 01              movdqu xmm0, [rcx]
+66 0F 70 C8 44           pshufd xmm1, xmm0, 44h
+```
+
+Its observed calling convention is `hash(hasher_ptr, one_byte_key_ptr) -> u64`.
+**Importantly, this function hashes keys in other paths too**; merely observing
+an action-like byte in this hook is not sufficient to prove that a replay action
+was dispatched. The caller RVA and experimental test state are required context.
+
+Five native UI replay button callbacks near `0x009B15D0..0x009B1BD0`
+hash their corresponding configured shortcut identifiers and synthesize normal
+keyboard messages. A separate large event-processing function near
+`0x0083DB00` consumes tagged key messages and queries an in-memory shortcut
+map. The ultimate semantic seek mutator and a safe native rejection site
+**remain unverified**.
+
+An intentionally temporary feature-gated diagnostic now lives in
+`src/replay_native_trace.rs`; it **patches process code** to detour the
+generic hasher but forwards calls unchanged, without intentionally modifying
+simulation or input. Its install is guarded by the exact v0.6.1 PE header and
+all 13 prologue bytes. It captures only the interesting one-byte values and
+bounded call-stack samples, with a separate quota for each experiment.
+
+### One controlled game-side trace
+
+This instrumented build has not been compiled or executed by the assistant:
+it must receive a Windows physical test before its findings can be trusted.
+Close TFM2 before installing:
+
+```powershell
+git pull
+.\scripts\install-dev.ps1 -ReplayTrace
+```
+
+Use a disposable/practice match. Confirm `Ctrl+End` global release *before*
+any rewind tests; this preserves the currently validated live-control behavior.
+While ordinary replay controls are restored, press `Ctrl+Alt+F12` once to begin
+capture. Then click **Back 10 Seconds**, press the user's bound `M` for the
+same action, and press `6` for Previous Highlight, with distinct deliberate
+key holds. Press `Ctrl+Alt+F12` again to write
+`%TEMP%\tfm2_replay_native_trace.txt`. Stop and report if the game becomes
+unstable; revert to the ordinary build with
+`.\scripts\install-dev.ps1` (no feature switch).
+
+Interpretation: call stacks from the UI and rebound keyboard actions can
+identify a common shortcut processing path, or reveal that the runtime input
+path does **not** rehash semantic actions. No trace hits is a useful negative
+finding, not permission to pretend the actions were suppressed.
+
+This diagnostic must be removed or remain disabled for Workshop packaging.
+The real release blocker closes only after a *separate* native-action-level
+suppression implementation is physically verified.
