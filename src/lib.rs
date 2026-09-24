@@ -4,6 +4,7 @@ mod input_focus;
 mod minimap;
 mod pacing_probe;
 mod pause_probe;
+mod replay_ui_probe;
 mod simulation_probe;
 mod slot_mapping;
 
@@ -1107,6 +1108,9 @@ impl StableExtension for DirectControlExtension {
     fn post_update(&self, ctx: &mut StableClient<'_>, _dt_micros: u64) {
         Self::update_startup_presentation_sync(ctx);
         Self::update_native_seek_controls(ctx);
+        if let Ok(cached) = NATIVE_SEEK_CONTROL_NODES.lock() {
+            replay_ui_probe::maybe_capture(ctx, &cached);
+        }
     }
 
     fn post_render(&self, ctx: &mut StableClient<'_>) {
