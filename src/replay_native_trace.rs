@@ -49,6 +49,9 @@ static TRACE_CHORD_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static TRACE_SLOTS: [AtomicU64; MAX_UNIQUE_SAMPLES] =
     [const { AtomicU64::new(0) }; MAX_UNIQUE_SAMPLES];
 static TRACE_DROPPED: AtomicU64 = AtomicU64::new(0);
+static BASELINE_BUDGET: AtomicUsize = AtomicUsize::new(0);
+static M_BUDGET: AtomicUsize = AtomicUsize::new(0);
+static SIX_BUDGET: AtomicUsize = AtomicUsize::new(0);
 
 #[link(name = "kernel32")]
 extern "system" {
@@ -94,6 +97,19 @@ fn record_sample(id: u8) {
         (u8::from(GetAsyncKeyState(b'M' as i32) < 0))
             | (u8::from(GetAsyncKeyState(b'6' as i32) < 0) << 1)
     };
+
+    // Avoid expensive stack unwinds on every frame of a hot native lookup.
+    // Reserve separate budgets so the baseline cannot exhaust M/6 observations.
+    let budget = if keys & 1 != 0 {
+        &M_BUDGET
+    } else if keys & 2 != 0 {
+        &SIX_BUDGET
+    } else {
+        &BASELINE_BUDGET
+    };
+    if budget.fetch_add(1, Ordering::Relaxed) >= 128 {
+        return;
+    }
 
     let mut frames = [ptr::null_mut(); 4];
     let count = unsafe {
@@ -213,6 +229,9 @@ pub fn install() -> Result<(), String> {
 fn reset_samples() {
     TRACE_ACTIVE.store(false, Ordering::Release);
     TRACE_DROPPED.store(0, Ordering::Release);
+    BASELINE_BUDGET.store(0, Ordering::Release);
+    M_BUDGET.store(0, Ordering::Release);
+    SIX_BUDGET.store(0, Ordering::Release);
     for slot in TRACE_SLOTS.iter() {
         slot.store(0, Ordering::Release);
     }
