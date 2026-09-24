@@ -1,8 +1,8 @@
 {
-  "name": "TFM2 Direct Control",
+  "name": "Harbinger Direct Control",
   "author": "patrickehopkins",
   "version": "0.1.1",
-  "description": "Real-time single-player direct champion controls for Teamfight Manager 2.",
+  "description": "ASSUMING DIRECT CONTROL.\n\nEver watched your team run it down mid and thought, \"I could do worse\"? Now you can.\n\nHarbinger Direct Control takes Teamfight Manager 2's normally pre-simulated watched match and runs the simulation in real time so you can interfere with it. Hijack ANY champion, on EITHER team. Give actual movement and attack orders, aim abilities, swap victims, or personally walk straight under a tower until nature takes its course. Pick/ban stays untouched. Your judgment is another matter.\n\nWHAT IT DOES\n- Take over any of the ten visible champions, regardless of team.\n- Contextual mouse movement and attacks, attack-move, hold, return, and manual Q/W/R skills.\n- MMB camera dragging, mouse-wheel zoom, and automatic team fog while controlling a champion.\n- Replay protection keeps native seeking from separating what you see from what you're doing.\n\nGETTING STARTED\nWait for the \"Direct Control is ready\" prompt. Press Ctrl+Home, choose a champion with F1-F10, and get to work. End gives your champion back to AI while the live match keeps running. Confirm Ctrl+End to surrender control and return to ordinary replay permanently for that match.\n\nKNOWN IMPERFECTIONS\n- Windows/Steam, verified for the exact Teamfight Manager 2 v0.6.1 executable; single-player first. Game updates may require a new mod version.\n- Start Match still needs some pre-simulation before the map can appear. Wait for the ready prompt, not divine intervention.\n- Some champion mechanics need work. Gunfighter, for instance, doesn't preserve move-while-attacking during attack-move.\n- No player-issued AI pings or manual shopping yet.\n- I still haven't figured out how to make the AI flame me.\n\nYou can now run it down mid yourself.",
   "last_updated": "2026-09-23",
   "dependencies": []
 }
