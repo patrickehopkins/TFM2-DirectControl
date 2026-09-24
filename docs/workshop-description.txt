@@ -1,33 +1,64 @@
-ASSUMING DIRECT CONTROL.
+[h1]Harbinger Direct Control[/h1]
+
+[h2]ASSUMING DIRECT CONTROL.[/h2]
 
 Ever wanted to actually play the video game?
+
 Swing a close match yourself?
+
 Completely whiff an ult and cost your team the championship?
+
 Grief your teammates personally instead of merely watching them grief themselves?
 
-NOW YOU CAN!!!
+[b]NOW YOU CAN!!![/b]
 
-Harbinger Direct Control turns Teamfight Manager 2's normally pre-simulated watched match into a real-time simulation you can interfere with. Take over ANY of the ten champions on EITHER team. Issue actual movement and attack commands, aim abilities, swap champions, or run it down mid and feed under tower with your own two hands.
+Harbinger Direct Control turns Teamfight Manager 2's pre-simulated matches into a real-time simulation you can interfere with.
 
-Pick/ban works exactly as before. Shopping stays automatic. The base game still handles pathfinding, champion logic, combat and the simulation. You just get to make everyone else's problems considerably more personal.
+Take control of [b]ANY champion on EITHER team[/b]. Move, attack, cast abilities, swap champions, or run it down mid and feed under tower.
 
-THE BUTTONS
-Wait for the ready prompt, then Ctrl+Home starts the live match. F1-F10 selects a champion from the visible player cards. RMB moves or attacks (yes, you can hold it); A + LMB attack-moves; Q/W/R uses skills; H holds; B returns. MMB drags the camera, and the wheel zooms. End hands your champion back to AI without stopping the live match. Confirm Ctrl+End to surrender Direct Control permanently for that match.
+Pick/ban remains unchanged. The game's underlying combat, pathfinding, and automatic shopping still work normally. You're simply introducing another opportunity for catastrophic decision-making.
 
-IMPORTANT: The game's DEFAULT shortcuts already occupy some of the keys I borrowed. Open Settings > Shortcuts and rebind any conflicting native actions, especially the ones overlapping your Direct Control skills and orders. I'll absolutely implement proper customizable mod keybinds later. I promise. Probably.
+[hr][/hr]
+[h2]WHAT IT DOES[/h2]
+[list]
+[*]Directly control any of the ten champions.
+[*]Manual movement, attacking, attack-move, and abilities.
+[*]Camera dragging, zooming, and automatic team fog.
+[*]Temporary AI handoff and permanent release.
+[*]Replay protection to keep your commands synchronized with the visible match.
+[/list]
 
-KNOWN ISSUES / FUNCTIONALITY GAPS
-- A bit of pre-simulation is still required before the battlefield becomes interactive. Wait for the synchronization/ready prompt; Start Match isn't broken or secretly running a forty-minute loading screen.
-- Some champion mechanics still need special handling. Gunfighter, for example, doesn't preserve native move-while-attacking with attack-move.
-- Some champions have skill descriptions that don't match their actual in-game targeting or behavior. Direct Control follows the game's actual runtime skill rules, not the prose. Weird interactions are worth reporting.
-- AI-responsive player pings and manual shopping are not implemented. Shopping still happens automatically.
-- I still haven't figured out how to get the AI to flame me yet.
-- Direct Control keeps replay-seek shortcuts disabled while it owns the live match. Ctrl+End restores normal replay; temporary End does not.
-- Single-player only for this release. Windows/Steam, targeting the verified TFM2 v0.6.1 executable. Game updates may require another mod update. Deliberately fixed 1x live simulation.
+[h2]CONTROLS[/h2]
+[table]
+[tr][th]Input[/th][th]Action[/th][/tr]
+[tr][td]Ctrl+Home[/td][td]Begin Direct Control[/td][/tr]
+[tr][td]F1-F10[/td][td]Select champion[/td][/tr]
+[tr][td]RMB[/td][td]Move / Attack[/td][/tr]
+[tr][td]A + LMB[/td][td]Attack-move[/td][/tr]
+[tr][td]Q / W / R[/td][td]Abilities[/td][/tr]
+[tr][td]H / B[/td][td]Hold / Return[/td][/tr]
+[tr][td]MMB / Wheel[/td][td]Camera drag / Zoom[/td][/tr]
+[tr][td]End[/td][td]Return champion to AI[/td][/tr]
+[tr][td]Ctrl+End[/td][td]Permanently release control (confirmation required)[/td][/tr]
+[/table]
 
-OTHER MODS
-Mods that change champion AI/decision-making, movement/targeting/combat, automatic ability execution, native inputs, or simulation timing/replay are the most likely to collide with Harbinger. Mods that just add champions, items, teams or stats are less likely to interfere, but combinations aren't broadly tested. If something acts haunted, try Harbinger by itself before reporting a bug.
+[b]Wait for the initial synchronization and ready prompt before pressing Ctrl+Home.[/b]
 
-Historical shout-out to shirograhm's Anti-Freeze Fix for chasing the old battle-planner freeze. Its Workshop listing now says "Deprecated - v0.5.8 ONLY", so it is NOT a recommended dependency for this v0.6.1 release.
+[b]IMPORTANT:[/b] Some default spectator shortcuts conflict with these controls. Check R and F1-F10 in the game's Shortcuts menu. Q and A also overlap replay actions, but Harbinger suppresses those replay actions while it owns the live match. I'll implement customizable mod keybindings later. I promise!
 
-Go on. Lose a close match yourself.
+[hr][/hr]
+[h2]KNOWN ISSUES / FUNCTIONALITY GAPS[/h2]
+[list]
+[*]Some champion mechanics still need special handling. For example, Gunfighter doesn't preserve his native move-while-attacking behavior during attack-move.
+[*]Certain champions have skill descriptions that don't accurately represent their actual in-game functionality. Harbinger follows the game's underlying skill mechanics.
+[*]The game requires some pre-simulation before the battlefield becomes interactive. Wait for the ready prompt before taking control.
+[*]Player-issued AI pings and manual shopping aren't implemented. Ordinary automatic shopping remains functional.
+[*]I still haven't figured out how to make the AI flame me yet.
+[/list]
+
+[h2]COMPATIBILITY[/h2]
+[b]Windows/Steam, Teamfight Manager 2 v0.6.1. Single-player only.[/b]
+
+Mods that modify champion AI, combat, targeting, native inputs, or simulation timing could conflict with Harbinger. Content-focused mods may be compatible, but combinations haven't been comprehensively tested.
+
+Multiplayer support isn't implemented.
