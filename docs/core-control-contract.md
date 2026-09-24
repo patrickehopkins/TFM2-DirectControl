@@ -39,16 +39,18 @@ It should avoid policy such as:
 - choosing strategic behavior for uncontrolled actors;
 - adding feature-rich UX that constrains future consumers.
 
-## Startup behavior
+## Startup behavior (current v0.6.1)
 
-A true zero-pre-simulation start gate is **not part of the current core contract**. Runtime testing proved that the Start Match transition synchronously depends on some Candidate-A simulation progress. Holding at the earliest callback freezes loading; allowing one complete tick is still insufficient.
+A true zero-pre-simulation start gate is **not part of the current core contract**: the game's Start Match transition needs real Candidate-A simulation progress before it can construct an interactive battlefield. Freezing at tick 1 or after only one complete tick was physically rejected.
 
-The current bounded fail-safe recovers into the proven 60 Hz pacer, so startup remains functional but imperfect. Further startup separation is shelved for later polish and should not block command expansion. See `docs/known-issues.md`.
+The validated startup path provides a bounded loader runway at the standard 60 Hz pace, freezes the live watched Candidate-A simulation at the first usable InGame boundary, and waits for visible presentation to synchronize to that frozen state. Only then does the player see the READY prompt. `Ctrl+Home` is the **supported, explicit start command**, not a diagnostic escape; it is ignored until synchronization is ready. See `README.md`, `docs/known-issues.md`, and `docs/pacing-validation-log.md` for the implementation boundary and limitations.
 
-`Ctrl+Home` may remain as an experimental/diagnostic start-release hook while this work is revisited, but higher-level consumers should not depend on zero-pre-simulation startup semantics in the current version.
+Do not claim that control begins at literal simulation tick 1 or replace this path with a fixed time-offset guess.
 
-## Release behavior
+## Ownership, temporary yield, and global release
 
-`Ctrl+End` is the base one-way release primitive for the current match. Once invoked, pacing and manual control are released, the simulation may race ahead to completion, and live manual control cannot safely resume until the next match.
+`End` temporarily returns the selected champion to vanilla AI and the user to spectator control. It **does not** release live pacing or restore native replay seeking/highlight actions; those remain suppressed for the entire live-owned match, regardless of whether an athlete is currently selected.
 
-The UI/documentation must keep this consequence explicit wherever the release command is exposed.
+Confirmed `Ctrl+End` is the base **one-way, global** release primitive. It relinquishes pacing and manual control, restores native replay actions, and allows the ordinary simulation to race ahead or finish. Live Direct Control cannot safely resume until a new match. Document that irreversible consequence wherever this shortcut appears.
+
+Normal synchronized pause/resume remains supported. See `docs/replay-native-action-analysis.md` before touching replay-action ownership; shortcut suppression must survive user-remapped bindings.

@@ -2,9 +2,9 @@
 
 This document records the Direct Control economy-readability work and the intended shopping-mode split.
 
-## Pre-release: current gold HUD
+## Deferred post-release idea: current gold HUD
 
-Before the Pings/team-command release boundary, Direct Control should display the currently controlled player's **current gold** somewhere clearly visible during live control.
+The current-gold HUD was considered for the first release but deferred. It is **not shipped** and should not be treated as a pre-release requirement. If economy UI is revisited, display the currently controlled player's **current gold** somewhere clearly visible during live control.
 
 Requirements:
 
@@ -49,5 +49,5 @@ Use live/native shopping/build-path data and live prices wherever possible. Do n
 
 ## Scope placement
 
-- **Current gold HUD:** pre-release, immediately before Pings/team commands under the standing release-boundary rule.
-- **Auto-Shop option + next-purchase helper:** refinement of the later Shop Control item; this does not by itself pull full manual shopping ahead of Pings.
+- **Current gold HUD:** deferred post-release; its order relative to pings is not committed.
+- **Auto-Shop option + next-purchase helper:** possible later Shop Control refinement; vanilla automatic shopping remains supported. No implementation order is committed.

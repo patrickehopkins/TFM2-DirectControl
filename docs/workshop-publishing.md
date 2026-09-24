@@ -16,4 +16,4 @@ To get different text in the two surfaces:
 
 **Important:** Keep `dist/workshop/tfm2_direct_control/mod.workshop_id` after first upload. The uploader uses it to update the same Steam item. Do not accidentally upload the new package as a second item.
 
-The current promotional draft is reconstructed from earlier copy and known accepted jokes. If an exact user-edited joke is missing, amend `docs/workshop-description.txt` before final publication.
+`docs/workshop-description.txt` contains the maintainer's final approved Workshop BBCode as committed on September 24, 2026. Do not silently rewrite its voice, formatting, jokes, or wording during technical documentation updates. Any future promotional-copy change needs an explicit editorial request.

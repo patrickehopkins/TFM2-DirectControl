@@ -1,8 +1,8 @@
-# Release-week plan
+# Historical first-release checklist (September 2026)
 
-**Authoritative release cut: 2026-09-22**
+> **Historical release record, not the current contributor roadmap.** This document records the first Workshop release decisions, experiments and acceptance results as of September 22–23, 2026. It is retained as evidence; several checklist items and references to pending release work describe their state *at the time*. Current behavior and limitations are in `README.md` and `docs/known-issues.md`; deferred work and investigation branches are in `docs/deferred-investigations.md`. New contributors should not restart completed items or treat this file's urgency/order as current instructions.
 
-This file is the short recovery document for getting Direct Control onto Steam Workshop this week. If another chat or contributor needs to reconstruct priorities, use this file before the older long-form roadmap in `release-scope.md`.
+**Historical release cut: 2026-09-22**
 
 ## Goal
 
