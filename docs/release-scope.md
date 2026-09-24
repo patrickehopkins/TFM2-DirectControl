@@ -1,10 +1,10 @@
-# Direct Control release scope
+# Historical Direct Control release scope
 
-This file records the current functionality-first scope and implementation priority so deferred systems do not drift back into the critical path.
+> **Historical design/backlog record, not an active priority list.** This document captures the evolving first-release priorities; references to "current queue", "pre-release", pending runtime confirmation, or native shortcut conflicts may be obsolete. Do not use it to direct new work or override the shipping implementation. Start with `README.md` for current behavior, `docs/known-issues.md` for active limitations, `docs/deferred-investigations.md` for future experiments, and `docs/replay-native-action-analysis.md` for current replay-suppression evidence. The completed first-release execution checklist lives in `docs/release-week-plan.md`.
 
-## Release-week override
+## Historical release-week override
 
-**The authoritative first-public-release cut is now `docs/release-week-plan.md`.** The long-form priority list below remains useful design history and backlog detail, but any item below still labeled "pre-release" is superseded by the release-week plan unless that file explicitly keeps it before release.
+**The first-public-release cut was `docs/release-week-plan.md`, also retained as a historical record.** The long-form priority list below remains useful as design history, but any item still labeled "pre-release" is not a current obligation.
 
 Current release sequence: **automatic team fog-of-war -> F-key mapping hardening -> click-target hitbox polish -> validated pregame/presentation synchronization -> raw-input foreground-focus safety sweep -> held-RMB command refresh (validated) -> champion-hitbox reduction (validated) -> self-only skill auto-cast (validated) -> diagnostic presentation cleanup -> Workshop packaging and release.** Synchronized match speeds/death fast-forward were attempted during release week and deliberately moved post-release after physical testing made the release-time pacing/control model less predictable. Everything else moves behind the first public release unless final testing exposes a core release-breaking regression.
 
