@@ -814,30 +814,21 @@ impl DirectControlExtension {
 
     fn update_native_seek_controls(ctx: &mut StableClient<'_>) {
         if Self::replay_ui_owned(ctx) {
-            if !NATIVE_SEEK_CONTROLS_SUPPRESSED.load(Ordering::Acquire) {
-                let nodes: Vec<(String, bool)> = Self::REPLAY_UI_PATHS
-                    .iter()
-                    .filter_map(|path| {
-                        let visible = ctx.ui_visible(path)?;
-                        Some(((*path).to_owned(), visible))
-                    })
-                    .collect();
-
-                if nodes.is_empty() {
-                    return;
-                }
-                if let Ok(mut cached) = NATIVE_SEEK_CONTROL_NODES.lock() {
-                    *cached = nodes;
-                    NATIVE_SEEK_CONTROLS_SUPPRESSED.store(true, Ordering::Release);
-                }
-            }
-
-            // TFM2 can rebuild a button or restore its native visible flag mid-match.
-            // Keep only the verified replay controls hidden, never nearby dynamic cards.
-            for path in Self::REPLAY_UI_PATHS {
-                if ctx.ui_visible(path) == Some(true) {
+            if let Ok(mut cached) = NATIVE_SEEK_CONTROL_NODES.lock() {
+                // Capture each native control only when it actually appears. Some nodes
+                // arrive after the first InGame update, so a one-shot initial snapshot
+                // would hide late nodes without restoring them on Ctrl+End.
+                for path in Self::REPLAY_UI_PATHS {
+                    if ctx.ui_visible(path) != Some(true) {
+                        continue;
+                    }
+                    if !cached.iter().any(|(saved, _)| saved == path) {
+                        cached.push((path.to_owned(), true));
+                    }
                     let _ = ctx.ui_set_visible(path, false);
                 }
+                NATIVE_SEEK_CONTROLS_SUPPRESSED
+                    .store(!cached.is_empty(), Ordering::Release);
             }
 
             // Native hover processing still runs on a hidden zoom icon's stale hit region.
