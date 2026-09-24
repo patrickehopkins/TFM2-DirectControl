@@ -50,6 +50,9 @@ static TRACE_CHORD_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static TRACE_SLOTS: [AtomicU64; MAX_UNIQUE_SAMPLES] =
     [const { AtomicU64::new(0) }; MAX_UNIQUE_SAMPLES];
 static TRACE_DROPPED: AtomicU64 = AtomicU64::new(0);
+static TOTAL_HASH_CALLS: AtomicU64 = AtomicU64::new(0);
+static ACTION_LIKE_HASH_CALLS: AtomicU64 = AtomicU64::new(0);
+static KEY_HELD_HASH_CALLS: AtomicU64 = AtomicU64::new(0);
 static BASELINE_BUDGET: AtomicUsize = AtomicUsize::new(0);
 static M_BUDGET: AtomicUsize = AtomicUsize::new(0);
 static SIX_BUDGET: AtomicUsize = AtomicUsize::new(0);
@@ -147,15 +150,25 @@ unsafe extern "system" fn hash_hook(hasher: *const u8, action: *const u8) -> u64
     // This hook must remain transparent: never change action, hash state, return value,
     // or game event flow. Action data and code generation have been confirmed for
     // the one executable above; other versions never reach this hook.
-    if TRACE_ACTIVE.load(Ordering::Relaxed) && !action.is_null() {
-        let id = action.read();
-        let keys = test_key_flags();
-        // The hasher is shared by both semantic Action and physical Key enums.
-        // Always observe the interesting action-like bytes, but while M/6 is
-        // physically held also sample *all* hashed bytes to catch keyboard
-        // dispatch even when Key::M/Key::6 has a different enum discriminant.
-        if traced_action(id) || keys != 0 {
-            record_sample(id, keys);
+    if TRACE_ACTIVE.load(Ordering::Relaxed) {
+        TOTAL_HASH_CALLS.fetch_add(1, Ordering::Relaxed);
+        if !action.is_null() {
+            let id = action.read();
+            let keys = test_key_flags();
+            let action_like = traced_action(id);
+            if action_like {
+                ACTION_LIKE_HASH_CALLS.fetch_add(1, Ordering::Relaxed);
+            }
+            if keys != 0 {
+                KEY_HELD_HASH_CALLS.fetch_add(1, Ordering::Relaxed);
+            }
+            // The hasher is shared by both semantic Action and physical Key enums.
+            // Always observe interesting action-like bytes; while M/6 is physically
+            // held, also sample ALL bytes to identify keyboard dispatch even when
+            // Key::M/Key::6 has a completely different discriminant.
+            if action_like || keys != 0 {
+                record_sample(id, keys);
+            }
         }
     }
     let original: NativeHash = std::mem::transmute(TRAMPOLINE.load(Ordering::Acquire));
@@ -237,6 +250,9 @@ pub fn install() -> Result<(), String> {
 fn reset_samples() {
     TRACE_ACTIVE.store(false, Ordering::Release);
     TRACE_DROPPED.store(0, Ordering::Release);
+    TOTAL_HASH_CALLS.store(0, Ordering::Release);
+    ACTION_LIKE_HASH_CALLS.store(0, Ordering::Release);
+    KEY_HELD_HASH_CALLS.store(0, Ordering::Release);
     BASELINE_BUDGET.store(0, Ordering::Release);
     M_BUDGET.store(0, Ordering::Release);
     SIX_BUDGET.store(0, Ordering::Release);
@@ -268,7 +284,22 @@ fn write_report() {
     }
     let _ = writeln!(
         out,
-        "\nUnique slots exhausted/dropped: {}",
+        "\nTotal native hash calls while tracing: {}",
+        TOTAL_HASH_CALLS.load(Ordering::Acquire)
+    );
+    let _ = writeln!(
+        out,
+        "Action-like byte hash calls (not necessarily Action): {}",
+        ACTION_LIKE_HASH_CALLS.load(Ordering::Acquire)
+    );
+    let _ = writeln!(
+        out,
+        "Hash calls while M/6 held: {}",
+        KEY_HELD_HASH_CALLS.load(Ordering::Acquire)
+    );
+    let _ = writeln!(
+        out,
+        "Unique slots exhausted/dropped: {}",
         TRACE_DROPPED.load(Ordering::Acquire)
     );
     let _ = std::fs::write(std::env::temp_dir().join("tfm2_replay_native_trace.txt"), out);
