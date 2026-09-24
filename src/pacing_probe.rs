@@ -317,7 +317,8 @@ pub fn startup_presentation_synced() -> bool {
 
 /// Starts the held Candidate-A simulation and re-anchors the 60 Hz wall-clock pacer.
 pub fn request_start_simulation() {
-    if manual_control_released() {
+    if manual_control_released() || !crate::replay_action_gate::installed() {
+        // Unsupported/unverified native lookup means no safe Direct Control start.
         return;
     }
 
@@ -414,7 +415,8 @@ pub fn manual_control_released() -> bool {
 }
 
 pub fn manual_input_enabled() -> bool {
-    START_REQUESTED.load(Ordering::Acquire)
+    crate::replay_action_gate::installed()
+        && START_REQUESTED.load(Ordering::Acquire)
         && INTERACTIVE_MATCH.load(Ordering::Acquire)
         && presentation_running()
         && !manual_control_released()
@@ -563,7 +565,9 @@ fn wait_until_started() -> bool {
         // this worker too, so Ctrl+Home can always release a rejected prematch gate experiment.
         if ctrl_home_pressed_in_foreground() {
             request_start_simulation();
-            return true;
+            if START_REQUESTED.load(Ordering::Acquire) {
+                return true;
+            }
         }
 
         // If the one-tick runway was insufficient, recover automatically before Windows decides
