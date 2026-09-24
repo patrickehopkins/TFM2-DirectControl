@@ -91,14 +91,16 @@ fn traced_action(id: u8) -> bool {
     matches!(id, 0x1B | 0x30 | 0x31 | 0x32 | 0x33 | 0x34)
 }
 
-fn record_sample(id: u8) {
-    // The M/6 key checks only annotate this controlled diagnostic. They are NOT
-    // proposed suppression keys and intentionally do not read TFM2's shortcuts.
-    let keys: u8 = unsafe {
+fn test_key_flags() -> u8 {
+    // Physical keys annotate this one diagnostic run. Real suppression MUST use
+    // semantic native actions; no keyboard blacklist is being implemented.
+    unsafe {
         (u8::from(GetAsyncKeyState(b'M' as i32) < 0))
             | (u8::from(GetAsyncKeyState(b'6' as i32) < 0) << 1)
-    };
+    }
+}
 
+fn record_sample(id: u8, keys: u8) {
     // Avoid expensive stack unwinds on every frame of a hot native lookup.
     // Reserve separate budgets so the baseline cannot exhaust M/6 observations.
     let budget = if keys & 1 != 0 {
@@ -124,7 +126,7 @@ fn record_sample(id: u8) {
         .map(|address| address - base)
         .unwrap_or(0);
 
-    // Nonzero encoding; identical action/callsite/key-state samples are deduplicated.
+    // Nonzero encoding; identical hashed-byte/callsite/key-state samples are deduplicated.
     let value = ((id as u64) << 56) | ((keys as u64) << 48) | caller as u64;
     let encoded = value.wrapping_add(1);
     for slot in TRACE_SLOTS.iter() {
@@ -147,8 +149,13 @@ unsafe extern "system" fn hash_hook(hasher: *const u8, action: *const u8) -> u64
     // the one executable above; other versions never reach this hook.
     if TRACE_ACTIVE.load(Ordering::Relaxed) && !action.is_null() {
         let id = action.read();
-        if traced_action(id) {
-            record_sample(id);
+        let keys = test_key_flags();
+        // The hasher is shared by both semantic Action and physical Key enums.
+        // Always observe the interesting action-like bytes, but while M/6 is
+        // physically held also sample *all* hashed bytes to catch keyboard
+        // dispatch even when Key::M/Key::6 has a different enum discriminant.
+        if traced_action(id) || keys != 0 {
+            record_sample(id, keys);
         }
     }
     let original: NativeHash = std::mem::transmute(TRAMPOLINE.load(Ordering::Acquire));
@@ -240,12 +247,13 @@ fn reset_samples() {
 
 fn write_report() {
     let mut out = String::from(
-        "TFM2 v0.6.1 native replay action-hash diagnostic\n\n\
-         This is an observational trace, not evidence of a complete action dispatcher.\n\
-         IDs: 0x1B Highlight mode; 0x30 Previous Highlight; 0x31 Back 10 Seconds;\n\
-         0x32 Pause; 0x33 Forward 10 Seconds; 0x34 Next Highlight.\n\
+        "TFM2 v0.6.1 native replay action/key-hash diagnostic\n\n\
+         Hasher is shared: hashed_byte MAY be a physical Key ID, NOT necessarily a semantic Action.\n\
+         Interesting action IDs when used as Action: 0x1B Highlight mode;\n\
+         0x30 Previous Highlight; 0x31 Back 10 Seconds; 0x32 Pause;\n\
+         0x33 Forward 10 Seconds; 0x34 Next Highlight.\n\
          Key flags: 0=no M/6 held, 1=M held, 2=6 held, 3=both held.\n\
-         RVA 0 means the stack capture did not recover a main executable frame.\n\n",
+         RVA 0 means stack capture recovered no main executable frame.\n\n",
     );
     for slot in TRACE_SLOTS.iter() {
         let encoded = slot.load(Ordering::Acquire);
@@ -256,7 +264,7 @@ fn write_report() {
         let id = (value >> 56) as u8;
         let keys = ((value >> 48) & 0xFF) as u8;
         let rva = value as u32;
-        let _ = writeln!(out, "action=0x{id:02X} keys={keys} caller_rva=0x{rva:08X}");
+        let _ = writeln!(out, "hashed_byte=0x{id:02X} keys={keys} caller_rva=0x{rva:08X}");
     }
     let _ = writeln!(
         out,
