@@ -1,59 +1,38 @@
-# AGENTS.md
+# Contributor and agent instructions
 
-## Project purpose
+These instructions apply to the current `main` implementation. For behavior, use `README.md` first; for outstanding defects use `docs/known-issues.md`; for deliberately deferred experiments use `docs/deferred-investigations.md`. Historical plans and validation logs are evidence, **not instructions to reimplement the current mod**.
 
-`TFM2-DirectControl` adds direct, MOBA-style control of one Teamfight Manager 2 champion while preserving the game's surrounding match simulation.
+## Project and supported build
 
-## Product priorities
+Harbinger Direct Control runs Teamfight Manager 2's watched match near real time and publishes commands for a selected champion through the official stable native Rust SDK. The currently validated target is **TFM2 v0.6.1 on Windows/Steam**, single-player first. Do not claim that a new game version, Linux/Steam Deck, replay determinism, or multiplayer works without separate validation.
 
-Work in this order unless the user explicitly changes it:
+## Current behavior to preserve
 
-1. Correct mouse-to-world coordinates under the live game camera.
-2. RMB ground movement.
-3. RMB contextual attack on the exact hostile unit clicked.
-4. Q/W/R skill arming and LMB confirmation for Targeting / Position / Direction casts.
-5. B return-to-base.
-6. Bare functional targeting/range indicators.
-7. Selection of which friendly champion is manually controlled.
-8. Pings / teammate interaction.
-9. Manual shop interaction.
+- `Ctrl+Home` works only after the startup synchronization prompt reaches READY; it resumes the paced watched simulation.
+- `F1-F10` address the **ten visible player cards** through the validated card-to-stable-athlete mapping. Never assume card order equals simulation player IDs; either team may be selected.
+- RMB issues contextual ground movement or exact-target attacks, including held/swept RMB and minimap requests. `A` then LMB is attack-move; `H` is Hold; `B` is Return.
+- Q/W/R use runtime-validated skill targeting. Targeted/position/direction actions use LMB confirmation; genuine cursorless/self-only skills cast immediately. Cooldown/locked actions must not queue delayed casts.
+- `End` yields the selected champion back to vanilla AI, **without** releasing paced simulation or native replay-seek suppression. Confirmed `Ctrl+End` globally and irreversibly releases control and pacing for that match.
+- While Harbinger owns the live match, native replay seek/highlight actions are suppressed **by semantic action**, including remapped shortcuts. Do not restore these actions on temporary `End` release. Ordinary synchronized pause remains supported.
+- MMB drag and mouse-wheel zoom are validated match-wide camera controls. Automatic native team fog applies to the controlled champion, and enforcement stops on `End`.
+- The supported live pacing baseline is 1x / approximately 60 Hz. Variable-speed experiments are deferred. Any future speed-affecting feature must be non-functional in multiplayer; multiplayer itself has not been validated.
 
-Automatic shopping is intentionally acceptable and must not block the basic-control milestones.
+## Implementation constraints
 
-## Approved MVP controls
+- Prefer Team Samoyed's **stable native Rust API** for gameplay commands. Do not switch to the deprecated classic SDK.
+- Preserve vanilla AI and vanilla automatic shopping when no champion is manually controlled.
+- External Windows input crosses a deterministic simulation boundary; keep acquisition separate from simulation-side command generation and retain foreground-focus checks on raw keyboard/mouse paths.
+- The stable SDK does not expose every camera, simulation, or native replay-input detail. The version-checked detours in `src/camera_probe/`, `src/simulation_probe.rs`, and `src/replay_action_gate.rs` are intentional and runtime-sensitive. Do not remove or generalize them solely because their names mention probes.
+- Preserve exact executable fingerprints, validated hook boundaries, native UI paths, and fail-safe behavior. Recheck signatures and physical behavior for every supported executable change; compilation alone does not establish compatibility.
+- Do not modify game saves or ship the game's executable, proprietary assets, local SDK copy, development DLLs, or probe output.
 
-- RMB ground: move to cursor.
-- RMB hostile: attack that target.
-- Q: Skill 1.
-- W: Skill 2.
-- R: Ultimate.
-- LMB: confirm an armed targeted/position/directional skill.
-- RMB or Esc while targeting: cancel the armed skill.
-- B: return to base.
+## Change and validation workflow
 
-Do not silently replace this with WASD movement or nearest-target auto-selection.
+1. Make focused changes on a branch and submit a pull request. Do not merge functional changes without maintainer approval.
+2. Read the applicable current source and validation docs before changing native hooks, pacing, replay suppression, camera, or control semantics.
+3. Set up the locally installed game SDK using `scripts/bootstrap-sdk.ps1`; follow `README.md` and `CONTRIBUTING.md` for prerequisites and build steps.
+4. Run `cargo fmt --check` and `cargo check`; when practical, run `cargo test` and build a release DLL.
+5. For behavior/native changes, perform an actual Windows v0.6.1 match smoke test. Inspect `log.log` on startup or hook failures. Do not relabel an untested change as validated.
+6. Update `README.md` and current-status docs when behavior changes. Place unfinished investigations in `docs/deferred-investigations.md` or a clearly marked historical log rather than turning old plans back into active requirements.
 
-## Technical rules
-
-- Use Team Samoyed's **stable native Rust API** first. Do not start new work on the deprecated classic SDK.
-- Target Windows + Steam first.
-- Prefer the game's own `InputV1` movement/attack/skill/return behavior over recreating combat mechanics.
-- Preserve vanilla AI for every player that is not explicitly under manual control.
-- Preserve vanilla automatic item purchasing until manual shop work is explicitly prioritized.
-- Keep external input acquisition separate from simulation command generation.
-- Treat mouse/keyboard state crossing into `StablePlayerAi::think` as a determinism risk. Until proven otherwise, label the feature single-player only and do not claim replay or multiplayer compatibility.
-- Never mutate saves merely to implement direct controls.
-- Avoid invasive memory patching/hooking while the stable API can accomplish the job. If stable API limitations force an external/native bridge, isolate it and document exactly why it exists.
-- Favor fail-safe behavior: if cursor conversion, target resolution, or an input state is invalid, retain/pass through vanilla input rather than emitting a fabricated command.
-
-## Development discipline
-
-Before a functional change:
-
-1. Read the relevant current official stable API section.
-2. Keep the change narrow enough to test in one match.
-3. Add useful debug logging/visualization when introducing a new coordinate or input layer.
-4. Run `cargo fmt` and `cargo check` locally.
-5. Do not mix unrelated refactors into control milestones.
-
-A successful first prototype is intentionally ugly. Correct command behavior matters more than UI polish.
+AI-assisted contributions are welcome; accuracy and reproducible evidence matter more than whether an AI helped write the patch.
