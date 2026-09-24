@@ -37,7 +37,7 @@ TERMS = (
 MAX_TERM_HITS = 18
 MAX_ACTION_STRINGS = 180
 DEFAULT_GAME_DIR = (
-    Path(os.environ.get("ProgramFiles(x86)", r"C:\\Program Files (x86)"))
+    Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"))
     / "Steam" / "steamapps" / "common" / "Teamfight Manager2"
 )
 
