@@ -1,6 +1,6 @@
 # v0.6.1 native replay action suppression
 
-**Implementation status: version-checked gate staged; Windows build and in-game regression testing pending.** Do not mark the release blocker closed until keyboard seeking has been physically rejected under rebound shortcuts, and confirmed Ctrl+End restores ordinary replay.
+**Implementation status: physically smoke-tested on the supported v0.6.1 build (user-reported pass, 2026-09-23).** The Windows development build installed and the replay protection, control, pause, tooltip, speed, temporary-release, global-release, and next-match smoke tests passed. This validates the tested build only; recheck native signatures and repeat runtime tests after executable changes.
 
 ## Executable identity and verified runtime path
 
@@ -24,7 +24,7 @@ TFM2's live-match camera/input handler at RVA `0x00C2DBE0` calls the native **cu
 
 The getter's complete 12-byte prologue is `56 53 48 83 EC 28 89 D3 88 54 24 27`. Its observed native calling convention is `fn(bindings_ptr, action_id: u32) -> u8` on Win64; only the low byte of the ID is read. The 12 copied bytes are entire instructions and do not reference RIP or preexisting RAX. The default key-map bytes checked for this build do not include `0xFF` as a key.
 
-`tools/verify_replay_action_gate.py` checks the *full executable hash*, PE profile, both existing camera and new getter prologues, semantic getter calls, their immediate input-key comparisons, subsequent replay operations, and the chosen unbound sentinel. It passed against the uploaded executable in offline analysis. **This static pass does not establish runtime hook stability or successful gameplay suppression.**
+`tools/verify_replay_action_gate.py` checks the *full executable hash*, PE profile, both existing camera and new getter prologues, semantic getter calls, their immediate input-key comparisons, subsequent replay operations, and the chosen unbound sentinel. It passed against the uploaded executable in offline analysis. **The static verifier alone does not establish runtime stability; the subsequent user-reported Windows/in-game smoke test passed for this build.**
 
 ## Staged native gate and lifecycle
 
@@ -38,7 +38,7 @@ If the exact build or getter prologue doesn't match, the hook refuses installati
 
 Action-name formatter RVA `0x0215D0C0`, default binding registration, and the generic hasher RVA `0x00BA3A30` are **not** runtime replay action rejection points. A temporary feature-gated `replay-native-trace` generic-hasher probe remains available for forensic fallback, but is disabled for standard builds and must not be included in Workshop packaging. Binding-key filters for M/6/etc. are intentionally rejected.
 
-## Required physical acceptance test (release blocker)
+## Physical acceptance test (passed for tested v0.6.1 build; rerun on updates)
 
 On the exact supported v0.6.1 game, close the game and install a **standard** development build (no `-ReplayTrace`):
 
@@ -54,7 +54,7 @@ py .\tools\verify_replay_action_gate.py
 4. Press **End** to return the champion to AI/spectator while Candidate A remains live-paced; replay shortcuts **must remain blocked**.
 5. Confirm **Ctrl+End**. Replay toolbar and ordinary rebound seek/highlight shortcuts must return and operate normally. Starting a new match should re-enable the blocking gate.
 
-If the DLL does not compile or the game crashes/behaves unexpectedly, capture installer output or log.log and stop. Until the physical pass confirms these conditions, the release blocker stays open.
+**2026-09-23 result:** User reports a clean pass on the full checklist: remapped `M`/`6` and remaining replay keys inactive during ownership; replay controls and Highlight speed hidden; zoom ghost tooltips absent; ordinary controls, tooltips, pause, and available speed controls behave without observed desync; `End` retains protection; confirmed `Ctrl+End` restores ordinary replay; protection re-arms next match. No runtime defect was reproduced in this pass. If a later build fails, capture installer output or log.log and reopen the release blocker.
 
 ## Separate deferred hardening
 
