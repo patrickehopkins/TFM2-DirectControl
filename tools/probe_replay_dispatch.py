@@ -37,7 +37,7 @@ UI_PATHS = (
     "time_control.next_highlight",
 )
 DEFAULT_EXE = (
-    Path(os.environ.get("ProgramFiles(x86)", "C:\\Program Files (x86)"))
+    Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"))
     / "Steam" / "steamapps" / "common" / "Teamfight Manager2"
     / "TeamfightManager2.exe"
 )
