@@ -1,5 +1,6 @@
 param(
-    [string]$GameDir = (Join-Path ${env:ProgramFiles(x86)} "Steam\steamapps\common\Teamfight Manager2")
+    [string]$GameDir = (Join-Path ${env:ProgramFiles(x86)} "Steam\steamapps\common\Teamfight Manager2"),
+    [switch]$ReplayTrace
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,7 +16,12 @@ $ModInfoSource = Join-Path $RepoRoot "mod.mod_info"
 
 Push-Location $RepoRoot
 try {
-    cargo build --release
+    $cargoArgs = @('build', '--release')
+    if ($ReplayTrace) {
+        $cargoArgs += @('--features', 'replay-native-trace')
+        Write-Host 'WARNING: installing temporary diagnostic native replay-action tracer.'
+    }
+    & cargo @cargoArgs
     if ($LASTEXITCODE -ne 0) {
         throw "cargo build --release failed with exit code $LASTEXITCODE."
     }

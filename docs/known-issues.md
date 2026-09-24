@@ -1,62 +1,61 @@
 # Known issues and deferred polish
 
-## Unfocused raw-key polling
+This file describes the limitations that still apply to the first Workshop release. Completed investigations that are no longer active release issues live in `docs/deferred-investigations.md`.
 
-Status: **fixed and physically validated**.
+## Startup requires bounded pre-simulation
 
-All raw Win32 keyboard paths now share a foreground-process gate. Ctrl+Home, Ctrl+End, End, F1-F10, and the worker-thread startup Ctrl+Home escape are ignored unless Teamfight Manager 2 owns the foreground window. A key/chord held while focus returns is also swallowed until it is released and pressed again, preventing background shortcuts from firing on refocus.
+Status: **accepted first-release limitation with validated synchronization.**
 
-Mouse/MMB paths already had their own foreground-window protection; SDK `key_pressed` controls remain contextual and are not part of this raw-key issue.
+Teamfight Manager 2 requires watched-match simulation progress before it can construct the battlefield. Candidate A is already the correct `ClientMatchView` simulation at tick 1, but freezing it there prevents the loader from reaching a usable match view.
 
-## Enemy follow can reveal a fogged champion
+The release path therefore allows the validated loader runway, freezes the live simulation at the first usable `InGame` boundary, waits for visible presentation to catch the frozen live clock, and only then enables the explicit `Ctrl+Home` start. The player is never intentionally given control of simulation state that presentation has not caught up to.
 
-Status: **accepted first-release limitation**.
+True zero-pre-simulation startup remains deferred.
 
-Automatic team fog is physically validated, but TFM2's native spectator follow behavior can still follow an opposing champion and thereby reveal that champion's position through fog. Direct Control will not attempt to turn spectator fog into an anti-cheat boundary for the first Workshop release.
+## Enemy native follow can reveal a fogged champion
 
-This document records issues that are intentionally **not** blocking continued command work.
+Status: **accepted first-release limitation.**
 
-## Startup pre-simulation
+Automatic team fog follows the simulation team of the champion under Direct Control and is physically validated. TFM2's native spectator follow behavior can still follow an opposing champion and reveal that champion's position through fog.
 
-Teamfight Manager 2 still requires watched-match simulation progress before the battlefield can be constructed. Physical v0.6.1 probing confirmed Candidate A is already the correct `ClientMatchView` simulation at tick 1, so the remaining lead is a loader dependency rather than misidentifying the simulation.
+Direct Control does not attempt to turn spectator-mode UI into an anti-cheat boundary.
 
-The release build handles this by freezing Candidate A at the first usable `InGame` boundary and withholding `Ctrl+Home` until the visible presentation catches that frozen live state. This prevents manual commands from targeting simulation state that the player has not yet seen.
+## Match speed is intentionally fixed at the validated 1x baseline
 
-The startup lead itself is therefore **not eliminated**. It is packaged as a synchronization transition rather than exposed as a misleading immediately-controllable replay state.
+Status: **post-release experiment.**
 
-Post-release hardening should treat presentation as a slave clock while Direct Control owns simulation authority: suppress replay seek/rewind/highlight jumps, continuously detect presentation/live divergence, snap presentation back to live when necessary, and restore ordinary replay freedom only after confirmed `Ctrl+End` release.
+The first Workshop release keeps the live simulation on the validated 60 Hz / 1x control model. An attempted synchronized-speed system did not keep native presentation and live simulation coupled reliably enough to ship.
 
+The investigation stopping point, including death/respawn fast-forward ideas, is preserved in `docs/deferred-investigations.md`.
 
-## Cursor/world marker origin offset
+## Gunfighter attack-move does not preserve his native move-while-attacking behavior
 
-Status: **known, non-blocking for coarse movement; blocking for precision clicking**.
+Status: **known champion-specific compatibility gap; post-release.**
 
-The yellow world-space marker is consistently displaced from the physical mouse reticle. The displacement remains approximately constant across zoom levels, which strongly suggests that the scale is correct and the reference origin/viewport center is wrong.
+Generic `A + LMB` attack-move works for ordinary champions, but Gunfighter currently resolves to either attacking or walking instead of retaining his native move-compatible attack behavior.
 
-Current diagnostics report `origin center_log`; the transform still uses `ingame.center_log` as a calibration reference. That node is not guaranteed to coincide with the real `Game` draw-map origin.
+Future work should start from `can_use_with_move` / native move-compatible action semantics and must not change the already validated generic attack-move behavior simply to special-case Gunfighter.
 
-This must be corrected before precise actor/entity hit testing is considered production-ready. It does not invalidate the already-proven RMB MoveTo command path.
+## Self-only auto-cast has a conservative runtime classification
 
-## Playback-speed controls during live pacing
+Status: **validated on known benchmarks; broader champion interactions may still need coverage.**
 
-Status: **post-release experiment; intentionally not in the first public release**.
+Berserker Skill 1 and Monk Skill 1 correctly cast immediately on keypress, while Ogre's automatic/passive trigger remained non-activatable.
 
-While Candidate A is held near 60 Hz, the game's normal 0.5x/1x/1.5x/2x/3x replay controls do not meaningfully change live presentation speed. A release-week synchronization experiment did not produce a control model worth shipping: ordinary speeds remained unreliable, while Highlight could pause on champion death and then accelerate toward respawn when selected.
+The stable AI context does not expose the live base champion action definition directly, so Targeting-style self-only actions are inferred from validator evidence. If a later champion exposes an ordinary ally-target skill that is incorrectly classified as self-only in a particular situation, narrow the generic rule rather than adding broad champion hard-codes.
 
-The first Workshop release therefore preserves the proven 1x/60 Hz pacing baseline. Synchronized ordinary speeds and controlled-champion death fast-forward are shelved for post-release testing rather than risking a less predictable relationship between presentation and simulation authority.
+## Space recenter/follow is deferred
 
-If speed-changing features return later, they must remain completely disabled in multiplayer; Direct Control's multiplayer speed policy is fixed 1x.
+Status: **post-release.**
 
-## Persistent MoveTo state
+Multiple custom follow and native-input approaches were physically rejected, and the native follow controller proved to live upstream of the validated camera hook surface. Do not restart from custom pan chasing or synthetic F-key injection.
 
-Status: **diagnostic behavior retained intentionally for now**.
+The full stopping point and recommended resumption routes are in `docs/deferred-investigations.md`.
 
-The current movement command is persistent. A selected champion continues trying to reach the stored destination until another command replaces it. Runtime testing showed that this can survive pause/resume and even death/respawn.
+## Screen-edge scrolling is deferred
 
-That persistence is useful evidence that the command bridge is stable, but final MOBA-like behavior will probably clear or supersede movement on events such as arrival, death/respawn, attack orders, casts, or explicit stop/idle commands.
+Status: **post-release.**
 
-## Entity clickability branch
+Stationary-edge updates were visibly stepped, native UI regions interfered with the behavior, and synthetic mouse wakeups introduced flicker. MMB drag plus wheel zoom are the validated release camera controls.
 
-`feat/cursor-entity-picking` was created before the current athlete-aware selection and pacing architecture matured. Its entity-picker concepts remain useful, but the branch should **not** be merged wholesale.
-
-When actor/entity targeting becomes the current task, transplant or rebase the picker logic onto the current live-control architecture. Expect manual integration in at least `src/lib.rs` and `src/control.rs`.
+See `docs/deferred-investigations.md` for the rejected approaches and resumption point.
