@@ -1,148 +1,61 @@
-# Replay shortcut suppression — v0.6.1 native analysis
+# v0.6.1 native replay action suppression
 
-Status: **release blocker unresolved**. The original UI hiding works, but remappable shortcuts
-can still move the visible replay away from Candidate A's live simulation. Never describe the
-UI cleanup as a full rewind disable.
+**Implementation status: version-checked gate staged; Windows build and in-game regression testing pending.** Do not mark the release blocker closed until keyboard seeking has been physically rejected under rebound shortcuts, and confirmed Ctrl+End restores ordinary replay.
 
-## Inspected executable
+## Executable identity and verified runtime path
 
-- File: `TeamfightManager2.exe`, 86,330,880 bytes (supplied by the user)
+All findings below come from offline disassembly of the user-supplied TeamfightManager2.exe:
+
+- Size: 86,330,880 bytes
 - SHA-256: `91084e9a29c70993595a1d7d0c22064bae0ee82b0fc773c696077d15c2268f98`
-- PE timestamp: `0x6AB1D950`
-- PE image size: `0x05264000`
-- This matches the pre-existing, verified v0.6.1 camera-hook build profile.
+- PE timestamp: `0x6AB1D950`; PE image size: `0x05264000`
+- All addresses below are **relative virtual addresses** (RVA) for this exact build. No guessing other versions.
 
-All addresses below are **module-relative RVAs**, not absolute pointers. Do not reuse them
-for a different executable without re-verifying both the build and instructions.
+TFM2's live-match camera/input handler at RVA `0x00C2DBE0` calls the native **current action-to-binding getter** at `0x021C4CE0` with a semantic action ID and then compares its returned key with the incoming input event before executing the respective action. Unlike action-name formatting and default-binding registration, this is a runtime dispatch path and looks up the currently configured binding, including user remappings.
 
-## Confirmed semantic action identifiers
+| Native action ID | Action | Runtime getter call RVA | Action operation RVA |
+| --- | --- | --- | --- |
+| `0x1B` | Highlight playback mode | `0x00C2EC07`, `0x00C2ED1E` | match-handler branches |
+| `0x30` | Previous Highlight | `0x00C2F4BD` | `0x00C30E90` |
+| `0x31` | Back 10 Seconds | `0x00C2F51F` | `0x00C32290` |
+| `0x32` | Native timeline Pause | `0x00C2F581` | `0x01D729F0` |
+| `0x33` | Forward 10 Seconds | `0x00C2F5C6` | `0x00C31D60` |
+| `0x34` | Next Highlight | `0x00C2F628` | `0x00C308D0` |
 
-The native action-name conversion function at RVA `0x0215D0C0` indexes a
-`u8` variant number into a jump table and produces the corresponding native action name.
-The relevant mapping is:
+The getter's complete 12-byte prologue is `56 53 48 83 EC 28 89 D3 88 54 24 27`. Its observed native calling convention is `fn(bindings_ptr, action_id: u32) -> u8` on Win64; only the low byte of the ID is read. The 12 copied bytes are entire instructions and do not reference RIP or preexisting RAX. The default key-map bytes checked for this build do not include `0xFF` as a key.
 
-| Native action variant | Action |
-| --- | --- |
-| `0x1B` (27) | `in_game_highlight_mode` |
-| `0x30` (48) | `in_game_prev_highlight` |
-| `0x31` (49) | `in_game_prev_time` |
-| `0x32` (50) | `in_game_pause_time` |
-| `0x33` (51) | `in_game_next_time` |
-| `0x34` (52) | `in_game_next_highlight` |
-| `0x35` (53) | `in_game_zoom_in` |
-| `0x36` (54) | `in_game_zoom_out` |
+`tools/verify_replay_action_gate.py` checks the *full executable hash*, PE profile, both existing camera and new getter prologues, semantic getter calls, their immediate input-key comparisons, subsequent replay operations, and the chosen unbound sentinel. It passed against the uploaded executable in offline analysis. **This static pass does not establish runtime hook stability or successful gameplay suppression.**
 
-The associated string-descriptor table covers the replay actions at
-`0x03A94270..0x03A942D0`.
+## Staged native gate and lifecycle
 
-The existing v0.6.1 native camera handler at RVA `0x00C2DBE0` reads a
-55-entry `0..54` action list at `0x03BF2986`. In an initialization path it maps
-each action through `0x021DBD30` into a default keyboard binding, then inserts
-that pair using `0x00CEB890`. **This is configuration evidence, not proof that
-the same functions execute/reject actions during live playback.**
+`src/replay_action_gate.rs` installs a guarded detour of the runtime binding getter at module initialization. While Direct Control owns the live paced match, the hook returns `0xFF` for `0x1B` and `0x30..0x34`, causing the game's native incoming-key comparisons to fail independent of customized keyboard mappings. For all other actions (including native `0x35/0x36` zoom), it forwards the original lookup through a trampoline unchanged. This does **not** edit stored shortcuts or install a physical-key blacklist.
 
-## Sites that must NOT be mistaken for dispatch
+The safety gate begins when the InGame live session is owned, including before Ctrl+Home and during temporary End spectator yield. It stops as soon as the **confirmed Ctrl+End** release is registered; normal native replay keyboard bindings are then forwarded again. Native replay toolbar buttons and bottom Highlight playback UI are independently hidden through exact stable UI node paths and restored on global release. Stale native Zoom In/Out tooltip suppression is a separate UI cleanup. Native timeline Pause is blocked under this gate; ordinary synchronized pause-menu handling remains intact, but it requires a physical regression test.
 
-- `0x0215D0C0` formats or names action variants; hooking it does not reject them.
-- `0x00CC4500` and nearby functions reference the action descriptor table while
-  handling configuration/serialization. Their presence is not evidence of action execution.
-- `0x00CEB890` inserts action/default-key pairs; altering defaults would fail for user
-  remapped shortcuts already loaded in memory.
-- The camera hook's initialization path is not yet proven to own the runtime
-  shortcut state or the replay-position mutator.
-- A Win32 physical-key filter (`M`, `6`, etc.) would be defeated by rebinding and
-  should not be shipped as semantic seek suppression.
+If the exact build or getter prologue doesn't match, the hook refuses installation, emits an error to log.log, and **Ctrl+Home will not start Direct Control**. No speculative fallback key blacklist is enabled. The camera hook and native pacing architecture are untouched by this replay gate. It is single-player release scope; the existing locked multiplayer 1x rule is not altered.
 
-## Required implementation contract
+### Previous investigation and rejected approaches
 
-Identify the **runtime** shortcut-state query/action dispatcher or the authoritative
-replay seek mutator. Intercept *semantic actions* after remapping, not their default keycodes.
-Under guarded v0.6.1 build detection and a verified hook prologue:
+Action-name formatter RVA `0x0215D0C0`, default binding registration, and the generic hasher RVA `0x00BA3A30` are **not** runtime replay action rejection points. A temporary feature-gated `replay-native-trace` generic-hasher probe remains available for forensic fallback, but is disabled for standard builds and must not be included in Workshop packaging. Binding-key filters for M/6/etc. are intentionally rejected.
 
-1. While the current watched match is controlled, block previous/next time,
-   previous/next highlight, and highlight playback mode no matter the assigned
-   keyboard shortcut or UI route. Preserve safe, coordinated pause behavior.
-2. Preserve the validated camera control path (MMB drag and wheel zoom), so
-   action names for zoom are **not** in the forbidden native-action list.
-3. Stop blocking only upon the *confirmed* `Ctrl+End` release for that match.
-   `End` temporary yield must not silently re-enable seeking while Candidate A
-   is still live-paced.
-4. Do not enable any new functionality in multiplayer or break the locked 1x
-   multiplayer invariant.
-5. On unknown signatures or hook failures, **report the missing protection**
-   clearly rather than claiming rewind is disabled.
+## Required physical acceptance test (release blocker)
 
-Verify on an actual match by rebinding the target shortcuts, attempting each
-blocked action through keyboard/UI, and confirming native behavior returns
-after confirmed `Ctrl+End`. The author should also retest the ghost zoom-tooltip
-cleanup and ordinary camera zoom.
-
-## What analysis cannot yet establish
-
-The supplied executable is stripped native Rust. Static references identify
-action names and default-binding construction, but so far **do not establish a
-safely hookable action dispatcher or seek setter with a verified calling
-convention**. Do not install a guessed native detour merely from an xref cluster.
-If static control-flow analysis remains ambiguous, collect a narrowly scoped
-runtime trace from a known action invocation on this same executable.
-
-## Verified generic action hash and opt-in native runtime trace
-
-Offline inspection of the *user-supplied* v0.6.1 executable further identified
-RVA `0x00BA3A30` as a generic single-byte key/action hasher. Its first 13
-bytes are exactly:
-
-```text
-48 83 EC 78              sub rsp, 78h
-F3 0F 6F 01              movdqu xmm0, [rcx]
-66 0F 70 C8 44           pshufd xmm1, xmm0, 44h
-```
-
-Its observed calling convention is `hash(hasher_ptr, one_byte_key_ptr) -> u64`.
-**Importantly, this function hashes keys in other paths too**; merely observing
-an action-like byte in this hook is not sufficient to prove that a replay action
-was dispatched. The caller RVA and experimental test state are required context.
-
-Five native UI replay button callbacks near `0x009B15D0..0x009B1BD0`
-hash their corresponding configured shortcut identifiers and synthesize normal
-keyboard messages. A separate large event-processing function near
-`0x0083DB00` consumes tagged key messages and queries an in-memory shortcut
-map. The ultimate semantic seek mutator and a safe native rejection site
-**remain unverified**.
-
-An intentionally temporary feature-gated diagnostic now lives in
-`src/replay_native_trace.rs`; it **patches process code** to detour the
-generic hasher but forwards calls unchanged, without intentionally modifying
-simulation or input. Its install is guarded by the exact v0.6.1 PE header and
-all 13 prologue bytes. It captures only the interesting one-byte values and
-bounded call-stack samples, with a separate quota for each experiment.
-
-### One controlled game-side trace
-
-This instrumented build has not been compiled or executed by the assistant:
-it must receive a Windows physical test before its findings can be trusted.
-Close TFM2 before installing:
+On the exact supported v0.6.1 game, close the game and install a **standard** development build (no `-ReplayTrace`):
 
 ```powershell
 git pull
-.\scripts\install-dev.ps1 -ReplayTrace
+py .\tools\verify_replay_action_gate.py
+.\scripts\install-dev.ps1
 ```
 
-Use a disposable/practice match. Confirm `Ctrl+End` global release *before*
-any rewind tests; this preserves the currently validated live-control behavior.
-While ordinary replay controls are restored, press `Ctrl+Alt+F12` once to begin
-capture. Then click **Back 10 Seconds**, press the user's bound `M` for the
-same action, and press `6` for Previous Highlight, with distinct deliberate
-key holds. Press `Ctrl+Alt+F12` again to write
-`%TEMP%\tfm2_replay_native_trace.txt`. Stop and report if the game becomes
-unstable; revert to the ordinary build with
-`.\scripts\install-dev.ps1` (no feature switch).
+1. Start a disposable/practice match and start Direct Control with Ctrl+Home. Confirm regular champion control still works and the live hitbox outlines stay aligned with the entities.
+2. Test user-remapped `M` (Back 10 Seconds), `6` (Previous Highlight), plus the bindings for Forward 10, Next Highlight, and Highlight playback. **None may change replay position or playback mode.** Also test one *newly rebound* shortcut if practical.
+3. Confirm the native replay controls remain hidden/inert, ghost Zoom tooltip no longer appears, and unrelated player-detail UI, MMB drag, mouse-wheel zoom, and the ordinary synchronized pause menu still work. Native timeline Pause shortcut should be inert during ownership.
+4. Press **End** to return the champion to AI/spectator while Candidate A remains live-paced; replay shortcuts **must remain blocked**.
+5. Confirm **Ctrl+End**. Replay toolbar and ordinary rebound seek/highlight shortcuts must return and operate normally. Starting a new match should re-enable the blocking gate.
 
-Interpretation: call stacks from the UI and rebound keyboard actions can
-identify a common shortcut processing path, or reveal that the runtime input
-path does **not** rehash semantic actions. No trace hits is a useful negative
-finding, not permission to pretend the actions were suppressed.
+If the DLL does not compile or the game crashes/behaves unexpectedly, capture installer output or log.log and stop. Until the physical pass confirms these conditions, the release blocker stays open.
 
-This diagnostic must be removed or remain disabled for Workshop packaging.
-The real release blocker closes only after a *separate* native-action-level
-suppression implementation is physically verified.
+## Separate deferred hardening
+
+The empirical click-ring/replay alignment diagnostic remains documented in the README. A precise live-vs-presentation playback clock watchdog and automatic snap-to-live are deferred; this release intentionally prevents the primary player-driven cause (native replay seeking), not every conceivable presentation divergence.
