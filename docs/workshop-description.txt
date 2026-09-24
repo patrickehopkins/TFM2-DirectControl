@@ -15,9 +15,11 @@ Harbinger Direct Control turns Teamfight Manager 2's pre-simulated matches into 
 [tr][td]F1-F10[/td][td]Control champion[/td][/tr]
 [tr][td]RMB[/td][td]Move / Attack[/td][/tr]
 [tr][td]A + LMB[/td][td]Attack-move[/td][/tr]
-[tr][td]Q / W / R[/td][td]Abilities[/td][/tr]
-[tr][td]H / B[/td][td]Hold / Return[/td][/tr]
-[tr][td]MMB / Wheel[/td][td]Camera drag / Zoom[/td][/tr]
+[tr][td]Q / W / R[/td][td]Abilities 1, 2 and 3 respectively[/td][/tr]
+[tr][td]H[/td][td]Hold[/td][/tr]
+[tr][td]B[/td][td]Return[/td][/tr]
+[tr][td]MMB[/td][td]Camera drag[/td][/tr]
+[tr][td]Scroll Wheel[/td][td]Zoom[/td][/tr]
 [tr][td]End[/td][td]Return champion to AI[/td][/tr]
 [tr][td]Ctrl+End[/td][td]Permanently release control to the robots[/td][/tr]
 [/table]
@@ -30,14 +32,14 @@ The loading screen after the start of a match is noticeably longer. The game req
 Some default spectator shortcuts conflict with the controls I've chosen. Please check your personal Shortcut settings, especially 'R' and 'F1'-'F10' in the game's Shortcuts menu. 'Q' and 'A' also overlap replay actions, but Harbinger suppresses those replay actions while it owns the live match. I'll implement customizable mod keybindings later. I promise!
 
 [h3]TALI'ZORAH NAR RAYYA[/h3]
-Commander Shepard has no fixed canon romance, so there's still hope that it could be me. It could never have worked anyway. Tali is an immaculate, environmentally sterile goddess of Quarian perfection; a radiant, violet-eyed miracle of evolution, lovingly preserved in a hermetically sealed cathedral of aerospace-grade techno-magic. A divine convergence of intellect, elegance, and immune-system deficiency. An impossibly beautiful creature whose very existence represents the triumph of intelligent design over a universe fundamentally unworthy of her. Shepard's basically just a violent cyborg zombie murder-monkey with no real friends. I refuse to acknowledge the timeline in which her name ends in "Vas Normandy".
+Commander Shepard's romance with Tali isn't fixed canon so there's still hope that it could be me. It would never have worked anyway. Tali is an immaculate, environmentally sterile goddess of Quarian perfection; a radiant, violet-eyed miracle of evolution, lovingly preserved in a hermetically sealed cathedral of aerospace-grade techno-magic. A divine convergence of intellect, elegance, and immune-system deficiency. An impossibly beautiful creature whose very existence represents the triumph of intelligent design over a universe fundamentally unworthy of her. Shepard's basically just a violent cyborg zombie murder-monkey with no real friends. I refuse to acknowledge the timeline in which her name ends in "Vas Normandy".
 
 [hr][/hr]
 [h2]KNOWN ISSUES[/h2]
 [list]
 [*]Some champion mechanics still need special handling. For example, Gunfighter doesn't preserve his native move-while-attacking behavior during attack-move.
 [*]Certain champions have skill descriptions that don't accurately represent their actual in-game behavior. Harbinger follows the game's native skill mechanics.
-[*]Player-issued AI pings and manual shopping are planned but not implemented. Ordinary shopping remains automatic.
+[*]Player-issued AI pings and manual shopping are planned but not implemented. Ordinary shopping remains automatic whenever you visit home base.
 [*]I still haven't figured out how to flame the AI in-game yet.
 [*]I still haven't figured out how to make the AI flame me in-game yet.
 [*]Tali hasn't noticed me.
