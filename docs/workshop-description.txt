@@ -1,64 +1,49 @@
-[h1]Harbinger Direct Control[/h1]
-
-[h2]ASSUMING DIRECT CONTROL.[/h2]
-
-Ever wanted to actually play the video game?
-
-Swing a close match yourself?
-
-Completely whiff an ult and cost your team the championship?
-
-Grief your teammates personally instead of merely watching them grief themselves?
+[h1]ASSUMING DIRECT CONTROL[/h1]
+Ever wanted to actually play a video game?
+Show off your sick APM to your mom?
+Ult a creep wave only to find out it only hits champs?
+Grief your AI teammates personally instead of merely watching them grief themselves?
 
 [b]NOW YOU CAN!!![/b]
 
-Harbinger Direct Control turns Teamfight Manager 2's pre-simulated matches into a real-time simulation you can interfere with.
-
-Take control of [b]ANY champion on EITHER team[/b]. Move, attack, cast abilities, swap champions, or run it down mid and feed under tower.
-
-Pick/ban remains unchanged. The game's underlying combat, pathfinding, and automatic shopping still work normally. You're simply introducing another opportunity for catastrophic decision-making.
+Harbinger Direct Control turns Teamfight Manager 2's pre-simulated matches into a real-time simulation that you control! Now [b]you[/b] have the power to replace the AI's poor in-game decision making with your own! ASSUME DIRECT CONTROL of any champion on either team to move, attack, cast abilities, swap champions, or [b]feed intentionally anywhere on the map[/b]!
 
 [hr][/hr]
-[h2]WHAT IT DOES[/h2]
-[list]
-[*]Directly control any of the ten champions.
-[*]Manual movement, attacking, attack-move, and abilities.
-[*]Camera dragging, zooming, and automatic team fog.
-[*]Temporary AI handoff and permanent release.
-[*]Replay protection to keep your commands synchronized with the visible match.
-[/list]
-
 [h2]CONTROLS[/h2]
 [table]
-[tr][th]Input[/th][th]Action[/th][/tr]
 [tr][td]Ctrl+Home[/td][td]Begin Direct Control[/td][/tr]
-[tr][td]F1-F10[/td][td]Select champion[/td][/tr]
+[tr][td]F1-F10[/td][td]Control champion[/td][/tr]
 [tr][td]RMB[/td][td]Move / Attack[/td][/tr]
 [tr][td]A + LMB[/td][td]Attack-move[/td][/tr]
 [tr][td]Q / W / R[/td][td]Abilities[/td][/tr]
 [tr][td]H / B[/td][td]Hold / Return[/td][/tr]
 [tr][td]MMB / Wheel[/td][td]Camera drag / Zoom[/td][/tr]
 [tr][td]End[/td][td]Return champion to AI[/td][/tr]
-[tr][td]Ctrl+End[/td][td]Permanently release control (confirmation required)[/td][/tr]
+[tr][td]Ctrl+End[/td][td]Permanently release control to the robots[/td][/tr]
 [/table]
 
-[b]Wait for the initial synchronization and ready prompt before pressing Ctrl+Home.[/b]
+[h2]IMPORTANT NOTES:[/h2]
+[h3]MATCH START PRE-SIMULATION[/h3]
+The loading screen after the start of a match is noticeably longer. The game requires some pre-simulation time before the battlefield becomes interactive. Wait for the initial synchronization and ready prompt before pressing Ctrl+Home at the start of a game.
 
-[b]IMPORTANT:[/b] Some default spectator shortcuts conflict with these controls. Check R and F1-F10 in the game's Shortcuts menu. Q and A also overlap replay actions, but Harbinger suppresses those replay actions while it owns the live match. I'll implement customizable mod keybindings later. I promise!
+[h3]SHORTCUT SETTINGS[/h3]
+Some default spectator shortcuts conflict with the controls I've chosen. Please check your personal Shortcut settings, especially 'R' and 'F1'-'F10' in the game's Shortcuts menu. 'Q' and 'A' also overlap replay actions, but Harbinger suppresses those replay actions while it owns the live match. I'll implement customizable mod keybindings later. I promise!
+
+[h3]TALI'ZORAH NAR RAYYA[/h3]
+Commander Shepard has no fixed canon romance, so there's still hope that it could be me. It could never have worked anyway. Tali is an immaculate, environmentally sterile goddess of Quarian perfection; a radiant, violet-eyed miracle of evolution, lovingly preserved in a hermetically sealed cathedral of aerospace-grade techno-magic. A divine convergence of intellect, elegance, and immune-system deficiency. An impossibly beautiful creature whose very existence represents the triumph of intelligent design over a universe fundamentally unworthy of her. Shepard's basically just a violent cyborg zombie murder-monkey with no real friends. I refuse to acknowledge the timeline in which her name ends in "Vas Normandy".
 
 [hr][/hr]
-[h2]KNOWN ISSUES / FUNCTIONALITY GAPS[/h2]
+[h2]KNOWN ISSUES[/h2]
 [list]
 [*]Some champion mechanics still need special handling. For example, Gunfighter doesn't preserve his native move-while-attacking behavior during attack-move.
-[*]Certain champions have skill descriptions that don't accurately represent their actual in-game functionality. Harbinger follows the game's underlying skill mechanics.
-[*]The game requires some pre-simulation before the battlefield becomes interactive. Wait for the ready prompt before taking control.
-[*]Player-issued AI pings and manual shopping aren't implemented. Ordinary automatic shopping remains functional.
-[*]I still haven't figured out how to make the AI flame me yet.
+[*]Certain champions have skill descriptions that don't accurately represent their actual in-game behavior. Harbinger follows the game's native skill mechanics.
+[*]Player-issued AI pings and manual shopping are planned but not implemented. Ordinary shopping remains automatic.
+[*]I still haven't figured out how to flame the AI in-game yet.
+[*]I still haven't figured out how to make the AI flame me in-game yet.
+[*]Tali hasn't noticed me.
 [/list]
 
 [h2]COMPATIBILITY[/h2]
 [b]Windows/Steam, Teamfight Manager 2 v0.6.1. Single-player only.[/b]
 
-Mods that modify champion AI, combat, targeting, native inputs, or simulation timing could conflict with Harbinger. Content-focused mods may be compatible, but combinations haven't been comprehensively tested.
-
-Multiplayer support isn't implemented.
+Mods that modify champion AI, combat, targeting, native inputs, or simulation timing could conflict with Harbinger. Content-focused mods may be compatible, but combinations haven't been tested. Commander Shepard is completely incompatible with Harbinger.
