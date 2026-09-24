@@ -945,7 +945,7 @@ impl DirectControlExtension {
     fn draw_ready_prompt(ctx: &mut StableClient<'_>) {
         let synced = pacing_probe::startup_presentation_synced();
         let message = if !replay_action_gate::installed() {
-            "Replay shortcut protection unavailable. Direct Control cannot start. Check log.log."
+            "Replay safety unavailable. Ctrl+End to release; see log.log."
         } else if synced {
             "Direct Control is ready. Press Ctrl+Home to take control and resume the match."
         } else {
