@@ -71,11 +71,11 @@ The validated startup path is:
 
 `Ctrl+End` is global and irreversible for that match. After confirmation, Direct Control relinquishes live control/pacing and the normal simulation may race ahead or finish. Start a new match to regain Direct Control.
 
-While Direct Control owns the live match, TFM2's native upper-left replay seek/highlight controls are hidden so they cannot be clicked to move presentation away from the authoritative live simulation. They are restored after the confirmed `Ctrl+End` release.
+While Direct Control owns the live match, TFM2's native replay seek/highlight controls and their **rebindable keyboard actions** are suppressed. The native timeline-pause shortcut is also suppressed; use the ordinary synchronized pause menu instead. MMB drag and mouse-wheel camera zoom remain available. Temporary `End` spectator yield keeps replay seeking blocked because the live simulation is still paced. Native replay controls and their shortcut bindings return after confirmed `Ctrl+End` release.
 
 ### Presentation desync indicator
 
-The lightweight targeting/click rings are drawn from the **live simulation**, not from delayed replay presentation. If those circles are visibly offset from the champions, minions, towers, or other entities they belong to, the replay presentation is out of sync with the live match. Fast-forward until the circles line back up with the actual entities before continuing; alignment is the practical visual confirmation that presentation has caught up again.
+The lightweight targeting/click rings come from the **live simulation**, not delayed replay presentation. **If those circles are in different positions on the map from their actual entities, the displayed replay is out of sync.** The practical recovery in ordinary replay is to fast-forward until the circles and entities line up again. Direct Control deliberately disables replay seeking while active to prevent creating that divergence. If you notice desync anyway while controlling, stop issuing commands; if necessary, confirm `Ctrl+End` to restore ordinary replay fast-forward. That release is irreversible for the current match, and the Direct Control targeting circles are no longer available to compare afterward.
 
 ## Camera and fog
 
