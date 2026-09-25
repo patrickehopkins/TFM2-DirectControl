@@ -238,6 +238,21 @@ fn rebuild_mapping(ctx: &StableClient<'_>) -> (Vec<Option<CachedSlot>>, Vec<Opti
     (slots, errors)
 }
 
+/// Read-only automatic one-time roster health check for support logs.
+pub fn roster_diagnostics(ctx: &StableClient<'_>) -> String {
+    let (slots, errors) = rebuild_mapping(ctx);
+    let resolved = slots.iter().filter(|slot| slot.is_some()).count();
+    let failures = errors.iter().filter_map(|error| error.as_deref())
+        .collect::<Vec<_>>();
+    if failures.is_empty() {
+        return format!("roster probe: {resolved}/10 cards identified; all selection mappings available");
+    }
+    format!(
+        "roster probe: {resolved}/10 cards identified; {}",
+        failures.join("; ")
+    )
+}
+
 fn athlete_names(ctx: &StableClient<'_>) -> Vec<(usize, String)> {
     let mut athletes = Vec::new();
     for athlete_id in ctx.athlete_ids() {
