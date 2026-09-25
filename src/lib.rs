@@ -62,6 +62,7 @@ const HOLD_KEY: &str = "H";
 static MATCH_SESSION_ACTIVE: AtomicBool = AtomicBool::new(false);
 // 0 unknown, 1 catching up, 2 synchronized. Reset at the start of each match.
 static SYNC_DIAGNOSTIC_PHASE: AtomicU8 = AtomicU8::new(0);
+static ROSTER_DIAG_RECORDED: AtomicBool = AtomicBool::new(false);
 static START_CHORD_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static FINISH_CHORD_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static FINISH_CONFIRM_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -1159,6 +1160,7 @@ impl StableExtension for DirectControlExtension {
                 TEMP_RELEASE_WAS_DOWN.store(false, Ordering::Release);
                 SELECT_KEYS_WERE_DOWN.store(0, Ordering::Release);
                 SYNC_DIAGNOSTIC_PHASE.store(0, Ordering::Release);
+                ROSTER_DIAG_RECORDED.store(false, Ordering::Release);
                 diagnostics::event("InGame session started; waiting for presentation synchronization and Ctrl+Home");
                 LMB_WAS_DOWN.store(false, Ordering::Release);
                 RMB_WAS_DOWN.store(false, Ordering::Release);
@@ -1176,6 +1178,7 @@ impl StableExtension for DirectControlExtension {
             control::reset();
             minimap::reset();
             slot_mapping::reset();
+            ROSTER_DIAG_RECORDED.store(false, Ordering::Release);
             diagnostics::event("Match session ended; control and slot mapping reset");
         }
 
@@ -1248,6 +1251,11 @@ impl StableExtension for DirectControlExtension {
                 } else {
                     "Waiting for presentation synchronization"
                 });
+            }
+            if pacing_probe::manual_input_enabled()
+                && !ROSTER_DIAG_RECORDED.swap(true, Ordering::AcqRel)
+            {
+                diagnostics::event(&slot_mapping::roster_diagnostics(ctx));
             }
             diagnostics::heartbeat_if_due(|| {
                 let pacing = pacing_probe::snapshot();
