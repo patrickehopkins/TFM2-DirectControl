@@ -1259,8 +1259,23 @@ impl StableExtension for DirectControlExtension {
             }
             diagnostics::heartbeat_if_due(|| {
                 let pacing = pacing_probe::snapshot();
+                // These small samples also reveal an unexpected native name for the bee
+                // jungle entity if a player's build does not match our narrow classifier.
+                let other_entity_samples = control::click_target_overlay_snapshot()
+                    .into_iter()
+                    .filter(|entity| matches!(
+                        entity.kind, control::EntityKind::Bee | control::EntityKind::Other
+                    ))
+                    .take(8)
+                    .map(|entity| format!(
+                        "{}:{:?}:base_radius={}",
+                        entity.name.as_deref().unwrap_or("<unnamed>"),
+                        entity.kind, entity.collision_radius
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 format!(
-                    "MATCH phase={} started={} synced={} ready_tick={:?} visible_seconds={:?} last_tick={:?} foreground={} replay_gate={} speed_override={} manual_enabled={} selected={}",
+                    "MATCH phase={} started={} synced={} ready_tick={:?} visible_seconds={:?} last_tick={:?} foreground={} replay_gate={} speed_override={} manual_enabled={} selected={} visible_nonstandard_targets=[{}]",
                     pacing_probe::presentation_phase_label(),
                     pacing_probe::start_requested(),
                     synced,
@@ -1271,7 +1286,8 @@ impl StableExtension for DirectControlExtension {
                     replay_action_gate::installed(),
                     STARTUP_SPEED_OVERRIDE_ACTIVE.load(Ordering::Acquire),
                     pacing_probe::manual_input_enabled(),
-                    control::selected_athlete().is_some()
+                    control::selected_athlete().is_some(),
+                    other_entity_samples
                 )
             });
         } else {
