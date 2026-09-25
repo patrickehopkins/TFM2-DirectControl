@@ -31,8 +31,9 @@ damage areas or actor pathing.
 ### Bees
 
 The stable API does not expose a dedicated bee-jungle-creep type. Our narrow
-classifier currently recognizes English names `Bee`, `Bees`, `Jungle Bee(s)`,
-`Honey Bee`, `Honeybee` (and underscore variants). It is applied only
+classifier recognizes the observed Windows v0.6.1 runtime name `bee_monster` (confirmed
+in the 2026-09-24 automatic support log), plus earlier English-name aliases.
+It is applied only
 after champion and tower classification.
 
 To keep bees no bigger than a normal lane creep, the pick-only **base radius**
@@ -42,11 +43,14 @@ bee. If no lane minion exists yet, the native bee base radius is provisionally
 used with minion-sized outer padding. Neither native collision nor combat range
 changes.
 
-Verify the actual native bee entity name in the user's v0.6.1 match; if the
-ring does not shrink, the automatic 15-second support log includes visible
-`Bee` and `Other` entity names/classifications/radii in
-`visible_nonstandard_targets`. This lets us update the narrow classifier
-without guessing or accidentally shrinking important jungle objectives.
+The first v0.1.2 support log established that the actual bee runtime name is
+`bee_monster`: previously every bee appeared as `Other` with native radius
+15,000, explaining the oversized +24 px objective circle. This change classifies
+that precise name as `Bee` for both the drawn ring and authoritative picker.
+A live lane minion is still required to clamp the native 15,000 base radius;
+without one the bee temporarily retains that native base plus only 5 px of
+padding. Do not claim perfect lane-minion sizing at every match instant until
+physical validation confirms how often the lane-radius reference is available.
 
 ### RMB versus targeted Q/W/R
 
