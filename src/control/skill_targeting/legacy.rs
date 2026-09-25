@@ -49,11 +49,13 @@ static PENDING_CHASE_TARGET: AtomicUsize = AtomicUsize::new(NO_TARGET);
 static CURSOR_ACTIVE: AtomicBool = AtomicBool::new(false);
 static CURSOR_X: AtomicU64 = AtomicU64::new(0);
 static CURSOR_Y: AtomicU64 = AtomicU64::new(0);
+static CURSOR_SIM_UNITS_PER_PX: AtomicU64 = AtomicU64::new(0);
 static CURSOR_VERSION: AtomicU64 = AtomicU64::new(0);
 
 static CONFIRM_ACTIVE: AtomicBool = AtomicBool::new(false);
 static CONFIRM_X: AtomicU64 = AtomicU64::new(0);
 static CONFIRM_Y: AtomicU64 = AtomicU64::new(0);
+static CONFIRM_SIM_UNITS_PER_PX: AtomicU64 = AtomicU64::new(0);
 static CONFIRM_VERSION: AtomicU64 = AtomicU64::new(0);
 static RESOLVED_CONFIRM_VERSION: AtomicU64 = AtomicU64::new(0);
 
@@ -201,6 +203,7 @@ fn clear_confirm() {
     CONFIRM_ACTIVE.store(false, Ordering::Relaxed);
     CONFIRM_X.store(0, Ordering::Relaxed);
     CONFIRM_Y.store(0, Ordering::Relaxed);
+    CONFIRM_SIM_UNITS_PER_PX.store(0, Ordering::Relaxed);
     let stable = CONFIRM_VERSION.fetch_add(1, Ordering::Release) + 1;
     RESOLVED_CONFIRM_VERSION.store(stable, Ordering::Release);
 }
@@ -210,6 +213,7 @@ fn clear_targeting_state() {
     CURSOR_ACTIVE.store(false, Ordering::Release);
     CURSOR_X.store(0, Ordering::Relaxed);
     CURSOR_Y.store(0, Ordering::Relaxed);
+    CURSOR_SIM_UNITS_PER_PX.store(0, Ordering::Relaxed);
     clear_confirm();
     clear_preview();
 }
@@ -280,10 +284,11 @@ pub fn is_active() -> bool {
     active_slot().is_some()
 }
 
-pub fn publish_cursor(x: u64, y: u64) {
+pub fn publish_cursor(x: u64, y: u64, sim_units_per_px: u64) {
     CURSOR_VERSION.fetch_add(1, Ordering::AcqRel);
     CURSOR_X.store(x, Ordering::Relaxed);
     CURSOR_Y.store(y, Ordering::Relaxed);
+    CURSOR_SIM_UNITS_PER_PX.store(sim_units_per_px, Ordering::Relaxed);
     CURSOR_ACTIVE.store(true, Ordering::Relaxed);
     CURSOR_VERSION.fetch_add(1, Ordering::Release);
 }
@@ -293,19 +298,21 @@ pub fn clear_cursor() {
     CURSOR_ACTIVE.store(false, Ordering::Relaxed);
     CURSOR_X.store(0, Ordering::Relaxed);
     CURSOR_Y.store(0, Ordering::Relaxed);
+    CURSOR_SIM_UNITS_PER_PX.store(0, Ordering::Relaxed);
     CURSOR_VERSION.fetch_add(1, Ordering::Release);
 }
 
-pub fn confirm(x: u64, y: u64) {
+pub fn confirm(x: u64, y: u64, sim_units_per_px: u64) {
     CONFIRM_VERSION.fetch_add(1, Ordering::AcqRel);
     CONFIRM_X.store(x, Ordering::Relaxed);
     CONFIRM_Y.store(y, Ordering::Relaxed);
+    CONFIRM_SIM_UNITS_PER_PX.store(sim_units_per_px, Ordering::Relaxed);
     CONFIRM_ACTIVE.store(true, Ordering::Relaxed);
     CONFIRM_VERSION.fetch_add(1, Ordering::Release);
     CONFIRM_COUNT.fetch_add(1, Ordering::Relaxed);
 }
 
-fn cursor_snapshot() -> Option<(u64, u64)> {
+fn cursor_snapshot() -> Option<(u64, u64, u64)> {
     for _ in 0..4 {
         let before = CURSOR_VERSION.load(Ordering::Acquire);
         if before & 1 != 0 {
@@ -315,15 +322,16 @@ fn cursor_snapshot() -> Option<(u64, u64)> {
         let active = CURSOR_ACTIVE.load(Ordering::Relaxed);
         let x = CURSOR_X.load(Ordering::Relaxed);
         let y = CURSOR_Y.load(Ordering::Relaxed);
+        let sim_units_per_px = CURSOR_SIM_UNITS_PER_PX.load(Ordering::Relaxed);
         let after = CURSOR_VERSION.load(Ordering::Acquire);
         if before == after && after & 1 == 0 {
-            return active.then_some((x, y));
+            return active.then_some((x, y, sim_units_per_px));
         }
     }
     None
 }
 
-fn confirm_snapshot() -> Option<(u64, u64, u64)> {
+fn confirm_snapshot() -> Option<(u64, u64, u64, u64)> {
     for _ in 0..4 {
         let before = CONFIRM_VERSION.load(Ordering::Acquire);
         if before & 1 != 0 {
@@ -333,9 +341,10 @@ fn confirm_snapshot() -> Option<(u64, u64, u64)> {
         let active = CONFIRM_ACTIVE.load(Ordering::Relaxed);
         let x = CONFIRM_X.load(Ordering::Relaxed);
         let y = CONFIRM_Y.load(Ordering::Relaxed);
+        let sim_units_per_px = CONFIRM_SIM_UNITS_PER_PX.load(Ordering::Relaxed);
         let after = CONFIRM_VERSION.load(Ordering::Acquire);
         if before == after && after & 1 == 0 {
-            return active.then_some((x, y, after));
+            return active.then_some((x, y, sim_units_per_px, after));
         }
     }
     None
@@ -403,7 +412,11 @@ fn slot_cooldown(ctx: &mut StableAiContext<'_>, slot: SkillSlot) -> Option<usize
     })
 }
 
-fn clicked_entity(ctx: &mut StableAiContext<'_>, click: (u64, u64)) -> Option<EntityPick> {
+fn clicked_entity(
+    ctx: &mut StableAiContext<'_>,
+    click: (u64, u64),
+    sim_units_per_px: u64,
+) -> Option<EntityPick> {
     let team = ctx.team();
     let sim = ctx.sim()?;
     pick_entity(
@@ -413,7 +426,7 @@ fn clicked_entity(ctx: &mut StableAiContext<'_>, click: (u64, u64)) -> Option<En
         true,
         click.0,
         click.1,
-        0,
+        sim_units_per_px,
     )
 }
 
@@ -449,6 +462,7 @@ fn infer_mode(
     slot: SkillSlot,
     self_position: (u64, u64),
     cursor: (u64, u64),
+    sim_units_per_px: u64,
 ) -> SkillPreviewMode {
     if ctx.is_valid_input(&action(slot, target_none())) {
         return SkillPreviewMode::None;
@@ -462,7 +476,7 @@ fn infer_mode(
         }
     }
 
-    if let Some(picked) = clicked_entity(ctx, cursor) {
+    if let Some(picked) = clicked_entity(ctx, cursor, sim_units_per_px) {
         if ctx.is_valid_input(&action(slot, target_entity(picked.id))) {
             return SkillPreviewMode::Target;
         }
@@ -598,7 +612,7 @@ fn update_preview(
         return;
     };
 
-    let inferred = infer_mode(ctx, slot, self_position, cursor);
+    let inferred = infer_mode(ctx, slot, self_position, (cursor.0, cursor.1), cursor.2);
     let previous = SkillPreviewMode::from_code(PREVIEW_MODE.load(Ordering::Acquire));
     let mode = if inferred != SkillPreviewMode::Unknown {
         if inferred != previous {
@@ -752,6 +766,7 @@ fn resolve_confirm(
     slot: SkillSlot,
     self_position: (u64, u64),
     click: (u64, u64),
+    sim_units_per_px: u64,
 ) -> ConfirmResolution {
     let none = action(slot, target_none());
     if ctx.is_valid_input(&none) {
@@ -762,7 +777,7 @@ fn resolve_confirm(
         };
     }
 
-    let clicked = clicked_entity(ctx, click);
+    let clicked = clicked_entity(ctx, click, sim_units_per_px);
     if let Some(ref picked) = clicked {
         let targeted = action(slot, target_entity(picked.id));
         if ctx.is_valid_input(&targeted) {
@@ -927,7 +942,7 @@ pub fn manual_skill_input(
 
     update_preview(ctx, slot, self_position);
 
-    let Some((x, y, version)) = confirm_snapshot() else {
+    let Some((x, y, sim_units_per_px, version)) = confirm_snapshot() else {
         return None;
     };
     if RESOLVED_CONFIRM_VERSION.load(Ordering::Acquire) == version {
@@ -937,7 +952,7 @@ pub fn manual_skill_input(
     RESOLVED_CONFIRM_VERSION.store(version, Ordering::Release);
     CONFIRM_ACTIVE.store(false, Ordering::Release);
 
-    match resolve_confirm(ctx, slot, self_position, (x, y)) {
+    match resolve_confirm(ctx, slot, self_position, (x, y), sim_units_per_px) {
         ConfirmResolution::Cast {
             input,
             hostile_follow_up,
@@ -961,7 +976,7 @@ pub fn manual_skill_input(
 }
 
 pub fn snapshot() -> SkillTargetingSnapshot {
-    let cursor = cursor_snapshot();
+    let cursor = cursor_snapshot().map(|(x, y, _)| (x, y));
     let self_position = if SELF_ACTIVE.load(Ordering::Acquire) {
         Some((
             SELF_X.load(Ordering::Relaxed),
