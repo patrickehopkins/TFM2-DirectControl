@@ -360,16 +360,16 @@ pub fn skill_targeting_active() -> bool {
     skill_targeting::is_active()
 }
 
-pub fn publish_skill_cursor(x: u64, y: u64) {
-    skill_targeting::publish_cursor(x, y);
+pub fn publish_skill_cursor(x: u64, y: u64, sim_units_per_px: u64) {
+    skill_targeting::publish_cursor(x, y, sim_units_per_px);
 }
 
 pub fn clear_skill_cursor() {
     skill_targeting::clear_cursor();
 }
 
-pub fn confirm_skill(x: u64, y: u64) {
-    skill_targeting::confirm(x, y);
+pub fn confirm_skill(x: u64, y: u64, sim_units_per_px: u64) {
+    skill_targeting::confirm(x, y, sim_units_per_px);
 }
 
 pub fn skill_targeting_snapshot() -> SkillTargetingSnapshot {
