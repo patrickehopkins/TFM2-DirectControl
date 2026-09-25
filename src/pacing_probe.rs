@@ -564,10 +564,16 @@ fn wait_until_started() -> bool {
         // `post_render` is not guaranteed to run while Start Match waits. Poll the escape chord on
         // this worker too, so Ctrl+Home can always release a rejected prematch gate experiment.
         if ctrl_home_pressed_in_foreground() {
+            crate::diagnostics::event(&format!(
+                "Worker-thread Ctrl+Home detected interactive={} synced={} replay_gate={}",
+                INTERACTIVE_MATCH.load(Ordering::Acquire),
+                STARTUP_PRESENTATION_SYNCED.load(Ordering::Acquire),
+                crate::replay_action_gate::installed()
+            ));
             request_start_simulation();
-            if START_REQUESTED.load(Ordering::Acquire) {
-                return true;
-            }
+            let started = START_REQUESTED.load(Ordering::Acquire);
+            crate::diagnostics::event(&format!("Worker-thread Ctrl+Home result started={started}"));
+            if started { return true; }
         }
 
         // If the one-tick runway was insufficient, recover automatically before Windows decides
