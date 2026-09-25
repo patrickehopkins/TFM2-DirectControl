@@ -1287,8 +1287,10 @@ fn init(host: &StableHost) -> StableMod {
         Err(error) => host.log(LogLevel::Warn,
             &format!("Harbinger support diagnostic file could not be opened: {error}")),
     }
+    let version = host.game_version();
     diagnostics::event(&format!(
-        "init: game_version={:?} replay gate pending", host.game_version()
+        "init: game_version={}.{}.{} replay gate pending",
+        version.major, version.minor, version.patch
     ));
     // Fail closed: an unsupported game or unexpected binary must not enter
     // live control with working replay shortcuts.
