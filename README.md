@@ -40,6 +40,14 @@ Contextual RMB uses enlarged **clickable selection geometry only**; it does not 
 
 When enlarged areas overlap, priority is **Champion > Building/Objective > Minion**. The lightweight rings shown in Direct Control represent those effective clickable regions.
 
+**Pending v0.1.2 refinement (requires Windows smoke test):** Entity-targeted
+Q/W/R skills now use the same outer click rings as RMB rather than only the
+native center collision. Bee jungle creeps get lane-minion-sized selection
+geometry and priority; the larger jungle objectives remain unchanged. If the
+bee's native name differs on a particular game build, its runtime name is
+sampled in the automatic support log for follow-up. See
+`docs/click-targeting-geometry.md` for the exact sizes and tests.
+
 Held RMB continually republishes the current cursor through the same contextual resolver. Moving the cursor from ground onto an enemy, off an enemy, or onto another enemy updates the command without requiring repeated clicks.
 
 ### Skills
