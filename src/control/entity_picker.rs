@@ -27,6 +27,8 @@ pub enum EntityKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ClickableEntityGeometry {
     pub id: usize,
+    /// Only for low-frequency support diagnostics; not used to aim or select.
+    pub name: Option<String>,
     pub team: usize,
     pub x: u64,
     pub y: u64,
@@ -235,6 +237,7 @@ pub fn visible_targetable_entities(
 
         entities.push(ClickableEntityGeometry {
             id,
+            name: entity.name(),
             team: entity.team(),
             x,
             y,
