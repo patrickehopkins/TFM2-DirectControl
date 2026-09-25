@@ -24,7 +24,7 @@ pub enum EntityKind {
     Other,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClickableEntityGeometry {
     pub id: usize,
     /// Only for low-frequency support diagnostics; not used to aim or select.
