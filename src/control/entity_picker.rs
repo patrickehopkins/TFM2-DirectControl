@@ -102,6 +102,7 @@ fn is_bee_name(name: Option<&str>) -> bool {
         normalized.as_str(),
         "bee" | "bees" | "jungle bee" | "jungle bees"
             | "honey bee" | "honeybee" | "jungle_bee" | "jungle_bees"
+            | "bee_monster" // Verified from Windows v0.6.1 support log.
     ) || normalized.starts_with("bee #")
 }
 
@@ -623,6 +624,7 @@ mod tests {
         assert_eq!(picker_kind(false, false, false, Some("Serpen")), EntityKind::Other);
         assert_eq!(picker_kind(false, false, false, Some("Beehive")), EntityKind::Other);
         assert!(is_bee_name(Some("jungle bees")));
+        assert!(is_bee_name(Some("bee_monster")));
         assert_eq!(picker_kind(true, false, false, Some("Bee")), EntityKind::Champion);
     }
 
