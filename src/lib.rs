@@ -1,5 +1,6 @@
 mod camera_probe;
 mod control;
+mod diagnostics;
 mod input_focus;
 mod minimap;
 mod pacing_probe;
@@ -12,7 +13,7 @@ mod simulation_probe;
 mod slot_mapping;
 
 use std::sync::{
-    atomic::{AtomicBool, AtomicU16, Ordering},
+    atomic::{AtomicBool, AtomicU16, AtomicU8, Ordering},
     Mutex,
 };
 
@@ -59,6 +60,8 @@ const RETURN_HOME_KEY: &str = "B";
 const HOLD_KEY: &str = "H";
 
 static MATCH_SESSION_ACTIVE: AtomicBool = AtomicBool::new(false);
+// 0 unknown, 1 catching up, 2 synchronized. Reset at the start of each match.
+static SYNC_DIAGNOSTIC_PHASE: AtomicU8 = AtomicU8::new(0);
 static START_CHORD_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static FINISH_CHORD_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static FINISH_CONFIRM_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -200,7 +203,19 @@ impl DirectControlExtension {
         };
         let was_down = START_CHORD_WAS_DOWN.swap(chord_down, Ordering::AcqRel);
         if chord_down && !was_down {
+            diagnostics::event(&format!(
+                "Ctrl+Home detected scene_ready={} synchronized={} replay_gate={} released={}",
+                pacing_probe::ready_gate_tick().is_some(),
+                pacing_probe::startup_presentation_synced(),
+                replay_action_gate::installed(),
+                pacing_probe::manual_control_released(),
+            ));
             pacing_probe::request_start_simulation();
+            diagnostics::event(&format!(
+                "Ctrl+Home result started={} phase={}",
+                pacing_probe::start_requested(),
+                pacing_probe::presentation_phase_label()
+            ));
         }
     }
 
@@ -300,18 +315,28 @@ impl DirectControlExtension {
         }
 
         let previous = SELECT_KEYS_WERE_DOWN.swap(down_mask, Ordering::AcqRel);
-        if !pacing_probe::manual_input_enabled() {
-            return;
-        }
-
         let rising = down_mask & !previous;
-        if rising == 0 {
-            return;
-        }
-
+        if rising == 0 { return; }
         let slot = rising.trailing_zeros() as usize;
+        let enabled = pacing_probe::manual_input_enabled();
+        diagnostics::event(&format!(
+            "F{} detected manual_enabled={} started={} interactive={} phase={} replay_gate={}",
+            slot + 1, enabled, pacing_probe::start_requested(),
+            pacing_probe::snapshot().interactive_match,
+            pacing_probe::presentation_phase_label(), replay_action_gate::installed()
+        ));
+        if !enabled { return; }
+
         if let Some(athlete_id) = slot_mapping::resolve_fkey(ctx, slot) {
             control::select_athlete(athlete_id);
+            diagnostics::event(&format!("F{} selection succeeded athlete_id={athlete_id}", slot + 1));
+        } else {
+            let snapshot = slot_mapping::snapshot();
+            diagnostics::event(&format!(
+                "F{} selection FAILED: {}",
+                slot + 1,
+                snapshot.error.as_deref().unwrap_or("unknown mapping failure")
+            ));
         }
     }
 
@@ -1133,6 +1158,8 @@ impl StableExtension for DirectControlExtension {
                 STARTUP_SPEED_OVERRIDE_ACTIVE.store(false, Ordering::Release);
                 TEMP_RELEASE_WAS_DOWN.store(false, Ordering::Release);
                 SELECT_KEYS_WERE_DOWN.store(0, Ordering::Release);
+                SYNC_DIAGNOSTIC_PHASE.store(0, Ordering::Release);
+                diagnostics::event("InGame session started; waiting for presentation synchronization and Ctrl+Home");
                 LMB_WAS_DOWN.store(false, Ordering::Release);
                 RMB_WAS_DOWN.store(false, Ordering::Release);
             }
@@ -1149,6 +1176,7 @@ impl StableExtension for DirectControlExtension {
             control::reset();
             minimap::reset();
             slot_mapping::reset();
+            diagnostics::event("Match session ended; control and slot mapping reset");
         }
 
         if session_active {
@@ -1211,6 +1239,33 @@ impl StableExtension for DirectControlExtension {
             if finish_confirm_active {
                 Self::draw_finish_confirmation(ctx);
             }
+            let synced = pacing_probe::startup_presentation_synced();
+            let diagnostic_phase = if synced { 2u8 } else { 1u8 };
+            let previous = SYNC_DIAGNOSTIC_PHASE.swap(diagnostic_phase, Ordering::AcqRel);
+            if previous != diagnostic_phase {
+                diagnostics::event(if synced {
+                    "Presentation synchronization complete; Ctrl+Home may activate"
+                } else {
+                    "Waiting for presentation synchronization"
+                });
+            }
+            diagnostics::heartbeat_if_due(|| {
+                let pacing = pacing_probe::snapshot();
+                format!(
+                    "MATCH phase={} started={} synced={} ready_tick={:?} visible_seconds={:?} last_tick={:?} foreground={} replay_gate={} speed_override={} manual_enabled={} selected={}",
+                    pacing_probe::presentation_phase_label(),
+                    pacing_probe::start_requested(),
+                    synced,
+                    pacing_probe::ready_gate_tick(),
+                    Self::visible_match_seconds(ctx),
+                    pacing.last_candidate_a_tick,
+                    input_focus::process_owns_foreground_window(),
+                    replay_action_gate::installed(),
+                    STARTUP_SPEED_OVERRIDE_ACTIVE.load(Ordering::Acquire),
+                    pacing_probe::manual_input_enabled(),
+                    control::selected_athlete().is_some()
+                )
+            });
         } else {
             Self::draw_start_gate(ctx);
         }
@@ -1218,6 +1273,15 @@ impl StableExtension for DirectControlExtension {
 }
 
 fn init(host: &StableHost) -> StableMod {
+    match diagnostics::initialize() {
+        Ok(path) => host.log(LogLevel::Info,
+            &format!("Harbinger v{} support diagnostics enabled: {}", env!("CARGO_PKG_VERSION"), path.display())),
+        Err(error) => host.log(LogLevel::Warn,
+            &format!("Harbinger support diagnostic file could not be opened: {error}")),
+    }
+    diagnostics::event(&format!(
+        "init: game_version={:?} replay gate pending", host.game_version()
+    ));
     // Fail closed: an unsupported game or unexpected binary must not enter
     // live control with working replay shortcuts.
     match replay_action_gate::install() {
@@ -1225,10 +1289,10 @@ fn init(host: &StableHost) -> StableMod {
             LogLevel::Info,
             "TFM2 replay shortcut gate installed (semantic action lookup; v0.6.1)",
         ),
-        Err(error) => host.log(
-            LogLevel::Error,
-            &format!("TFM2 Direct Control replay safety gate FAILED: {error}"),
-        ),
+        Err(error) => {
+            diagnostics::event(&format!("replay safety gate FAILED: {error}"));
+            host.log(LogLevel::Error, &format!("TFM2 Direct Control replay safety gate FAILED: {error}"));
+        },
     }
 
     #[cfg(feature = "replay-native-trace")]
@@ -1242,10 +1306,10 @@ fn init(host: &StableHost) -> StableMod {
             LogLevel::Info,
             "TFM2 Direct Control loaded (contextual RMB + minimap movement + A attack-move + manual skills + hold + return home)",
         ),
-        Err(error) => host.log(
-            LogLevel::Error,
-            &format!("TFM2 Direct Control failed to initialize the supported simulation hook: {error}"),
-        ),
+        Err(error) => {
+            diagnostics::event(&format!("simulation hook FAILED: {error}"));
+            host.log(LogLevel::Error, &format!("TFM2 Direct Control failed to initialize the supported simulation hook: {error}"));
+        },
     }
 
     let mut module = StableMod::new(MOD_ID);
