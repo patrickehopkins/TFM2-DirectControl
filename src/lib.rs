@@ -545,9 +545,9 @@ impl DirectControlExtension {
             return false;
         };
 
-        control::publish_skill_cursor(cursor.sim_x, cursor.sim_y);
+        control::publish_skill_cursor(cursor.sim_x, cursor.sim_y, cursor.sim_units_per_px);
         if lmb_pressed {
-            control::confirm_skill(cursor.sim_x, cursor.sim_y);
+            control::confirm_skill(cursor.sim_x, cursor.sim_y, cursor.sim_units_per_px);
         }
         false
     }
