@@ -1264,7 +1264,8 @@ impl StableExtension for DirectControlExtension {
                 let other_entity_samples = control::click_target_overlay_snapshot()
                     .into_iter()
                     .filter(|entity| matches!(
-                        entity.kind, control::EntityKind::Bee | control::EntityKind::Other
+                        entity.kind,
+                        control::EntityKind::Bee | control::EntityKind::SmallJungle | control::EntityKind::Other
                     ))
                     .take(8)
                     .map(|entity| format!(
