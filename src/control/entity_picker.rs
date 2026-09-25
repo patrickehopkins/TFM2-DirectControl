@@ -12,6 +12,9 @@ use mod_api_stable::StableSim;
 const CHAMPION_PADDING_PX: u64 = 8;
 const TOWER_PADDING_PX: u64 = 28;
 const MINION_PADDING_PX: u64 = 5;
+// Small, deliberately separate presentation-only tuning; native collision/range is unchanged.
+const BEE_PADDING_PX: u64 = 7;
+const SMALL_JUNGLE_PADDING_PX: u64 = 20;
 const OTHER_OBJECTIVE_PADDING_PX: u64 = 24;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,6 +24,7 @@ pub enum EntityKind {
     Minion,
     // Presentation/picker classification only: these are still native jungle entities.
     Bee,
+    SmallJungle,
     Other,
 }
 
@@ -75,7 +79,7 @@ fn relation_matches(entity_team: usize, controlled_team: usize, relation: TeamRe
 fn kind_priority(kind: EntityKind) -> u8 {
     match kind {
         EntityKind::Champion => 0,
-        EntityKind::Tower | EntityKind::Other => 1,
+        EntityKind::Tower | EntityKind::Other | EntityKind::SmallJungle => 1,
         EntityKind::Minion | EntityKind::Bee => 2,
     }
 }
@@ -84,7 +88,9 @@ fn pick_padding_px(kind: EntityKind) -> u64 {
     match kind {
         EntityKind::Champion => CHAMPION_PADDING_PX,
         EntityKind::Tower => TOWER_PADDING_PX,
-        EntityKind::Minion | EntityKind::Bee => MINION_PADDING_PX,
+        EntityKind::Minion => MINION_PADDING_PX,
+        EntityKind::Bee => BEE_PADDING_PX,
+        EntityKind::SmallJungle => SMALL_JUNGLE_PADDING_PX,
         // StableEntity currently has no first-class Nexus/final-objective classifier.
         // Hostile targetable non-champion/non-tower/non-minion entities therefore get the
         // building/objective tier rather than brittle name matching.
@@ -104,6 +110,15 @@ fn is_bee_name(name: Option<&str>) -> bool {
             | "honey bee" | "honeybee" | "jungle_bee" | "jungle_bees"
             | "bee_monster" // Verified from Windows v0.6.1 support log.
     ) || normalized.starts_with("bee #")
+}
+
+// These exact native identifiers were observed in Windows v0.6.1 support logs.
+// Their click rings are tuned independently of major jungle objectives.
+fn is_small_jungle_name(name: Option<&str>) -> bool {
+    matches!(
+        name.map(|name| name.trim().to_ascii_lowercase()).as_deref(),
+        Some("stump_monster" | "mushroom_monster")
+    )
 }
 
 // A bee should not acquire a bigger base click area merely because its native
@@ -130,6 +145,8 @@ fn picker_kind(
         EntityKind::Tower
     } else if is_bee_name(name) {
         EntityKind::Bee
+    } else if is_small_jungle_name(name) {
+        EntityKind::SmallJungle
     } else if is_minion {
         EntityKind::Minion
     } else {
@@ -338,7 +355,8 @@ pub fn pick_hostile_entity(
 #[cfg(test)]
 mod tests {
     use super::{
-        is_bee_name, pick_padding_px, picker_base_radius, picker_kind, score_candidate,
+        is_bee_name, is_small_jungle_name, pick_padding_px, picker_base_radius, picker_kind, score_candidate,
+        BEE_PADDING_PX, SMALL_JUNGLE_PADDING_PX, OTHER_OBJECTIVE_PADDING_PX,
         score_is_better, CandidateScore, EntityKind, TeamRelation,
     };
 
@@ -617,7 +635,7 @@ mod tests {
     fn bees_use_lane_minion_geometry_not_objective_geometry() {
         let bee = picker_kind(false, false, false, Some("Bee"));
         assert_eq!(bee, EntityKind::Bee);
-        assert_eq!(pick_padding_px(bee), pick_padding_px(EntityKind::Minion));
+        assert_eq!(pick_padding_px(bee), 7);
         assert_eq!(picker_base_radius(bee, 30_000, Some(7_000)), 7_000);
         assert_eq!(picker_base_radius(bee, 5_000, Some(7_000)), 5_000);
         assert_eq!(picker_base_radius(EntityKind::Other, 30_000, Some(7_000)), 30_000);
@@ -629,7 +647,31 @@ mod tests {
     }
 
     #[test]
-    fn bee_padding_accepts_the_same_outer_ring_as_lane_minions() {
+    fn small_jungle_padding_is_narrower_without_shrinking_other_objectives() {
+        assert!(is_small_jungle_name(Some("stump_monster")));
+        assert!(is_small_jungle_name(Some("mushroom_monster")));
+        assert!(!is_small_jungle_name(Some("rhino_monster")));
+        let stump = picker_kind(false, false, false, Some("stump_monster"));
+        let mushroom = picker_kind(false, false, false, Some("mushroom_monster"));
+        assert_eq!(stump, EntityKind::SmallJungle);
+        assert_eq!(mushroom, EntityKind::SmallJungle);
+        assert_eq!(pick_padding_px(stump), SMALL_JUNGLE_PADDING_PX);
+        assert_eq!(pick_padding_px(mushroom), SMALL_JUNGLE_PADDING_PX);
+        assert!(pick_padding_px(stump) < OTHER_OBJECTIVE_PADDING_PX);
+        assert_eq!(
+            picker_base_radius(stump, 15_000, Some(10_000)),
+            15_000,
+            "only bee base radii are clamped"
+        );
+        assert_eq!(
+            picker_kind(false, false, false, Some("serpen_monster")),
+            EntityKind::Other
+        );
+        assert_eq!(pick_padding_px(EntityKind::Other), OTHER_OBJECTIVE_PADDING_PX);
+    }
+
+    #[test]
+    fn bee_padding_uses_separate_seven_pixel_outer_ring() {
         let bee = picker_kind(false, false, false, Some("Bee"));
         let lane_radius = 6_000;
         let scale = 100;
@@ -643,7 +685,7 @@ mod tests {
         assert!(candidate.is_some());
         assert_eq!(
             candidate.unwrap().effective_radius,
-            lane_radius as u64 + pick_padding_px(EntityKind::Minion) * scale
+            lane_radius as u64 + BEE_PADDING_PX * scale
         );
     }
 
