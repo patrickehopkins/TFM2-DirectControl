@@ -96,16 +96,16 @@ pub fn is_active() -> bool {
     legacy::is_active()
 }
 
-pub fn publish_cursor(x: u64, y: u64) {
-    legacy::publish_cursor(x, y);
+pub fn publish_cursor(x: u64, y: u64, sim_units_per_px: u64) {
+    legacy::publish_cursor(x, y, sim_units_per_px);
 }
 
 pub fn clear_cursor() {
     legacy::clear_cursor();
 }
 
-pub fn confirm(x: u64, y: u64) {
-    legacy::confirm(x, y);
+pub fn confirm(x: u64, y: u64, sim_units_per_px: u64) {
+    legacy::confirm(x, y, sim_units_per_px);
 }
 
 pub fn snapshot() -> SkillTargetingSnapshot {
