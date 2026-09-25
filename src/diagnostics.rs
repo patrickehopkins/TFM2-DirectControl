@@ -5,11 +5,12 @@
 //! Only Harbinger state and its own shortcut attempts are recorded.
 use std::{
     env, fs::{self, File, OpenOptions}, io::{self, Write}, path::PathBuf,
-    sync::{Mutex, OnceLock}, time::{SystemTime, UNIX_EPOCH},
+    sync::{atomic::{AtomicU64, Ordering}, Mutex, OnceLock}, time::{SystemTime, UNIX_EPOCH},
 };
 
 const MAX_LOG_BYTES: u64 = 1_048_576;
 static FILE: OnceLock<Mutex<File>> = OnceLock::new();
+static LAST_HEARTBEAT_SECOND: AtomicU64 = AtomicU64::new(0);
 
 fn timestamp() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
@@ -41,4 +42,13 @@ pub fn event(message: &str) {
     let _ = writeln!(file, "[{}] {}", timestamp(), message);
     // Preserve the last event even if the game hangs or exits unexpectedly.
     let _ = io::Write::flush(&mut *file);
+}
+
+pub fn heartbeat_if_due(message: impl FnOnce() -> String) {
+    let now = timestamp();
+    let last = LAST_HEARTBEAT_SECOND.load(Ordering::Relaxed);
+    if now.saturating_sub(last) < 15 { return; }
+    if LAST_HEARTBEAT_SECOND.compare_exchange(last, now, Ordering::AcqRel, Ordering::Relaxed).is_ok() {
+        event(&message());
+    }
 }
