@@ -658,8 +658,8 @@ impl DirectControlExtension {
             let color = match entity.kind {
                 control::EntityKind::Champion if friendly => PICK_OVERLAY_ALLY_CHAMPION,
                 control::EntityKind::Champion => PICK_OVERLAY_ENEMY_CHAMPION,
-                control::EntityKind::Minion if friendly => PICK_OVERLAY_ALLY_CREEP,
-                control::EntityKind::Minion => PICK_OVERLAY_ENEMY_CREEP,
+                control::EntityKind::Minion | control::EntityKind::Bee if friendly => PICK_OVERLAY_ALLY_CREEP,
+                control::EntityKind::Minion | control::EntityKind::Bee => PICK_OVERLAY_ENEMY_CREEP,
                 _ if friendly => PICK_OVERLAY_ALLY,
                 _ => PICK_OVERLAY_ENEMY,
             };
@@ -683,7 +683,7 @@ impl DirectControlExtension {
 
             let (segments, line_width_px) = match entity.kind {
                 control::EntityKind::Champion => (16usize, 3.0),
-                control::EntityKind::Minion => (8usize, 1.0),
+                control::EntityKind::Minion | control::EntityKind::Bee => (8usize, 1.0),
                 _ => (12usize, 2.0),
             };
 
