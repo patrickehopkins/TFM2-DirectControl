@@ -115,6 +115,24 @@ Known/deferred work is tracked in:
 
 One notable champion-specific gap remains post-release: Gunfighter's native move-while-attacking behavior does not compose correctly with generic attack-move yet.
 
+## Automatic support diagnostics (v0.1.2 maintenance branch; validation pending)
+
+Harbinger automatically captures startup synchronization, Ctrl+Home activation, F1-F10
+selection outcomes, and a one-time player-card mapping health check while the user
+plays normally. No debug switch, command line, or extra in-game controls are necessary.
+The small companion log lives alongside the game's own `log.log`:
+
+```text
+%APPDATA%\\TeamSamoyed\\TeamfightManager2\\data\\harbinger-diagnostics.log
+```
+
+If a player cannot activate or select a champion after this update, ask them only
+to reproduce the problem once and send that single log file. The normal game log
+records whether the companion log started successfully. See
+`docs/support-diagnostics.md` for the maintainer's interpretation guide and
+physical acceptance checklist. This diagnostic maintenance branch must pass an
+actual Windows v0.6.1 smoke test before being described as a validated release.
+
 ## Technical overview
 
 The core input path is:
