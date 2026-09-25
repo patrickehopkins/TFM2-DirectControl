@@ -266,15 +266,12 @@ pub fn pick_entity(
             continue;
         };
 
-        let kind = if entity.is_champion() {
-            EntityKind::Champion
-        } else if entity.is_tower() {
-            EntityKind::Tower
-        } else if entity.is_minion() {
-            EntityKind::Minion
-        } else {
-            EntityKind::Other
-        };
+        let kind = picker_kind(
+            entity.is_champion(),
+            entity.is_tower(),
+            entity.is_minion(),
+            entity.name().as_deref(),
+        );
 
         let (x, y) = entity.pos();
         let collision_radius = picker_base_radius(kind, entity.radius(), lane_minion_radius);
