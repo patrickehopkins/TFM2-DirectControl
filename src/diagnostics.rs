@@ -29,7 +29,13 @@ pub fn initialize() -> Result<PathBuf, String> {
     }
     let mut file = OpenOptions::new().create(true).append(true).open(&path)
         .map_err(|error| format!("open diagnostic file: {error}"))?;
-    writeln!(file, "\n=== Harbinger v{} process started at unix={} ===", env!("CARGO_PKG_VERSION"), timestamp())
+    writeln!(
+        file,
+        "\n=== Harbinger v{} build={} process started at unix={} ===",
+        env!("CARGO_PKG_VERSION"),
+        env!("HARBINGER_BUILD_ID"),
+        timestamp()
+    )
         .map_err(|error| format!("write diagnostic session header: {error}"))?;
     file.flush().map_err(|error| format!("flush diagnostic session header: {error}"))?;
     FILE.set(Mutex::new(file)).map_err(|_| "diagnostics already initialized".to_owned())?;
