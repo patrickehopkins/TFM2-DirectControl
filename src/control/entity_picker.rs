@@ -13,7 +13,7 @@ const CHAMPION_PADDING_PX: u64 = 8;
 const TOWER_PADDING_PX: u64 = 28;
 const MINION_PADDING_PX: u64 = 5;
 // Small, deliberately separate presentation-only tuning; native collision/range is unchanged.
-const BEE_PADDING_PX: u64 = 7;
+const BEE_PADDING_PX: u64 = 9;
 const SMALL_JUNGLE_PADDING_PX: u64 = 20;
 const OTHER_OBJECTIVE_PADDING_PX: u64 = 24;
 
@@ -635,7 +635,7 @@ mod tests {
     fn bees_use_lane_minion_geometry_not_objective_geometry() {
         let bee = picker_kind(false, false, false, Some("Bee"));
         assert_eq!(bee, EntityKind::Bee);
-        assert_eq!(pick_padding_px(bee), 7);
+        assert_eq!(pick_padding_px(bee), 9);
         assert_eq!(picker_base_radius(bee, 30_000, Some(7_000)), 7_000);
         assert_eq!(picker_base_radius(bee, 5_000, Some(7_000)), 5_000);
         assert_eq!(picker_base_radius(EntityKind::Other, 30_000, Some(7_000)), 30_000);
@@ -671,7 +671,7 @@ mod tests {
     }
 
     #[test]
-    fn bee_padding_uses_separate_seven_pixel_outer_ring() {
+    fn bee_padding_uses_separate_nine_pixel_outer_ring() {
         let bee = picker_kind(false, false, false, Some("Bee"));
         let lane_radius = 6_000;
         let scale = 100;
