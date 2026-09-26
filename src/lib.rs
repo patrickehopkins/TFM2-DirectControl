@@ -1302,7 +1302,12 @@ impl StableExtension for DirectControlExtension {
 fn init(host: &StableHost) -> StableMod {
     match diagnostics::initialize() {
         Ok(path) => host.log(LogLevel::Info,
-            &format!("Harbinger v{} support diagnostics enabled: {}", env!("CARGO_PKG_VERSION"), path.display())),
+            &format!(
+                "Harbinger v{} build={} support diagnostics enabled: {}",
+                env!("CARGO_PKG_VERSION"),
+                env!("HARBINGER_BUILD_ID"),
+                path.display()
+            )),
         Err(error) => host.log(LogLevel::Warn,
             &format!("Harbinger support diagnostic file could not be opened: {error}")),
     }
