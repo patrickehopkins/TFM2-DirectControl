@@ -681,10 +681,12 @@ impl DirectControlExtension {
                 continue;
             }
 
+            // A consistent 3 px stroke keeps the smaller bee/minion rings legible,
+            // matching the champion outline without changing any clickable geometry.
+            // Retain 12 segments for non-champions to limit per-frame draw calls.
             let (segments, line_width_px) = match entity.kind {
                 control::EntityKind::Champion => (16usize, 3.0),
-                control::EntityKind::Minion | control::EntityKind::Bee => (8usize, 1.0),
-                _ => (12usize, 2.0),
+                _ => (12usize, 3.0),
             };
 
             let step = std::f32::consts::TAU / segments as f32;
