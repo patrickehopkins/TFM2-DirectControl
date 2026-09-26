@@ -255,14 +255,12 @@ Before updating the **existing** Workshop listing:
    manually edited Steam Workshop description; do not replace it with the
    shorter runtime metadata description;
 5. for a Workshop-installed smoke test, first remove the duplicate development
-   install at `<TFM2 install>\\mods\\tfm2_direct_control`, then restart the
+   install at `<TFM2 install>\mods\tfm2_direct_control`, then restart the
    game. Never run the development and Workshop copies simultaneously.
 
 `mod.workshop_id` is deliberately Git-ignored; **preserve it locally** rather
 than committing it to the public source repository. The historical first-release
 checklist is not the current update procedure.
-
-The original release checklist is preserved **as a historical record** in `docs/release-week-plan.md`. It is not an active backlog or the authoritative description of current behavior.
 
 ## Project documentation
 
