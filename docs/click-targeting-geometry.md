@@ -1,6 +1,6 @@
 # Target selection geometry (v0.1.2 maintenance polish)
 
-> **Implementation ready for physical smoke testing, not yet a validated Workshop release.**
+> **Locally validated on Windows v0.6.1; Workshop update pending final package checks.**
 > A circle is a selection aid, not a bigger native collision box or extra skill range.
 
 ## Two layers, plus overlap priority
