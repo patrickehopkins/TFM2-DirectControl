@@ -1,6 +1,6 @@
 //! Stamp each compiled DLL for support purposes; no SDK dependency.
 //! The stamp is a Git revision (when available) plus the actual build time.
- //! Cargo reuses it when reusing an unchanged build, which is intentional.
+//! Cargo reuses it when reusing an unchanged build, which is intentional.
 
 use std::{
     env,
@@ -57,7 +57,5 @@ fn main() {
         .unwrap_or(0);
 
     let suffix = if dirty { "-dirty" } else { "" };
-    println!(
-        "cargo:rustc-env=HARBINGER_BUILD_ID={revision}{suffix}-built-{built_at}"
-    );
+    println!("cargo:rustc-env=HARBINGER_BUILD_ID={revision}{suffix}-built-{built_at}");
 }
