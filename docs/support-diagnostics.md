@@ -1,7 +1,11 @@
 # Harbinger v0.1.2: automatic support diagnostics
 
 The public maintenance build records startup, keyboard activation and champion mapping
-diagnostics **automatically** while the player uses Harbinger normally. There is no
+diagnostics **automatically** while the player uses Harbinger normally.
+Each compiled DLL embeds a build stamp (Git revision, dirty marker when
+available, and build timestamp) in the companion log's session header. This
+separates differently compiled v0.1.2 test builds without changing gameplay.
+It is a support identifier, **not a cryptographic hash of the DLL**. There is no
 debug hotkey, console command, special launch option or additional test procedure.
 
 ## What to request from a player
@@ -13,8 +17,9 @@ debug hotkey, console command, special launch option or additional test procedur
 `%APPDATA%\TeamSamoyed\TeamfightManager2\data\harbinger-diagnostics.log`
 
 Players can paste that location directly into Windows Explorer's address bar.
-The file's path is also printed in the game's ordinary `log.log` during mod
-initialization, allowing us to check whether automatic diagnostics started.
+The file's path **and build identifier** are printed in the game's ordinary
+`log.log` during mod initialization, allowing us to check whether diagnostics
+started and identify which build the player actually loaded.
 If the companion log does not exist, request the adjacent `log.log` instead.
 
 No private keyboard activity is logged: we only record Harbinger's Ctrl+Home
@@ -25,7 +30,7 @@ separated by an explicit process-start header.
 
 ## What the maintainer will see
 
-- Game version and guarded hook initialization errors.
+- Game version, compiled build identifier and guarded hook initialization errors.
 - Match lifecycle and phase changes.
 - Every 15 seconds in a visible match: phase, start state, synchronization,
   readiness tick, visible clock, last watched simulation tick, foreground
@@ -60,8 +65,13 @@ until this branch passes a Windows build and the smoke tests below.
   event frequency, and records Ctrl+Home, mapping health and selection outcomes.
 - Temporarily rebind a native F-key follow shortcut and verify any altered UI
   card text is diagnosed rather than selecting the wrong actor.
-- Confirm `log.log` shows the companion-file path. If creation is blocked,
+- Confirm both logs identify the same compiled build stamp and `log.log`
+  reports the companion-file path. If creation is blocked,
   verify that error is recorded in `log.log`.
+
+Leave a startup-stall watchdog out of this patch: ordinary phase transitions and
+the existing match heartbeat already capture the present support cases. Revisit
+only if incoming player logs prove there is an unobserved pre-render stall.
 
 Publish as an **update of the same Workshop item**, preserving
 `mod.workshop_id`. Do not rewrite the hand-edited Steam description during
