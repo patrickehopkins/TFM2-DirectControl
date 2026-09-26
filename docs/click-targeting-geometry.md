@@ -22,7 +22,7 @@ The categories in `src/control/entity_picker.rs` are:
 | Other objectives / unmodified jungle monsters | +24 px | 2 |
 | Stump / mushroom jungle creeps | +20 px | 2 |
 | Lane minion | +5 px | 3 |
-| Bee jungle creep | +7 px | 3 |
+| Bee jungle creep | +9 px | 3 |
 
 Within the same priority tier, the closest center wins; remaining ties use
 smallest clickable radius and then stable entity ID. Priority is applied to
@@ -41,8 +41,8 @@ To keep bee base geometry comparable to a lane creep, the pick-only **base radiu
 is capped at the smallest live friendly/enemy lane-minion radius
 observed in the authoritative simulation. It never enlarges an already-small
 bee. If no lane minion exists yet, the native bee base radius is provisionally
-used. The bee's outer padding is intentionally **two pixels larger** than a
-lane minion's (+7 px vs +5 px), following the maintainer's in-game feedback.
+used. The bee's outer padding is intentionally **four pixels larger** than a
+lane minion's (+9 px vs +5 px), following the maintainer's in-game feedback.
 Neither native collision nor combat range changes.
 
 The first v0.1.2 support log established that the actual bee runtime name is
@@ -54,7 +54,7 @@ the automatic support log, while the stump and mushroom were correctly recorded
 as their native `stump_monster` and `mushroom_monster` names at radius 15,000.
 That validates the bee classification and live lane-minion base-radius cap in
 the tested session. Without live lane minions, bees temporarily retain their
-native 15,000 base radius and +7 px padding; native radius is never altered.
+native 15,000 base radius and +9 px padding; native radius is never altered.
 
 ### Stump and mushroom
 
@@ -63,6 +63,13 @@ The confirmed native identifiers are `stump_monster` and
 instead of the generic objective's +24 px. Their native 15,000 radius and
 objective-tier priority remain unchanged. Serpen, rhino, epic monsters,
 towers and other unmodified types keep their previous geometry.
+
+### Selection-ring rendering
+
+Champion rings keep their existing 3 px line thickness and 16 segments.
+All non-champion rings now use the **same 3 px thickness** and 12 segments.
+This makes lane-creep and bee outlines legible without increasing click
+forgiveness; 12 segments keep draw-call costs below 16-segment champions.
 
 ### RMB versus targeted Q/W/R
 
@@ -99,7 +106,7 @@ On the v0.6.1 Windows development build:
    skill haven't become permissive.
 3. Visit a bee jungle camp with lane creeps alive. The base ring should
    remain roughly lane-creep-sized, with slightly more click forgiveness
-   than a lane creep (+7 px vs +5 px).
+   than a lane creep (+9 px vs +5 px).
 4. Confirm the stump and mushroom rings are modestly tighter (+20 px
    rather than +24 px), while Serpen, rhino, epic monsters and towers
    retain their original padding. If a bee still has a giant circle, inspect
