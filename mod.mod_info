@@ -3,6 +3,6 @@
   "author": "patrickehopkins",
   "version": "0.1.2",
   "description": "Take direct control of any champion on either team while Teamfight Manager 2's watched simulation runs in real time.\n\nGETTING STARTED\nWait for the initial match synchronization. Once the ready prompt appears, press Ctrl+Home to begin.\n\nCONTROLS\nF1-F10: Select champion | RMB: Move/attack | A then LMB: Attack-move | Q/W/R: Skills | H: Hold | B: Return | MMB drag / Mouse wheel: Camera pan/zoom | End: Temporarily return your champion to AI | Ctrl+End: Permanently release Direct Control for this match (confirmation required).\n\nIMPORTANT: KEYBINDINGS\nCheck the game's Shortcuts menu for conflicts, especially R (Auto Follow) and F1-F10 (native champion following). Q and A also overlap native replay actions, but Direct Control automatically suppresses those replay actions while it owns the live match. Customizable Direct Control bindings are planned for a future update.\n\nCOMPATIBILITY\nWindows/Steam; verified for Teamfight Manager 2 v0.6.1; single-player only. Native replay seeking remains disabled while Direct Control owns the live match, including after temporary End release, and returns after confirmed Ctrl+End. Some champion skill descriptions do not match their actual in-game behavior; Direct Control follows the game's underlying runtime rules.",
-  "last_updated": "2026-09-24",
+  "last_updated": "2026-09-25",
   "dependencies": []
 }
