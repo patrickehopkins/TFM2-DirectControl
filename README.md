@@ -45,10 +45,12 @@ Q/W/R skills now use the same outer click rings as RMB instead of only the
 native center collision; the maintainer's first physical test confirmed that
 this fixes the unresponsive skill-selection edge. The verified `bee_monster`
 uses a lane-minion-capped base pick radius with slightly more outer padding
-than lane creeps (+7 px vs +5 px); verified `stump_monster` and
+than lane creeps (+9 px vs +5 px); verified `stump_monster` and
 `mushroom_monster` receive modestly tighter padding (+20 px instead of
 +24 px). These final small tuning adjustments still require another smoke
-test. Other jungle objectives retain their original geometry. See
+test. Other jungle objectives retain their original geometry. All non-champion
+selection outlines now use the same 3 px stroke thickness as champions so
+small creeps stay visible without changing their targeting rules. See
 `docs/click-targeting-geometry.md` for the full policy.
 
 Held RMB continually republishes the current cursor through the same contextual resolver. Moving the cursor from ground onto an enemy, off an enemy, or onto another enemy updates the command without requiring repeated clicks.
@@ -131,6 +133,8 @@ One notable champion-specific gap remains post-release: Gunfighter's native move
 Harbinger automatically captures startup synchronization, Ctrl+Home activation, F1-F10
 selection outcomes, and a one-time player-card mapping health check while the user
 plays normally. No debug switch, command line, or extra in-game controls are necessary.
+Each compiled DLL embeds a revision-and-build-time support stamp so we can
+distinguish development builds without changing the public version number.
 The small companion log lives alongside the game's own `log.log`:
 
 ```text
