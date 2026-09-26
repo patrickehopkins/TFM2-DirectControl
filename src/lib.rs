@@ -1308,8 +1308,14 @@ fn init(host: &StableHost) -> StableMod {
                 env!("HARBINGER_BUILD_ID"),
                 path.display()
             )),
-        Err(error) => host.log(LogLevel::Warn,
-            &format!("Harbinger support diagnostic file could not be opened: {error}")),
+        Err(error) => host.log(
+            LogLevel::Warn,
+            &format!(
+                "Harbinger v{} build={} support diagnostic file could not be opened: {error}",
+                env!("CARGO_PKG_VERSION"),
+                env!("HARBINGER_BUILD_ID")
+            ),
+        ),
     }
     let version = host.game_version();
     diagnostics::event(&format!(
