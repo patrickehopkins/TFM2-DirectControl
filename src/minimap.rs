@@ -72,27 +72,14 @@ fn active_layout(ctx: &StableClient<'_>, ui_w: f32) -> Option<MatchLayout> {
 fn active_minimap_rect(ctx: &StableClient<'_>, ui_w: f32, ui_h: f32) -> Option<UiRect> {
     let side = ui_h * MINIMAP_SIDE_FRAC_OF_UI_H;
     match active_layout(ctx, ui_w)? {
-        MatchLayout::Full => Some((
-            ui_w * FULL_LEFT_FRAC,
-            ui_h * FULL_TOP_FRAC,
-            side,
-            side,
-        )),
-        MatchLayout::Info => Some((
-            ui_w * INFO_LEFT_FRAC,
-            ui_h * INFO_TOP_FRAC,
-            side,
-            side,
-        )),
+        MatchLayout::Full => Some((ui_w * FULL_LEFT_FRAC, ui_h * FULL_TOP_FRAC, side, side)),
+        MatchLayout::Info => Some((ui_w * INFO_LEFT_FRAC, ui_h * INFO_TOP_FRAC, side, side)),
     }
 }
 
 fn point_inside_with_pad(rect: UiRect, ui_x: f32, ui_y: f32, pad: f32) -> bool {
     let (x, y, w, h) = rect;
-    ui_x >= x - pad
-        && ui_y >= y - pad
-        && ui_x < x + w + pad
-        && ui_y < y + h + pad
+    ui_x >= x - pad && ui_y >= y - pad && ui_x < x + w + pad && ui_y < y + h + pad
 }
 
 fn map_point(rect: UiRect, ui_x: f32, ui_y: f32) -> (u64, u64) {

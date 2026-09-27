@@ -32,10 +32,10 @@ const BINDING_LOOKUP_RVA: usize = 0x021C_4CE0;
 // the next instruction after these 12 bytes reads the original rcx.
 const PATCH_LEN: usize = 12;
 const EXPECTED_PROLOGUE: [u8; PATCH_LEN] = [
-    0x56,                   // push rsi
-    0x53,                   // push rbx
+    0x56, // push rsi
+    0x53, // push rbx
     0x48, 0x83, 0xEC, 0x28, // sub rsp, 0x28
-    0x89, 0xD3,             // mov ebx, edx
+    0x89, 0xD3, // mov ebx, edx
     0x88, 0x54, 0x24, 0x27, // mov [rsp+0x27], dl
 ];
 const ABS_JUMP_LEN: usize = 12;
@@ -84,10 +84,7 @@ fn forbidden_replay_action(action: u8) -> bool {
     )
 }
 
-unsafe extern "system" fn binding_lookup_hook(
-    bindings: *const c_void,
-    action: u32,
-) -> u8 {
+unsafe extern "system" fn binding_lookup_hook(bindings: *const c_void, action: u32) -> u8 {
     // The release flag is checked directly here so the original binding becomes
     // available immediately after confirmed Ctrl+End, not one render frame later.
     if MATCH_OWNED.load(Ordering::Acquire)
@@ -150,19 +147,23 @@ unsafe fn install_inner() -> Result<(), String> {
         PATCH_LEN + ABS_JUMP_LEN,
         MEM_COMMIT | MEM_RESERVE,
         PAGE_EXECUTE_READWRITE,
-    ).cast::<u8>();
+    )
+    .cast::<u8>();
     if trampoline.is_null() {
         return Err("VirtualAlloc failed for replay binding lookup trampoline".to_owned());
     }
     ptr::copy_nonoverlapping(target, trampoline, PATCH_LEN);
-    write_absolute_jump(
-        trampoline.add(PATCH_LEN),
-        target.add(PATCH_LEN) as usize,
-    );
+    write_absolute_jump(trampoline.add(PATCH_LEN), target.add(PATCH_LEN) as usize);
 
     TRAMPOLINE.store(trampoline as usize, Ordering::Release);
     let mut previous_protection = 0u32;
-    if VirtualProtect(target.cast(), PATCH_LEN, PAGE_EXECUTE_READWRITE, &mut previous_protection) == 0 {
+    if VirtualProtect(
+        target.cast(),
+        PATCH_LEN,
+        PAGE_EXECUTE_READWRITE,
+        &mut previous_protection,
+    ) == 0
+    {
         TRAMPOLINE.store(0, Ordering::Release);
         let _ = VirtualFree(trampoline.cast(), 0, MEM_RELEASE);
         return Err("VirtualProtect refused replay binding lookup detour".to_owned());
@@ -172,7 +173,12 @@ unsafe fn install_inner() -> Result<(), String> {
     write_absolute_jump(target, binding_lookup_hook as usize);
 
     let mut ignored_protection = 0u32;
-    let restored = VirtualProtect(target.cast(), PATCH_LEN, previous_protection, &mut ignored_protection);
+    let restored = VirtualProtect(
+        target.cast(),
+        PATCH_LEN,
+        previous_protection,
+        &mut ignored_protection,
+    );
     let flushed = FlushInstructionCache(GetCurrentProcess(), target.cast(), PATCH_LEN);
     if restored == 0 || flushed == 0 {
         // The hook is already live. Refuse manual control instead of claiming
@@ -183,7 +189,9 @@ unsafe fn install_inner() -> Result<(), String> {
 }
 
 pub fn install() -> Result<(), String> {
-    INSTALL_RESULT.get_or_init(|| unsafe { install_inner() }).clone()
+    INSTALL_RESULT
+        .get_or_init(|| unsafe { install_inner() })
+        .clone()
 }
 
 pub fn installed() -> bool {
