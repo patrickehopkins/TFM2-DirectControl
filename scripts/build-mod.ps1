@@ -199,6 +199,10 @@ try {
     Write-Host 'NEXT: In TFM2ModUploader.exe select THIS package, click Refresh, verify'
     Write-Host "'Workshop item' shows $itemId, then Build Only and Update Workshop Item."
     Write-Host 'Do not choose the Steam mods directory or the repository root.'
+    $devInstall = Join-Path $GameDir "mods\$ModId"
+    if (Test-Path -LiteralPath $devInstall -PathType Container) {
+        Write-Warning "Development copy still installed at $devInstall. Remove it before Workshop-installed testing, or TFM2 may reject both DLLs."
+    }
 }
 finally {
     Pop-Location
