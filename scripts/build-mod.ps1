@@ -44,6 +44,32 @@ if ($Target -eq 'Dev') {
     return
 }
 
+# GitHub Desktop bundles Git without necessarily placing it on the user's PATH.
+# Discover the bundled copy when the standalone Git for Windows CLI is absent.
+if (-not (Get-Command 'git' -ErrorAction SilentlyContinue)) {
+    $gitCandidates = @(
+        (Join-Path $env:ProgramFiles 'Git\cmd\git.exe'),
+        (Join-Path ${env:ProgramFiles(x86)} 'Git\cmd\git.exe')
+    )
+    if ($env:LOCALAPPDATA) {
+        $desktopDir = Join-Path $env:LOCALAPPDATA 'GitHubDesktop'
+        if (Test-Path -LiteralPath $desktopDir) {
+            foreach ($install in (Get-ChildItem -LiteralPath $desktopDir -Directory -Filter 'app-*' |
+                Sort-Object Name -Descending)) {
+                $gitCandidates += (Join-Path $install.FullName 'resources\app\git\cmd\git.exe')
+                $gitCandidates += (Join-Path $install.FullName 'resources\app\git\bin\git.exe')
+            }
+        }
+    }
+    $foundGit = $gitCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+        Select-Object -First 1
+    if (-not $foundGit) {
+        throw 'Git CLI not found. Install Git for Windows or use the Git bundled with GitHub Desktop.'
+    }
+    $env:Path = (Split-Path $foundGit -Parent) + ';' + $env:Path
+    Write-Host "Using Git at $foundGit"
+}
+
 # A release is never built from an ambiguous working tree, the wrong branch,
 # an out-of-date local main, or a leftover tracing-feature release artifact.
 Push-Location $RepoRoot
