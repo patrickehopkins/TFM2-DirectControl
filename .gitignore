@@ -22,3 +22,7 @@ Thumbs.db
 # Local-only environment overrides
 .env
 .env.*
+
+# Workshop uploader assigns this to the publisher's existing Workshop listing.
+# Keep the file locally and back it up; never share it in the source repository.
+/mod.workshop_id

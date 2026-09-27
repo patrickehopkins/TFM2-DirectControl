@@ -12,6 +12,13 @@ The release path therefore allows the validated loader runway, freezes the live 
 
 True zero-pre-simulation startup remains deferred.
 
+**Current observation (v0.6.1, maintainer's September 25 testing):** match entry
+and presentation synchronization now appear effectively immediate in ordinary
+use; the earlier noticeable loading delay is no longer reproducible locally.
+The cause has not been established. Preserve the bounded loader runway and
+sync safety checks for other machines/builds, and revisit only if new logs
+show a reproducible problem.
+
 ## Enemy native follow can reveal a fogged champion
 
 Status: **accepted first-release limitation.**

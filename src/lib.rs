@@ -1,18 +1,19 @@
 mod camera_probe;
 mod control;
+mod diagnostics;
 mod input_focus;
 mod minimap;
 mod pacing_probe;
 mod pause_probe;
-mod replay_ui_probe;
 mod replay_action_gate;
 #[cfg(feature = "replay-native-trace")]
 mod replay_native_trace;
+mod replay_ui_probe;
 mod simulation_probe;
 mod slot_mapping;
 
 use std::sync::{
-    atomic::{AtomicBool, AtomicU16, Ordering},
+    atomic::{AtomicBool, AtomicU16, AtomicU8, Ordering},
     Mutex,
 };
 
@@ -59,6 +60,9 @@ const RETURN_HOME_KEY: &str = "B";
 const HOLD_KEY: &str = "H";
 
 static MATCH_SESSION_ACTIVE: AtomicBool = AtomicBool::new(false);
+// 0 unknown, 1 catching up, 2 synchronized. Reset at the start of each match.
+static SYNC_DIAGNOSTIC_PHASE: AtomicU8 = AtomicU8::new(0);
+static ROSTER_DIAG_RECORDED: AtomicBool = AtomicBool::new(false);
 static START_CHORD_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static FINISH_CHORD_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 static FINISH_CONFIRM_ACTIVE: AtomicBool = AtomicBool::new(false);
@@ -200,7 +204,19 @@ impl DirectControlExtension {
         };
         let was_down = START_CHORD_WAS_DOWN.swap(chord_down, Ordering::AcqRel);
         if chord_down && !was_down {
+            diagnostics::event(&format!(
+                "Ctrl+Home detected scene_ready={} synchronized={} replay_gate={} released={}",
+                pacing_probe::ready_gate_tick().is_some(),
+                pacing_probe::startup_presentation_synced(),
+                replay_action_gate::installed(),
+                pacing_probe::manual_control_released(),
+            ));
             pacing_probe::request_start_simulation();
+            diagnostics::event(&format!(
+                "Ctrl+Home result started={} phase={}",
+                pacing_probe::start_requested(),
+                pacing_probe::presentation_phase_label()
+            ));
         }
     }
 
@@ -300,25 +316,46 @@ impl DirectControlExtension {
         }
 
         let previous = SELECT_KEYS_WERE_DOWN.swap(down_mask, Ordering::AcqRel);
-        if !pacing_probe::manual_input_enabled() {
-            return;
-        }
-
         let rising = down_mask & !previous;
         if rising == 0 {
             return;
         }
-
         let slot = rising.trailing_zeros() as usize;
+        let enabled = pacing_probe::manual_input_enabled();
+        diagnostics::event(&format!(
+            "F{} detected manual_enabled={} started={} interactive={} phase={} replay_gate={}",
+            slot + 1,
+            enabled,
+            pacing_probe::start_requested(),
+            pacing_probe::snapshot().interactive_match,
+            pacing_probe::presentation_phase_label(),
+            replay_action_gate::installed()
+        ));
+        if !enabled {
+            return;
+        }
+
         if let Some(athlete_id) = slot_mapping::resolve_fkey(ctx, slot) {
             control::select_athlete(athlete_id);
+            diagnostics::event(&format!(
+                "F{} selection succeeded athlete_id={athlete_id}",
+                slot + 1
+            ));
+        } else {
+            let snapshot = slot_mapping::snapshot();
+            diagnostics::event(&format!(
+                "F{} selection FAILED: {}",
+                slot + 1,
+                snapshot
+                    .error
+                    .as_deref()
+                    .unwrap_or("unknown mapping failure")
+            ));
         }
     }
 
     fn poll_return_home(ctx: &StableClient<'_>, ingame: bool) {
-        if !ingame
-            || !pacing_probe::manual_input_enabled()
-            || control::selected_athlete().is_none()
+        if !ingame || !pacing_probe::manual_input_enabled() || control::selected_athlete().is_none()
         {
             return;
         }
@@ -329,9 +366,7 @@ impl DirectControlExtension {
     }
 
     fn poll_hold(ctx: &StableClient<'_>, ingame: bool) {
-        if !ingame
-            || !pacing_probe::manual_input_enabled()
-            || control::selected_athlete().is_none()
+        if !ingame || !pacing_probe::manual_input_enabled() || control::selected_athlete().is_none()
         {
             return;
         }
@@ -361,11 +396,7 @@ impl DirectControlExtension {
 
         let (origin_ui_x, origin_ui_y) =
             if let Some((x, y, w, h)) = ctx.ui_node_rect("ingame.center_log") {
-                if mouse.ui_x < x
-                    || mouse.ui_y < y
-                    || mouse.ui_x >= x + w
-                    || mouse.ui_y >= y + h
-                {
+                if mouse.ui_x < x || mouse.ui_y < y || mouse.ui_x >= x + w || mouse.ui_y >= y + h {
                     return None;
                 }
                 (x + w * 0.5, y + h * 0.5)
@@ -399,8 +430,7 @@ impl DirectControlExtension {
             return None;
         }
 
-        let world_units_per_px =
-            ((camera.extent_a / game_w) + (camera.extent_b / game_h)) * 0.5;
+        let world_units_per_px = ((camera.extent_a / game_w) + (camera.extent_b / game_h)) * 0.5;
         let sim_units_per_px_f = world_units_per_px * SIM_UNITS_PER_WORLD_UNIT;
         let sim_units_per_px = if sim_units_per_px_f.is_finite() && sim_units_per_px_f > 0.0 {
             sim_units_per_px_f.round() as u64
@@ -444,12 +474,7 @@ impl DirectControlExtension {
 
     /// Polls the shared LMB/RMB targeting layer for A attack-move and Q/W/R skill targeting.
     /// Returns true only when a rising RMB was consumed purely as a skill-target cancel.
-    fn poll_targeting(
-        &self,
-        ctx: &StableClient<'_>,
-        mouse: MouseSnapshot,
-        ingame: bool,
-    ) -> bool {
+    fn poll_targeting(&self, ctx: &StableClient<'_>, mouse: MouseSnapshot, ingame: bool) -> bool {
         if !ingame {
             LMB_WAS_DOWN.store(false, Ordering::Release);
             return false;
@@ -519,9 +544,9 @@ impl DirectControlExtension {
             return false;
         };
 
-        control::publish_skill_cursor(cursor.sim_x, cursor.sim_y);
+        control::publish_skill_cursor(cursor.sim_x, cursor.sim_y, cursor.sim_units_per_px);
         if lmb_pressed {
-            control::confirm_skill(cursor.sim_x, cursor.sim_y);
+            control::confirm_skill(cursor.sim_x, cursor.sim_y, cursor.sim_units_per_px);
         }
         false
     }
@@ -574,7 +599,6 @@ impl DirectControlExtension {
         );
     }
 
-
     fn draw_click_target_overlays(
         ctx: &mut StableClient<'_>,
         camera: camera_probe::CameraSnapshot,
@@ -608,8 +632,7 @@ impl DirectControlExtension {
                 (ui_w * 0.5, ui_h * 0.5)
             };
 
-        let world_units_per_px =
-            ((camera.extent_a / game_w) + (camera.extent_b / game_h)) * 0.5;
+        let world_units_per_px = ((camera.extent_a / game_w) + (camera.extent_b / game_h)) * 0.5;
         let sim_units_per_px_f = world_units_per_px * SIM_UNITS_PER_WORLD_UNIT;
         if !sim_units_per_px_f.is_finite() || sim_units_per_px_f <= 0.0 {
             return;
@@ -632,8 +655,10 @@ impl DirectControlExtension {
             let color = match entity.kind {
                 control::EntityKind::Champion if friendly => PICK_OVERLAY_ALLY_CHAMPION,
                 control::EntityKind::Champion => PICK_OVERLAY_ENEMY_CHAMPION,
-                control::EntityKind::Minion if friendly => PICK_OVERLAY_ALLY_CREEP,
-                control::EntityKind::Minion => PICK_OVERLAY_ENEMY_CREEP,
+                control::EntityKind::Minion | control::EntityKind::Bee if friendly => {
+                    PICK_OVERLAY_ALLY_CREEP
+                }
+                control::EntityKind::Minion | control::EntityKind::Bee => PICK_OVERLAY_ENEMY_CREEP,
                 _ if friendly => PICK_OVERLAY_ALLY,
                 _ => PICK_OVERLAY_ENEMY,
             };
@@ -655,10 +680,12 @@ impl DirectControlExtension {
                 continue;
             }
 
+            // A consistent 3 px stroke keeps the smaller bee/minion rings legible,
+            // matching the champion outline without changing any clickable geometry.
+            // Retain 12 segments for non-champions to limit per-frame draw calls.
             let (segments, line_width_px) = match entity.kind {
                 control::EntityKind::Champion => (16usize, 3.0),
-                control::EntityKind::Minion => (8usize, 1.0),
-                _ => (12usize, 2.0),
+                _ => (12usize, 3.0),
             };
 
             let step = std::f32::consts::TAU / segments as f32;
@@ -830,8 +857,7 @@ impl DirectControlExtension {
                     }
                     let _ = ctx.ui_set_visible(path, false);
                 }
-                NATIVE_SEEK_CONTROLS_SUPPRESSED
-                    .store(!cached.is_empty(), Ordering::Release);
+                NATIVE_SEEK_CONTROLS_SUPPRESSED.store(!cached.is_empty(), Ordering::Release);
             }
 
             // Native hover processing still runs on a hidden zoom icon's stale hit region.
@@ -910,7 +936,6 @@ impl DirectControlExtension {
             pacing_probe::set_startup_presentation_synced(false);
             return;
         };
-
 
         // The visible clock is whole-second precision. Reaching floor(live_tick / 60) proves the
         // viewer has reached the frozen live second. A sub-second residual cannot be observed through
@@ -1071,7 +1096,11 @@ impl DirectControlExtension {
             ctx,
             64.0,
             &status,
-            if pause_ui.paused { 0xffd080ff } else { 0x80ffbfff },
+            if pause_ui.paused {
+                0xffd080ff
+            } else {
+                0x80ffbfff
+            },
         );
 
         if let Some(targeting) = targeting {
@@ -1133,6 +1162,9 @@ impl StableExtension for DirectControlExtension {
                 STARTUP_SPEED_OVERRIDE_ACTIVE.store(false, Ordering::Release);
                 TEMP_RELEASE_WAS_DOWN.store(false, Ordering::Release);
                 SELECT_KEYS_WERE_DOWN.store(0, Ordering::Release);
+                SYNC_DIAGNOSTIC_PHASE.store(0, Ordering::Release);
+                ROSTER_DIAG_RECORDED.store(false, Ordering::Release);
+                diagnostics::event("InGame session started; waiting for presentation synchronization and Ctrl+Home");
                 LMB_WAS_DOWN.store(false, Ordering::Release);
                 RMB_WAS_DOWN.store(false, Ordering::Release);
             }
@@ -1149,6 +1181,8 @@ impl StableExtension for DirectControlExtension {
             control::reset();
             minimap::reset();
             slot_mapping::reset();
+            ROSTER_DIAG_RECORDED.store(false, Ordering::Release);
+            diagnostics::event("Match session ended; control and slot mapping reset");
         }
 
         if session_active {
@@ -1211,6 +1245,62 @@ impl StableExtension for DirectControlExtension {
             if finish_confirm_active {
                 Self::draw_finish_confirmation(ctx);
             }
+            let synced = pacing_probe::startup_presentation_synced();
+            let diagnostic_phase = if synced { 2u8 } else { 1u8 };
+            let previous = SYNC_DIAGNOSTIC_PHASE.swap(diagnostic_phase, Ordering::AcqRel);
+            if previous != diagnostic_phase {
+                diagnostics::event(if synced {
+                    "Presentation synchronization complete; Ctrl+Home may activate"
+                } else {
+                    "Waiting for presentation synchronization"
+                });
+            }
+            if pacing_probe::manual_input_enabled()
+                && !ROSTER_DIAG_RECORDED.swap(true, Ordering::AcqRel)
+            {
+                diagnostics::event(&slot_mapping::roster_diagnostics(ctx));
+            }
+            diagnostics::heartbeat_if_due(|| {
+                let pacing = pacing_probe::snapshot();
+                // These small samples also reveal an unexpected native name for the bee
+                // jungle entity if a player's build does not match our narrow classifier.
+                let other_entity_samples = control::click_target_overlay_snapshot()
+                    .into_iter()
+                    .filter(|entity| {
+                        matches!(
+                            entity.kind,
+                            control::EntityKind::Bee
+                                | control::EntityKind::SmallJungle
+                                | control::EntityKind::Other
+                        )
+                    })
+                    .take(8)
+                    .map(|entity| {
+                        format!(
+                            "{}:{:?}:base_radius={}",
+                            entity.name.as_deref().unwrap_or("<unnamed>"),
+                            entity.kind,
+                            entity.collision_radius
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    "MATCH phase={} started={} synced={} ready_tick={:?} visible_seconds={:?} last_tick={:?} foreground={} replay_gate={} speed_override={} manual_enabled={} selected={} visible_nonstandard_targets=[{}]",
+                    pacing_probe::presentation_phase_label(),
+                    pacing_probe::start_requested(),
+                    synced,
+                    pacing_probe::ready_gate_tick(),
+                    Self::visible_match_seconds(ctx),
+                    pacing.last_candidate_a_tick,
+                    input_focus::process_owns_foreground_window(),
+                    replay_action_gate::installed(),
+                    STARTUP_SPEED_OVERRIDE_ACTIVE.load(Ordering::Acquire),
+                    pacing_probe::manual_input_enabled(),
+                    control::selected_athlete().is_some(),
+                    other_entity_samples
+                )
+            });
         } else {
             Self::draw_start_gate(ctx);
         }
@@ -1218,6 +1308,30 @@ impl StableExtension for DirectControlExtension {
 }
 
 fn init(host: &StableHost) -> StableMod {
+    match diagnostics::initialize() {
+        Ok(path) => host.log(
+            LogLevel::Info,
+            &format!(
+                "Harbinger v{} build={} support diagnostics enabled: {}",
+                env!("CARGO_PKG_VERSION"),
+                env!("HARBINGER_BUILD_ID"),
+                path.display()
+            ),
+        ),
+        Err(error) => host.log(
+            LogLevel::Warn,
+            &format!(
+                "Harbinger v{} build={} support diagnostic file could not be opened: {error}",
+                env!("CARGO_PKG_VERSION"),
+                env!("HARBINGER_BUILD_ID")
+            ),
+        ),
+    }
+    let version = host.game_version();
+    diagnostics::event(&format!(
+        "init: game_version={}.{}.{} replay gate pending",
+        version.major, version.minor, version.patch
+    ));
     // Fail closed: an unsupported game or unexpected binary must not enter
     // live control with working replay shortcuts.
     match replay_action_gate::install() {
@@ -1225,16 +1339,25 @@ fn init(host: &StableHost) -> StableMod {
             LogLevel::Info,
             "TFM2 replay shortcut gate installed (semantic action lookup; v0.6.1)",
         ),
-        Err(error) => host.log(
-            LogLevel::Error,
-            &format!("TFM2 Direct Control replay safety gate FAILED: {error}"),
-        ),
+        Err(error) => {
+            diagnostics::event(&format!("replay safety gate FAILED: {error}"));
+            host.log(
+                LogLevel::Error,
+                &format!("TFM2 Direct Control replay safety gate FAILED: {error}"),
+            );
+        }
     }
 
     #[cfg(feature = "replay-native-trace")]
     match replay_native_trace::install() {
-        Ok(()) => host.log(LogLevel::Info, "TFM2 replay diagnostic native lookup trace enabled (Ctrl+Alt+F12)"),
-        Err(error) => host.log(LogLevel::Error, &format!("TFM2 replay trace unavailable: {error}")),
+        Ok(()) => host.log(
+            LogLevel::Info,
+            "TFM2 replay diagnostic native lookup trace enabled (Ctrl+Alt+F12)",
+        ),
+        Err(error) => host.log(
+            LogLevel::Error,
+            &format!("TFM2 replay trace unavailable: {error}"),
+        ),
     }
 
     match simulation_probe::ensure_installed() {
@@ -1242,10 +1365,10 @@ fn init(host: &StableHost) -> StableMod {
             LogLevel::Info,
             "TFM2 Direct Control loaded (contextual RMB + minimap movement + A attack-move + manual skills + hold + return home)",
         ),
-        Err(error) => host.log(
-            LogLevel::Error,
-            &format!("TFM2 Direct Control failed to initialize the supported simulation hook: {error}"),
-        ),
+        Err(error) => {
+            diagnostics::event(&format!("simulation hook FAILED: {error}"));
+            host.log(LogLevel::Error, &format!("TFM2 Direct Control failed to initialize the supported simulation hook: {error}"));
+        },
     }
 
     let mut module = StableMod::new(MOD_ID);

@@ -21,8 +21,18 @@ static CAPTURE_CHORD_WAS_DOWN: AtomicBool = AtomicBool::new(false);
 fn interesting(path: &str, runner: &str, rect: Option<(f32, f32, f32, f32)>) -> bool {
     let lower = path.to_ascii_lowercase();
     let name_match = [
-        "zoom", "replay", "seek", "highlight", "speed", "camera",
-        "timeline", "tooltip", "playback", "forward", "back", "header",
+        "zoom",
+        "replay",
+        "seek",
+        "highlight",
+        "speed",
+        "camera",
+        "timeline",
+        "tooltip",
+        "playback",
+        "forward",
+        "back",
+        "header",
     ]
     .iter()
     .any(|word| lower.contains(word));

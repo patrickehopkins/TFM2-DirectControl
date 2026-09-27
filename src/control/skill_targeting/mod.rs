@@ -1,6 +1,6 @@
 //! Cooldown gate around the validated generic skill-targeting implementation.
 //!
-//! The legacy targeting resolver remains byte-for-byte intact in `legacy.rs`. This wrapper adds one
+//! The generic targeting resolver lives in `legacy.rs`. This wrapper adds one
 //! pre-validation rule for manual control: if Q/W/R is currently on cooldown, pressing that skill is
 //! a no-op. Do not arm targeting, draw a ray, queue a hostile-target chase, or queue a delayed cast.
 //! The later cooldown-UI pass can add red feedback without changing this gameplay rule.
@@ -11,7 +11,7 @@ use mod_api_stable::{InputV1, StableAiContext};
 
 // `legacy.rs` used to live directly at `control::skill_targeting`, so these aliases preserve its
 // existing `super::entity_picker` and `super::set_active_attack` references after moving it one module
-// deeper. No targeting/chase behavior is otherwise changed here.
+// deeper. v0.1.2 also forwards the render cursor's pixel scale to the existing skill entity picker.
 use super::{entity_picker, set_active_attack};
 
 mod legacy;
@@ -96,27 +96,23 @@ pub fn is_active() -> bool {
     legacy::is_active()
 }
 
-pub fn publish_cursor(x: u64, y: u64) {
-    legacy::publish_cursor(x, y);
+pub fn publish_cursor(x: u64, y: u64, sim_units_per_px: u64) {
+    legacy::publish_cursor(x, y, sim_units_per_px);
 }
 
 pub fn clear_cursor() {
     legacy::clear_cursor();
 }
 
-pub fn confirm(x: u64, y: u64) {
-    legacy::confirm(x, y);
+pub fn confirm(x: u64, y: u64, sim_units_per_px: u64) {
+    legacy::confirm(x, y, sim_units_per_px);
 }
 
 pub fn snapshot() -> SkillTargetingSnapshot {
     legacy::snapshot()
 }
 
-pub fn clamp_to_range(
-    from: (u64, u64),
-    to: (u64, u64),
-    range: u64,
-) -> (u64, u64) {
+pub fn clamp_to_range(from: (u64, u64), to: (u64, u64), range: u64) -> (u64, u64) {
     legacy::clamp_to_range(from, to, range)
 }
 

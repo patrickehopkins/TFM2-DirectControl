@@ -32,8 +32,7 @@ const HASH_RVA: usize = 0x00BA_3A30;
 // No RIP-relative instruction is copied into the trampoline.
 const PATCH_LEN: usize = 13;
 const HASH_PROLOGUE: [u8; PATCH_LEN] = [
-    0x48, 0x83, 0xEC, 0x78, 0xF3, 0x0F, 0x6F, 0x01,
-    0x66, 0x0F, 0x70, 0xC8, 0x44,
+    0x48, 0x83, 0xEC, 0x78, 0xF3, 0x0F, 0x6F, 0x01, 0x66, 0x0F, 0x70, 0xC8, 0x44,
 ];
 const MEM_COMMIT: u32 = 0x1000;
 const MEM_RESERVE: u32 = 0x2000;
@@ -138,7 +137,10 @@ fn record_sample(id: u8, keys: u8) {
             return;
         }
         if old == 0 {
-            if slot.compare_exchange(0, encoded, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+            if slot
+                .compare_exchange(0, encoded, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
                 return;
             }
         }
@@ -228,7 +230,8 @@ pub fn install() -> Result<(), String> {
             PATCH_LEN,
             PAGE_EXECUTE_READWRITE,
             &mut previous_protection,
-        ) == 0 {
+        ) == 0
+        {
             TRAMPOLINE.store(0, Ordering::Release);
             return Err("VirtualProtect refused replay trace patch".into());
         }
@@ -280,7 +283,10 @@ fn write_report() {
         let id = (value >> 56) as u8;
         let keys = ((value >> 48) & 0xFF) as u8;
         let rva = value as u32;
-        let _ = writeln!(out, "hashed_byte=0x{id:02X} keys={keys} caller_rva=0x{rva:08X}");
+        let _ = writeln!(
+            out,
+            "hashed_byte=0x{id:02X} keys={keys} caller_rva=0x{rva:08X}"
+        );
     }
     let _ = writeln!(
         out,
@@ -302,7 +308,10 @@ fn write_report() {
         "Unique slots exhausted/dropped: {}",
         TRACE_DROPPED.load(Ordering::Acquire)
     );
-    let _ = std::fs::write(std::env::temp_dir().join("tfm2_replay_native_trace.txt"), out);
+    let _ = std::fs::write(
+        std::env::temp_dir().join("tfm2_replay_native_trace.txt"),
+        out,
+    );
 }
 
 pub fn poll_hotkey_and_dump(ctx: &StableClient<'_>) {
