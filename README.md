@@ -201,71 +201,60 @@ If PowerShell script execution is disabled for the current shell:
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```
 
-### Build
+### Daily workflow (one source of truth)
 
-From the repository root, copy the SDK from your **installed** game before running Cargo (the local `sdk/` directory is intentionally Git-ignored):
+**Edit only this GitHub repository.** The compiled `target/` output, installed
+game `mods/` directory, and staged `dist/` directory are generated copies,
+not three places to manage source files.
+
+After switching to the desired feature branch in GitHub Desktop:
 
 ```powershell
-.\scripts\bootstrap-sdk.ps1
-cargo build --release
+.\scripts\build-mod.ps1 -Target Dev
 ```
 
-Pass `-GameDir` to `bootstrap-sdk.ps1` if the game is installed in another Steam library. `scripts/install-dev.ps1` performs its own SDK bootstrap and release build, so you can alternatively use that one-command development-install route below.
+This builds from your checked-out branch and installs the test copy into the
+game. Disable the Workshop installation while testing to avoid loading two
+copies of the same native module.
 
-Expected artifact:
+### Workshop release
+
+After the approved PR is merged, switch to `main` in GitHub Desktop,
+**fetch and pull**, then run:
+
+```powershell
+.\scripts\build-mod.ps1 -Target Workshop
+```
+
+This **verifies main and the existing Workshop identity**, runs formatting and
+tests, makes a clean default-feature release DLL, and stages the current DLL
+and version metadata directly into the original publishing folder, preserving
+its item ID and preview image.
+
+Always select this exact folder in `TFM2ModUploader.exe`:
 
 ```text
-target\release\tfm2_direct_control.dll
+<repository>\dist\workshop\tfm2_direct_control
 ```
 
-### Install a development build
+Click **Refresh**, confirm the *existing* Workshop item (not `New item`),
+then **Build Only (No Upload)** to inspect the package and
+**Update Workshop Item** to publish. A precompiled native DLL shows
+`Native code: None` in the uploader; that is expected. Preserve the
+hand-edited Workshop listing description.
 
-From the repository root:
-
-```powershell
-.\scripts\install-dev.ps1
-```
-
-Pass `-GameDir` when TFM2 lives in another Steam library:
-
-```powershell
-.\scripts\install-dev.ps1 -GameDir "D:\SteamLibrary\steamapps\common\Teamfight Manager2"
-```
-
-The installed mod lives under:
-
-```text
-<TFM2 install>\mods\tfm2_direct_control\
-```
-
-## Release / Workshop
-
-Use the game's `TFM2ModUploader.exe`.
-
-Before updating the **existing** Workshop listing:
-
-1. finish tests from the exact intended release commit (`cargo fmt --check`,
-   `cargo test`, then `cargo build --release` without diagnostic features);
-2. use **Build Only (No Upload)** in the uploader, inspect its actual staged
-   runtime package, and confirm the compiled DLL and `mod.mod_info` are v0.1.2;
-3. select the **original publishing folder containing `mod.workshop_id`**,
-   or copy that local ID file into the chosen package folder before uploading.
-   Keep a backup: a missing ID can create a duplicate Workshop item;
-4. use **Update Workshop Item** with a short change note. Preserve the existing
-   manually edited Steam Workshop description; do not replace it with the
-   shorter runtime metadata description;
-5. for a Workshop-installed smoke test, first remove the duplicate development
-   install at `<TFM2 install>\mods\tfm2_direct_control`, then restart the
-   game. Never run the development and Workshop copies simultaneously.
-
-`mod.workshop_id` is deliberately Git-ignored; **preserve it locally** rather
-than committing it to the public source repository. The historical first-release
-checklist is not the current update procedure.
+The exact developer, publisher, backup, duplicate-install, and recovery
+procedures live in **[docs/publishing-workflow.md](docs/publishing-workflow.md)**.
+Do not manually copy DLLs from the Steam installation into the publishing
+folder. Keep `mod.workshop_id` in the original `dist/workshop` package
+(it is intentionally Git-ignored); the packaging script makes a one-time
+emergency backup outside the repository.
 
 ## Project documentation
 
 - `CONTRIBUTING.md` — contributor setup, validation, and PR guidance
 - `AGENTS.md` — current agent/contributor implementation guardrails
+- `docs/publishing-workflow.md` — authoritative, single-source developer and Workshop workflow
 - `docs/release-week-plan.md` — historical first-release checklist (not current instructions)
 - `docs/core-control-contract.md` — low-level control architecture
 - `docs/control-validation-log.md` — physical control tests
