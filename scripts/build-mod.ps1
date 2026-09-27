@@ -134,11 +134,11 @@ try {
     if (-not $?) {
         throw 'SDK bootstrap failed.'
     }
-    Invoke-Checked 'cargo' @('fmt', '--check')
-    Invoke-Checked 'cargo' @('test')
+    Invoke-Checked -Command 'cargo' -Arguments @('fmt', '--check')
+    Invoke-Checked -Command 'cargo' -Arguments @('test')
     # Do not risk copying an old feature-enabled/native-tracing DLL.
-    Invoke-Checked 'cargo' @('clean', '--release')
-    Invoke-Checked 'cargo' @('build', '--release')
+    Invoke-Checked -Command 'cargo' -Arguments @('clean', '--release')
+    Invoke-Checked -Command 'cargo' -Arguments @('build', '--release')
 
     $compiled = Join-Path $RepoRoot "target\release\$ModId.dll"
     if (-not (Test-Path -LiteralPath $compiled -PathType Leaf)) {
