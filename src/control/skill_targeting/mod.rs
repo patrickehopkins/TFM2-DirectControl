@@ -112,11 +112,7 @@ pub fn snapshot() -> SkillTargetingSnapshot {
     legacy::snapshot()
 }
 
-pub fn clamp_to_range(
-    from: (u64, u64),
-    to: (u64, u64),
-    range: u64,
-) -> (u64, u64) {
+pub fn clamp_to_range(from: (u64, u64), to: (u64, u64), range: u64) -> (u64, u64) {
     legacy::clamp_to_range(from, to, range)
 }
 

@@ -23,9 +23,7 @@ use std::{
     time::Duration,
 };
 
-use mod_api_stable::{
-    InputV1, SimOriginKindV1, StableAiContext, StableAiInit, StablePlayerAi,
-};
+use mod_api_stable::{InputV1, SimOriginKindV1, StableAiContext, StableAiInit, StablePlayerAi};
 use windows_sys::Win32::{
     System::Threading::GetCurrentThreadId,
     UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_CONTROL, VK_HOME},
@@ -276,12 +274,8 @@ fn observe_sim_origin(ctx: &mut StableAiContext<'_>, tick: u64) {
     LAST_ORIGIN_KIND.store(origin_kind, Ordering::Release);
     if FIRST_ORIGIN_TICK.load(Ordering::Acquire) == NO_TICK {
         FIRST_ORIGIN_KIND.store(origin_kind, Ordering::Relaxed);
-        let _ = FIRST_ORIGIN_TICK.compare_exchange(
-            NO_TICK,
-            tick,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        );
+        let _ =
+            FIRST_ORIGIN_TICK.compare_exchange(NO_TICK, tick, Ordering::AcqRel, Ordering::Acquire);
     }
 
     if origin.kind != SimOriginKindV1::ClientMatchView.code()
@@ -349,7 +343,10 @@ pub fn set_presentation_state(interactive_match: bool, paused: bool) {
         && !START_REQUESTED.load(Ordering::Acquire)
         && READY_GATE_TICK.load(Ordering::Acquire) == NO_TICK
     {
-        READY_GATE_TICK.store(LAST_CANDIDATE_A_TICK.load(Ordering::Acquire), Ordering::Release);
+        READY_GATE_TICK.store(
+            LAST_CANDIDATE_A_TICK.load(Ordering::Acquire),
+            Ordering::Release,
+        );
     }
 
     if !START_REQUESTED.load(Ordering::Acquire) {
@@ -527,7 +524,9 @@ pub fn snapshot() -> PacingProbeSnapshot {
     }
 }
 
-fn candidate_a_probe_for_thread(thread_id: u32) -> Option<simulation_probe::SimulationProbeSnapshot> {
+fn candidate_a_probe_for_thread(
+    thread_id: u32,
+) -> Option<simulation_probe::SimulationProbeSnapshot> {
     let candidate_a = simulation_probe::snapshots()[0];
     (candidate_a.active != 0
         && candidate_a.last_thread_id != 0
@@ -543,9 +542,8 @@ fn ctrl_home_pressed_in_foreground() -> bool {
         return false;
     }
 
-    let chord_down = unsafe {
-        GetAsyncKeyState(VK_CONTROL as i32) < 0 && GetAsyncKeyState(VK_HOME as i32) < 0
-    };
+    let chord_down =
+        unsafe { GetAsyncKeyState(VK_CONTROL as i32) < 0 && GetAsyncKeyState(VK_HOME as i32) < 0 };
     let was_down = WORKER_START_CHORD_WAS_DOWN.swap(chord_down, Ordering::AcqRel);
     chord_down && !was_down
 }
@@ -573,7 +571,9 @@ fn wait_until_started() -> bool {
             request_start_simulation();
             let started = START_REQUESTED.load(Ordering::Acquire);
             crate::diagnostics::event(&format!("Worker-thread Ctrl+Home result started={started}"));
-            if started { return true; }
+            if started {
+                return true;
+            }
         }
 
         // If the one-tick runway was insufficient, recover automatically before Windows decides
@@ -760,8 +760,8 @@ fn pace_candidate_a(tick: u64) {
             return;
         }
 
-        let remaining_ms = target_elapsed_ms
-            .saturating_sub(wall_elapsed_ms.saturating_add(ALLOWED_LEAD_MS));
+        let remaining_ms =
+            target_elapsed_ms.saturating_sub(wall_elapsed_ms.saturating_add(ALLOWED_LEAD_MS));
         let sleep_ms = remaining_ms.clamp(1, MAX_SLEEP_SLICE_MS);
         PACER_WAIT_COUNT.fetch_add(1, Ordering::Relaxed);
         PACER_TOTAL_WAIT_MS.fetch_add(sleep_ms, Ordering::Relaxed);

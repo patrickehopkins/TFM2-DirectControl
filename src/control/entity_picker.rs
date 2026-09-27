@@ -102,12 +102,20 @@ fn pick_padding_px(kind: EntityKind) -> u64 {
 // subtype. Narrow name matching keeps the bees small without shrinking Serpen,
 // Morgard, jungle camps generally, or entities supplied by unrelated mods.
 fn is_bee_name(name: Option<&str>) -> bool {
-    let Some(name) = name else { return false; };
+    let Some(name) = name else {
+        return false;
+    };
     let normalized = name.trim().to_ascii_lowercase();
     matches!(
         normalized.as_str(),
-        "bee" | "bees" | "jungle bee" | "jungle bees"
-            | "honey bee" | "honeybee" | "jungle_bee" | "jungle_bees"
+        "bee"
+            | "bees"
+            | "jungle bee"
+            | "jungle bees"
+            | "honey bee"
+            | "honeybee"
+            | "jungle_bee"
+            | "jungle_bees"
             | "bee_monster" // Verified from Windows v0.6.1 support log.
     ) || normalized.starts_with("bee #")
 }
@@ -238,10 +246,7 @@ pub fn visible_targetable_entities(
             continue;
         };
         let id = entity.id();
-        if !entity.is_alive()
-            || !entity.is_targetable()
-            || !sim.is_visible(controlled_team, id)
-        {
+        if !entity.is_alive() || !entity.is_targetable() || !sim.is_visible(controlled_team, id) {
             continue;
         }
 
@@ -355,9 +360,9 @@ pub fn pick_hostile_entity(
 #[cfg(test)]
 mod tests {
     use super::{
-        is_bee_name, is_small_jungle_name, pick_padding_px, picker_base_radius, picker_kind, score_candidate,
-        BEE_PADDING_PX, SMALL_JUNGLE_PADDING_PX, OTHER_OBJECTIVE_PADDING_PX,
-        score_is_better, CandidateScore, EntityKind, TeamRelation,
+        is_bee_name, is_small_jungle_name, pick_padding_px, picker_base_radius, picker_kind,
+        score_candidate, score_is_better, CandidateScore, EntityKind, TeamRelation, BEE_PADDING_PX,
+        OTHER_OBJECTIVE_PADDING_PX, SMALL_JUNGLE_PADDING_PX,
     };
 
     fn score(
@@ -537,7 +542,10 @@ mod tests {
             sim_units_per_px,
         )
         .expect("screen-pixel forgiveness should include the padded edge");
-        assert_eq!(candidate.effective_radius, collision_radius as u64 + padding);
+        assert_eq!(
+            candidate.effective_radius,
+            collision_radius as u64 + padding
+        );
 
         assert!(score_candidate(
             1,
@@ -638,12 +646,24 @@ mod tests {
         assert_eq!(pick_padding_px(bee), 9);
         assert_eq!(picker_base_radius(bee, 30_000, Some(7_000)), 7_000);
         assert_eq!(picker_base_radius(bee, 5_000, Some(7_000)), 5_000);
-        assert_eq!(picker_base_radius(EntityKind::Other, 30_000, Some(7_000)), 30_000);
-        assert_eq!(picker_kind(false, false, false, Some("Serpen")), EntityKind::Other);
-        assert_eq!(picker_kind(false, false, false, Some("Beehive")), EntityKind::Other);
+        assert_eq!(
+            picker_base_radius(EntityKind::Other, 30_000, Some(7_000)),
+            30_000
+        );
+        assert_eq!(
+            picker_kind(false, false, false, Some("Serpen")),
+            EntityKind::Other
+        );
+        assert_eq!(
+            picker_kind(false, false, false, Some("Beehive")),
+            EntityKind::Other
+        );
         assert!(is_bee_name(Some("jungle bees")));
         assert!(is_bee_name(Some("bee_monster")));
-        assert_eq!(picker_kind(true, false, false, Some("Bee")), EntityKind::Champion);
+        assert_eq!(
+            picker_kind(true, false, false, Some("Bee")),
+            EntityKind::Champion
+        );
     }
 
     #[test]
@@ -667,7 +687,10 @@ mod tests {
             picker_kind(false, false, false, Some("serpen_monster")),
             EntityKind::Other
         );
-        assert_eq!(pick_padding_px(EntityKind::Other), OTHER_OBJECTIVE_PADDING_PX);
+        assert_eq!(
+            pick_padding_px(EntityKind::Other),
+            OTHER_OBJECTIVE_PADDING_PX
+        );
     }
 
     #[test]
@@ -678,9 +701,21 @@ mod tests {
         let bee_radius = picker_base_radius(bee, 20_000, Some(lane_radius));
         let edge = 100_000 + bee_radius as u64 + pick_padding_px(bee) * scale;
         let candidate = score_candidate(
-            3, bee, 2, true, true, true,
-            100_000, 100_000, bee_radius, 0,
-            TeamRelation::Hostile, true, edge, 100_000, scale,
+            3,
+            bee,
+            2,
+            true,
+            true,
+            true,
+            100_000,
+            100_000,
+            bee_radius,
+            0,
+            TeamRelation::Hostile,
+            true,
+            edge,
+            100_000,
+            scale,
         );
         assert!(candidate.is_some());
         assert_eq!(
@@ -688,6 +723,4 @@ mod tests {
             lane_radius as u64 + BEE_PADDING_PX * scale
         );
     }
-
-
 }

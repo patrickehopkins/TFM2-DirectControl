@@ -232,7 +232,8 @@ pub fn core_signatures() -> Result<CoreSignatureSnapshot, String> {
             "core simulation wrapper has not been independently relocated for this build".to_owned()
         })?;
         let runner_rva = layout.core_runner_anchor_rva.ok_or_else(|| {
-            "core simulation runner anchor has not been independently relocated for this build".to_owned()
+            "core simulation runner anchor has not been independently relocated for this build"
+                .to_owned()
         })?;
         Ok(CoreSignatureSnapshot {
             wrapper_rva,

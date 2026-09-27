@@ -5,10 +5,10 @@ mod input_focus;
 mod minimap;
 mod pacing_probe;
 mod pause_probe;
-mod replay_ui_probe;
 mod replay_action_gate;
 #[cfg(feature = "replay-native-trace")]
 mod replay_native_trace;
+mod replay_ui_probe;
 mod simulation_probe;
 mod slot_mapping;
 
@@ -317,34 +317,45 @@ impl DirectControlExtension {
 
         let previous = SELECT_KEYS_WERE_DOWN.swap(down_mask, Ordering::AcqRel);
         let rising = down_mask & !previous;
-        if rising == 0 { return; }
+        if rising == 0 {
+            return;
+        }
         let slot = rising.trailing_zeros() as usize;
         let enabled = pacing_probe::manual_input_enabled();
         diagnostics::event(&format!(
             "F{} detected manual_enabled={} started={} interactive={} phase={} replay_gate={}",
-            slot + 1, enabled, pacing_probe::start_requested(),
+            slot + 1,
+            enabled,
+            pacing_probe::start_requested(),
             pacing_probe::snapshot().interactive_match,
-            pacing_probe::presentation_phase_label(), replay_action_gate::installed()
+            pacing_probe::presentation_phase_label(),
+            replay_action_gate::installed()
         ));
-        if !enabled { return; }
+        if !enabled {
+            return;
+        }
 
         if let Some(athlete_id) = slot_mapping::resolve_fkey(ctx, slot) {
             control::select_athlete(athlete_id);
-            diagnostics::event(&format!("F{} selection succeeded athlete_id={athlete_id}", slot + 1));
+            diagnostics::event(&format!(
+                "F{} selection succeeded athlete_id={athlete_id}",
+                slot + 1
+            ));
         } else {
             let snapshot = slot_mapping::snapshot();
             diagnostics::event(&format!(
                 "F{} selection FAILED: {}",
                 slot + 1,
-                snapshot.error.as_deref().unwrap_or("unknown mapping failure")
+                snapshot
+                    .error
+                    .as_deref()
+                    .unwrap_or("unknown mapping failure")
             ));
         }
     }
 
     fn poll_return_home(ctx: &StableClient<'_>, ingame: bool) {
-        if !ingame
-            || !pacing_probe::manual_input_enabled()
-            || control::selected_athlete().is_none()
+        if !ingame || !pacing_probe::manual_input_enabled() || control::selected_athlete().is_none()
         {
             return;
         }
@@ -355,9 +366,7 @@ impl DirectControlExtension {
     }
 
     fn poll_hold(ctx: &StableClient<'_>, ingame: bool) {
-        if !ingame
-            || !pacing_probe::manual_input_enabled()
-            || control::selected_athlete().is_none()
+        if !ingame || !pacing_probe::manual_input_enabled() || control::selected_athlete().is_none()
         {
             return;
         }
@@ -387,11 +396,7 @@ impl DirectControlExtension {
 
         let (origin_ui_x, origin_ui_y) =
             if let Some((x, y, w, h)) = ctx.ui_node_rect("ingame.center_log") {
-                if mouse.ui_x < x
-                    || mouse.ui_y < y
-                    || mouse.ui_x >= x + w
-                    || mouse.ui_y >= y + h
-                {
+                if mouse.ui_x < x || mouse.ui_y < y || mouse.ui_x >= x + w || mouse.ui_y >= y + h {
                     return None;
                 }
                 (x + w * 0.5, y + h * 0.5)
@@ -425,8 +430,7 @@ impl DirectControlExtension {
             return None;
         }
 
-        let world_units_per_px =
-            ((camera.extent_a / game_w) + (camera.extent_b / game_h)) * 0.5;
+        let world_units_per_px = ((camera.extent_a / game_w) + (camera.extent_b / game_h)) * 0.5;
         let sim_units_per_px_f = world_units_per_px * SIM_UNITS_PER_WORLD_UNIT;
         let sim_units_per_px = if sim_units_per_px_f.is_finite() && sim_units_per_px_f > 0.0 {
             sim_units_per_px_f.round() as u64
@@ -470,12 +474,7 @@ impl DirectControlExtension {
 
     /// Polls the shared LMB/RMB targeting layer for A attack-move and Q/W/R skill targeting.
     /// Returns true only when a rising RMB was consumed purely as a skill-target cancel.
-    fn poll_targeting(
-        &self,
-        ctx: &StableClient<'_>,
-        mouse: MouseSnapshot,
-        ingame: bool,
-    ) -> bool {
+    fn poll_targeting(&self, ctx: &StableClient<'_>, mouse: MouseSnapshot, ingame: bool) -> bool {
         if !ingame {
             LMB_WAS_DOWN.store(false, Ordering::Release);
             return false;
@@ -600,7 +599,6 @@ impl DirectControlExtension {
         );
     }
 
-
     fn draw_click_target_overlays(
         ctx: &mut StableClient<'_>,
         camera: camera_probe::CameraSnapshot,
@@ -634,8 +632,7 @@ impl DirectControlExtension {
                 (ui_w * 0.5, ui_h * 0.5)
             };
 
-        let world_units_per_px =
-            ((camera.extent_a / game_w) + (camera.extent_b / game_h)) * 0.5;
+        let world_units_per_px = ((camera.extent_a / game_w) + (camera.extent_b / game_h)) * 0.5;
         let sim_units_per_px_f = world_units_per_px * SIM_UNITS_PER_WORLD_UNIT;
         if !sim_units_per_px_f.is_finite() || sim_units_per_px_f <= 0.0 {
             return;
@@ -658,7 +655,9 @@ impl DirectControlExtension {
             let color = match entity.kind {
                 control::EntityKind::Champion if friendly => PICK_OVERLAY_ALLY_CHAMPION,
                 control::EntityKind::Champion => PICK_OVERLAY_ENEMY_CHAMPION,
-                control::EntityKind::Minion | control::EntityKind::Bee if friendly => PICK_OVERLAY_ALLY_CREEP,
+                control::EntityKind::Minion | control::EntityKind::Bee if friendly => {
+                    PICK_OVERLAY_ALLY_CREEP
+                }
                 control::EntityKind::Minion | control::EntityKind::Bee => PICK_OVERLAY_ENEMY_CREEP,
                 _ if friendly => PICK_OVERLAY_ALLY,
                 _ => PICK_OVERLAY_ENEMY,
@@ -858,8 +857,7 @@ impl DirectControlExtension {
                     }
                     let _ = ctx.ui_set_visible(path, false);
                 }
-                NATIVE_SEEK_CONTROLS_SUPPRESSED
-                    .store(!cached.is_empty(), Ordering::Release);
+                NATIVE_SEEK_CONTROLS_SUPPRESSED.store(!cached.is_empty(), Ordering::Release);
             }
 
             // Native hover processing still runs on a hidden zoom icon's stale hit region.
@@ -938,7 +936,6 @@ impl DirectControlExtension {
             pacing_probe::set_startup_presentation_synced(false);
             return;
         };
-
 
         // The visible clock is whole-second precision. Reaching floor(live_tick / 60) proves the
         // viewer has reached the frozen live second. A sub-second residual cannot be observed through
@@ -1099,7 +1096,11 @@ impl DirectControlExtension {
             ctx,
             64.0,
             &status,
-            if pause_ui.paused { 0xffd080ff } else { 0x80ffbfff },
+            if pause_ui.paused {
+                0xffd080ff
+            } else {
+                0x80ffbfff
+            },
         );
 
         if let Some(targeting) = targeting {
@@ -1265,16 +1266,23 @@ impl StableExtension for DirectControlExtension {
                 // jungle entity if a player's build does not match our narrow classifier.
                 let other_entity_samples = control::click_target_overlay_snapshot()
                     .into_iter()
-                    .filter(|entity| matches!(
-                        entity.kind,
-                        control::EntityKind::Bee | control::EntityKind::SmallJungle | control::EntityKind::Other
-                    ))
+                    .filter(|entity| {
+                        matches!(
+                            entity.kind,
+                            control::EntityKind::Bee
+                                | control::EntityKind::SmallJungle
+                                | control::EntityKind::Other
+                        )
+                    })
                     .take(8)
-                    .map(|entity| format!(
-                        "{}:{:?}:base_radius={}",
-                        entity.name.as_deref().unwrap_or("<unnamed>"),
-                        entity.kind, entity.collision_radius
-                    ))
+                    .map(|entity| {
+                        format!(
+                            "{}:{:?}:base_radius={}",
+                            entity.name.as_deref().unwrap_or("<unnamed>"),
+                            entity.kind,
+                            entity.collision_radius
+                        )
+                    })
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!(
@@ -1301,13 +1309,15 @@ impl StableExtension for DirectControlExtension {
 
 fn init(host: &StableHost) -> StableMod {
     match diagnostics::initialize() {
-        Ok(path) => host.log(LogLevel::Info,
+        Ok(path) => host.log(
+            LogLevel::Info,
             &format!(
                 "Harbinger v{} build={} support diagnostics enabled: {}",
                 env!("CARGO_PKG_VERSION"),
                 env!("HARBINGER_BUILD_ID"),
                 path.display()
-            )),
+            ),
+        ),
         Err(error) => host.log(
             LogLevel::Warn,
             &format!(
@@ -1331,14 +1341,23 @@ fn init(host: &StableHost) -> StableMod {
         ),
         Err(error) => {
             diagnostics::event(&format!("replay safety gate FAILED: {error}"));
-            host.log(LogLevel::Error, &format!("TFM2 Direct Control replay safety gate FAILED: {error}"));
-        },
+            host.log(
+                LogLevel::Error,
+                &format!("TFM2 Direct Control replay safety gate FAILED: {error}"),
+            );
+        }
     }
 
     #[cfg(feature = "replay-native-trace")]
     match replay_native_trace::install() {
-        Ok(()) => host.log(LogLevel::Info, "TFM2 replay diagnostic native lookup trace enabled (Ctrl+Alt+F12)"),
-        Err(error) => host.log(LogLevel::Error, &format!("TFM2 replay trace unavailable: {error}")),
+        Ok(()) => host.log(
+            LogLevel::Info,
+            "TFM2 replay diagnostic native lookup trace enabled (Ctrl+Alt+F12)",
+        ),
+        Err(error) => host.log(
+            LogLevel::Error,
+            &format!("TFM2 replay trace unavailable: {error}"),
+        ),
     }
 
     match simulation_probe::ensure_installed() {

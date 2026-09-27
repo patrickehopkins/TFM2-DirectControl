@@ -14,7 +14,7 @@
 //! retains the entity id and moves toward it until the cast becomes legal. After the cast is emitted,
 //! the same entity becomes the normal exact-target attack/chase order in the parent control module.
 
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 
 use mod_api_stable::{InputKindV1, InputTargetKindV1, InputTargetV1, InputV1, StableAiContext};
 
@@ -547,10 +547,7 @@ fn infer_position_range(
     slot: SkillSlot,
     self_position: (u64, u64),
 ) -> Option<u64> {
-    if !ctx.is_valid_input(&action(
-        slot,
-        target_pos(self_position.0, self_position.1),
-    )) {
+    if !ctx.is_valid_input(&action(slot, target_pos(self_position.0, self_position.1))) {
         return None;
     }
 
@@ -599,11 +596,7 @@ pub fn clamp_to_range(from: (u64, u64), to: (u64, u64), range: u64) -> (u64, u64
     )
 }
 
-fn update_preview(
-    ctx: &mut StableAiContext<'_>,
-    slot: SkillSlot,
-    self_position: (u64, u64),
-) {
+fn update_preview(ctx: &mut StableAiContext<'_>, slot: SkillSlot, self_position: (u64, u64)) {
     SELF_X.store(self_position.0, Ordering::Relaxed);
     SELF_Y.store(self_position.1, Ordering::Relaxed);
     SELF_ACTIVE.store(true, Ordering::Release);
@@ -697,10 +690,7 @@ fn immediate_self_cast(
     }
 
     if ctx.is_valid_input(&action(slot, target_dir(self_position, self_position)))
-        || ctx.is_valid_input(&action(
-            slot,
-            target_pos(self_position.0, self_position.1),
-        ))
+        || ctx.is_valid_input(&action(slot, target_pos(self_position.0, self_position.1)))
     {
         return None;
     }
@@ -750,10 +740,7 @@ fn hostile_target_chase_plausible(
     if ctx.is_valid_input(&action(slot, target_dir(self_position, click))) {
         return false;
     }
-    if ctx.is_valid_input(&action(
-        slot,
-        target_pos(self_position.0, self_position.1),
-    )) {
+    if ctx.is_valid_input(&action(slot, target_pos(self_position.0, self_position.1))) {
         return false;
     }
 

@@ -20,14 +20,12 @@ mod entity_picker;
 mod skill_targeting;
 
 use std::sync::{
-    atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering},
     Mutex, OnceLock,
 };
 
 use entity_picker::{effective_pick_radius, pick_hostile_entity, visible_targetable_entities};
-use mod_api_stable::{
-    InputKindV1, InputTargetKindV1, InputTargetV1, InputV1, StableAiContext,
-};
+use mod_api_stable::{InputKindV1, InputTargetKindV1, InputTargetV1, InputV1, StableAiContext};
 
 pub use entity_picker::{ClickableEntityGeometry, EntityKind};
 pub use skill_targeting::{SkillPreviewMode, SkillSlot, SkillTargetingSnapshot};
@@ -376,11 +374,7 @@ pub fn skill_targeting_snapshot() -> SkillTargetingSnapshot {
     skill_targeting::snapshot()
 }
 
-pub fn clamp_skill_target_to_range(
-    from: (u64, u64),
-    to: (u64, u64),
-    range: u64,
-) -> (u64, u64) {
+pub fn clamp_skill_target_to_range(from: (u64, u64), to: (u64, u64), range: u64) -> (u64, u64) {
     skill_targeting::clamp_to_range(from, to, range)
 }
 
@@ -509,9 +503,7 @@ fn resolve_latest_rmb(ctx: &mut StableAiContext<'_>) {
         return;
     };
 
-    if let Some(picked) =
-        pick_hostile_entity(&sim, controlled_team, x, y, sim_units_per_px)
-    {
+    if let Some(picked) = pick_hostile_entity(&sim, controlled_team, x, y, sim_units_per_px) {
         set_active_attack(picked.id);
         ATTACK_RESOLVE_COUNT.fetch_add(1, Ordering::Relaxed);
     } else {
@@ -809,10 +801,12 @@ pub fn diagnostics() -> ControlDiagnostics {
     let last_tick = LAST_MANUAL_TICK.load(Ordering::Acquire);
     let active_kind = ACTIVE_COMMAND_KIND.load(Ordering::Acquire);
     let attack_target = match active_kind {
-        COMMAND_ATTACK | COMMAND_ATTACK_MOVE => match ACTIVE_ATTACK_TARGET.load(Ordering::Acquire) {
-            NO_TARGET => None,
-            target => Some(target),
-        },
+        COMMAND_ATTACK | COMMAND_ATTACK_MOVE => {
+            match ACTIVE_ATTACK_TARGET.load(Ordering::Acquire) {
+                NO_TARGET => None,
+                target => Some(target),
+            }
+        }
         _ => None,
     };
     let attack_move_destination = (active_kind == COMMAND_ATTACK_MOVE).then_some((

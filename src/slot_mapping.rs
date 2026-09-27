@@ -63,15 +63,20 @@ pub fn reset() {
 }
 
 pub fn snapshot() -> SlotMappingSnapshot {
-    LAST.lock().map(|state| state.clone()).unwrap_or_else(|_| SlotMappingSnapshot {
-        error: Some("slot-mapping mutex poisoned".to_owned()),
-        ..Default::default()
-    })
+    LAST.lock()
+        .map(|state| state.clone())
+        .unwrap_or_else(|_| SlotMappingSnapshot {
+            error: Some("slot-mapping mutex poisoned".to_owned()),
+            ..Default::default()
+        })
 }
 
 pub fn resolve_fkey(ctx: &StableClient<'_>, fkey_slot: usize) -> Option<usize> {
     if fkey_slot >= SLOT_COUNT {
-        publish_error(fkey_slot, format!("F-key slot {} is outside F1-F10", fkey_slot + 1));
+        publish_error(
+            fkey_slot,
+            format!("F-key slot {} is outside F1-F10", fkey_slot + 1),
+        );
         return None;
     }
 
@@ -93,7 +98,10 @@ pub fn resolve_fkey(ctx: &StableClient<'_>, fkey_slot: usize) -> Option<usize> {
                 .get(fkey_slot)
                 .and_then(|error| error.clone())
                 .unwrap_or_else(|| {
-                    format!("F{} could not be resolved from the visible player cards", fkey_slot + 1)
+                    format!(
+                        "F{} could not be resolved from the visible player cards",
+                        fkey_slot + 1
+                    )
                 }),
         );
         return None;
@@ -163,7 +171,10 @@ fn rebuild_mapping(ctx: &StableClient<'_>) -> (Vec<Option<CachedSlot>>, Vec<Opti
 
     if athletes.is_empty() {
         for (slot, error) in errors.iter_mut().enumerate() {
-            *error = Some(format!("F{}: stable API supplied no named athletes", slot + 1));
+            *error = Some(format!(
+                "F{}: stable API supplied no named athletes",
+                slot + 1
+            ));
         }
         return (slots, errors);
     }
@@ -175,7 +186,8 @@ fn rebuild_mapping(ctx: &StableClient<'_>) -> (Vec<Option<CachedSlot>>, Vec<Opti
         if candidates.is_empty() {
             errors[fkey_slot] = Some(format!(
                 "F{}: no visible player-card text containing (F{})",
-                fkey_slot + 1, fkey_slot + 1
+                fkey_slot + 1,
+                fkey_slot + 1
             ));
             continue;
         }
@@ -194,25 +206,31 @@ fn rebuild_mapping(ctx: &StableClient<'_>) -> (Vec<Option<CachedSlot>>, Vec<Opti
         if resolved.is_empty() {
             errors[fkey_slot] = Some(format!(
                 "F{}: {} visible card candidate(s), no unambiguous athlete-name match",
-                fkey_slot + 1, candidates.len()
+                fkey_slot + 1,
+                candidates.len()
             ));
             continue;
         }
 
         // Mirrored UI nodes are okay only if they all agree on athlete identity.
         let first_athlete = resolved[0].athlete_id;
-        if resolved.iter().any(|candidate| candidate.athlete_id != first_athlete) {
+        if resolved
+            .iter()
+            .any(|candidate| candidate.athlete_id != first_athlete)
+        {
             errors[fkey_slot] = Some(format!(
                 "F{}: multiple different athletes matched its visible card nodes",
                 fkey_slot + 1
             ));
             continue;
         }
-        resolved.sort_by_key(|candidate| (
-            candidate.card_path.matches('.').count(),
-            candidate.card_path.len(),
-            candidate.card_text.len(),
-        ));
+        resolved.sort_by_key(|candidate| {
+            (
+                candidate.card_path.matches('.').count(),
+                candidate.card_path.len(),
+                candidate.card_text.len(),
+            )
+        });
         slots[fkey_slot] = Some(resolved.remove(0));
     }
 
@@ -222,10 +240,7 @@ fn rebuild_mapping(ctx: &StableClient<'_>) -> (Vec<Option<CachedSlot>>, Vec<Opti
 }
 
 // Do not keep whichever conflicting card happened to be scanned first.
-fn reject_duplicate_assignments(
-    slots: &mut [Option<CachedSlot>],
-    errors: &mut [Option<String>],
-) {
+fn reject_duplicate_assignments(slots: &mut [Option<CachedSlot>], errors: &mut [Option<String>]) {
     let mut first_slot_for_athlete = std::collections::HashMap::new();
     for fkey_slot in 0..slots.len() {
         let Some(id) = slots[fkey_slot].as_ref().map(|slot| slot.athlete_id) else {
@@ -254,10 +269,14 @@ fn reject_duplicate_assignments(
 pub fn roster_diagnostics(ctx: &StableClient<'_>) -> String {
     let (slots, errors) = rebuild_mapping(ctx);
     let resolved = slots.iter().filter(|slot| slot.is_some()).count();
-    let failures = errors.iter().filter_map(|error| error.as_deref())
+    let failures = errors
+        .iter()
+        .filter_map(|error| error.as_deref())
         .collect::<Vec<_>>();
     if failures.is_empty() {
-        return format!("roster probe: {resolved}/10 cards identified; all selection mappings available");
+        return format!(
+            "roster probe: {resolved}/10 cards identified; all selection mappings available"
+        );
     }
     format!(
         "roster probe: {resolved}/10 cards identified; {}",
@@ -395,10 +414,7 @@ mod tests {
 
     #[test]
     fn longest_unambiguous_name_wins_in_card_text() {
-        let athletes = vec![
-            (1, "Sam".to_owned()),
-            (2, "Samwise".to_owned()),
-        ];
+        let athletes = vec![(1, "Sam".to_owned()), (2, "Samwise".to_owned())];
         let selection = match_card_to_athlete("Samwise (F2)", &athletes).unwrap();
         assert_eq!(selection.0, 2);
     }
