@@ -465,10 +465,8 @@ unsafe fn capture(this: *mut u8) {
     slot.center_y.store(center_y.to_bits(), Ordering::Relaxed);
     slot.extent_a.store(extent_a.to_bits(), Ordering::Relaxed);
     slot.extent_b.store(extent_b.to_bits(), Ordering::Relaxed);
-    slot.mode.store(
-        mode.map(u32::from).unwrap_or(u32::MAX),
-        Ordering::Relaxed,
-    );
+    slot.mode
+        .store(mode.map(u32::from).unwrap_or(u32::MAX), Ordering::Relaxed);
     slot.vision_mode.store(
         vision_mode.map(u32::from).unwrap_or(u32::MAX),
         Ordering::Relaxed,

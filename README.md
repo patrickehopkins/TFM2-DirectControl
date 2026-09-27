@@ -40,6 +40,15 @@ Contextual RMB uses enlarged **clickable selection geometry only**; it does not 
 
 When enlarged areas overlap, priority is **Champion > Building/Objective > Minion**. The lightweight rings shown in Direct Control represent those effective clickable regions.
 
+**v0.1.2 targeting polish:** Entity-targeted Q/W/R skills use the same outer
+click rings as RMB instead of only the native collision region. Physical testing
+confirmed that this resolves the unresponsive skill-targeting edges. Bees use a
+lane-minion-capped selection base with +9 px outer padding; stump and mushroom
+jungle creeps use +20 px instead of the larger objective tier's +24 px.
+Non-champion selection outlines use the same 3 px stroke thickness as champion
+rings. These are pick/visual changes, not changes to native collision or attack
+range. See `docs/click-targeting-geometry.md` for the full policy.
+
 Held RMB continually republishes the current cursor through the same contextual resolver. Moving the cursor from ground onto an enemy, off an enemy, or onto another enemy updates the command without requiring repeated clicks.
 
 ### Skills
@@ -114,6 +123,26 @@ Known/deferred work is tracked in:
 - `docs/champion-compatibility.md`
 
 One notable champion-specific gap remains post-release: Gunfighter's native move-while-attacking behavior does not compose correctly with generic attack-move yet.
+
+## Automatic support diagnostics (v0.1.2)
+
+Harbinger automatically captures startup synchronization, Ctrl+Home activation, F1-F10
+selection outcomes, and a one-time player-card mapping health check while the user
+plays normally. No debug switch, command line, or extra in-game controls are necessary.
+Each compiled DLL embeds a revision-and-build-time support stamp so we can
+distinguish development builds without changing the public version number.
+The small companion log lives alongside the game's own `log.log`:
+
+```text
+%APPDATA%\\TeamSamoyed\\TeamfightManager2\\data\\harbinger-diagnostics.log
+```
+
+If a player cannot activate or select a champion after this update, ask them only
+to reproduce the problem once and send that single log file. The normal game log
+records whether the companion log started successfully. Normal-play tests on
+Windows v0.6.1 have confirmed automatic logging, synchronization, successful
+card mapping and champion selection. See `docs/support-diagnostics.md` for
+the maintainer's interpretation guide and the final release checks.
 
 ## Technical overview
 
@@ -213,16 +242,25 @@ The installed mod lives under:
 
 Use the game's `TFM2ModUploader.exe`.
 
-Before upload:
+Before updating the **existing** Workshop listing:
 
-1. build from the release branch;
-2. use **Build Only (No Upload)** first;
-3. inspect the staged mod package;
-4. confirm the DLL and intended runtime metadata are present and source/build junk is absent;
-5. publish privately/unlisted first if a subscriber-installed smoke test is desired;
-6. preserve the generated `mod.workshop_id` for all future updates.
+1. finish tests from the exact intended release commit (`cargo fmt --check`,
+   `cargo test`, then `cargo build --release` without diagnostic features);
+2. use **Build Only (No Upload)** in the uploader, inspect its actual staged
+   runtime package, and confirm the compiled DLL and `mod.mod_info` are v0.1.2;
+3. select the **original publishing folder containing `mod.workshop_id`**,
+   or copy that local ID file into the chosen package folder before uploading.
+   Keep a backup: a missing ID can create a duplicate Workshop item;
+4. use **Update Workshop Item** with a short change note. Preserve the existing
+   manually edited Steam Workshop description; do not replace it with the
+   shorter runtime metadata description;
+5. for a Workshop-installed smoke test, first remove the duplicate development
+   install at `<TFM2 install>\mods\tfm2_direct_control`, then restart the
+   game. Never run the development and Workshop copies simultaneously.
 
-The original release checklist is preserved **as a historical record** in `docs/release-week-plan.md`. It is not an active backlog or the authoritative description of current behavior.
+`mod.workshop_id` is deliberately Git-ignored; **preserve it locally** rather
+than committing it to the public source repository. The historical first-release
+checklist is not the current update procedure.
 
 ## Project documentation
 
