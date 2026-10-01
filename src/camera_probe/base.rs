@@ -105,8 +105,30 @@ const BUILD_0_6_1: CameraLayout = CameraLayout {
     pan_y_offset: 0x42C,
 };
 
+const BUILD_0_6_2: CameraLayout = CameraLayout {
+    pe_timestamp: 0x6ABC_597E,
+    image_size: 0x052B_8000,
+    handler_rva: 0x00CA_F090,
+    // v0.6.2 inserts 0x30 bytes into the camera object before the fields used by
+    // Harbinger. The relocated handler directly confirms zoom, center, owner,
+    // native pan, and team-vision accesses at these shifted offsets.
+    zoom_offset: 0x110,
+    center_x_offset: 0x114,
+    center_y_offset: 0x118,
+    extent_a_offset: 0x11C,
+    extent_b_offset: 0x120,
+    // Keep the direct mode byte unclaimed just as in v0.6.1; it is not required
+    // for capture or control and avoiding an unnecessary read preserves fail-closed behavior.
+    mode_offset: None,
+    vision_object_offset: Some(0x448),
+    vision_mode_offset: Some(0x63),
+    vision_write_guard_offset: Some(0x10),
+    pan_x_offset: 0x458,
+    pan_y_offset: 0x45C,
+};
+
 fn known_layout(timestamp: u32, image_size: u32) -> Option<&'static CameraLayout> {
-    [&BUILD_0_5_8, &BUILD_0_6_0, &BUILD_0_6_1]
+    [&BUILD_0_5_8, &BUILD_0_6_0, &BUILD_0_6_1, &BUILD_0_6_2]
         .into_iter()
         .find(|layout| layout.pe_timestamp == timestamp && layout.image_size == image_size)
 }
