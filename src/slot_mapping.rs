@@ -9,7 +9,7 @@
 
 use std::sync::Mutex;
 
-use mod_api_stable::{LaneV1, StableClient};
+use mod_api_stable::{LaneV1, RecordKindV1, StableClient};
 
 const MAX_UI_NODES: usize = 2_000;
 const SLOT_COUNT: usize = 10;
@@ -460,6 +460,34 @@ fn reject_duplicate_assignments(slots: &mut [Option<CachedSlot>], errors: &mut [
     }
 }
 
+// A bounded one-time identity probe: the stable SDK exposes the management team's ID and
+// athlete record documents, but does not document the contracted team's JSON field. Capture a
+// sample from each simulation team so we can validate that relationship without guessing which
+// five-card block is on which side. No record is modified.
+fn identity_probe(ctx: &StableClient<'_>, roster: &[ObservedAthlete]) -> String {
+    let own_team = ctx.player_team_id();
+    let mut observed_teams = roster.iter().map(|entry| entry.team).collect::<Vec<_>>();
+    observed_teams.sort_unstable();
+    observed_teams.dedup();
+    let samples = observed_teams
+        .iter()
+        .filter_map(|team| {
+            let athlete_id = roster.iter().find(|entry| entry.team == *team)?.athlete_id;
+            let contract = ctx
+                .record_get_json(RecordKindV1::Athlete, athlete_id, "contract")
+                .unwrap_or_else(|| "<unavailable>".to_owned());
+            let excerpt = contract.chars().take(400).collect::<String>();
+            Some(format!(
+                "simulation_team={team} athlete_id={athlete_id} contract={excerpt}"
+            ))
+        })
+        .collect::<Vec<_>>();
+    format!(
+        "identity probe: manager_team_id={own_team:?}; {}",
+        samples.join("; ")
+    )
+}
+
 /// Read-only automatic one-time roster health check for support logs.
 pub fn roster_diagnostics(ctx: &StableClient<'_>) -> String {
     let (slots, errors) = rebuild_mapping(ctx);
@@ -471,9 +499,10 @@ pub fn roster_diagnostics(ctx: &StableClient<'_>) -> String {
     let roster = authoritative_roster_snapshot();
     let blocks = TEAM_BLOCKS.lock().map(|blocks| *blocks).unwrap_or([None, None]);
     let authority = format!(
-        "candidate_a_roster={}/10 complete={} team_blocks={blocks:?}",
+        "candidate_a_roster={}/10 complete={} team_blocks={blocks:?}; {}",
         roster.len(),
-        complete_authoritative_roster(&roster)
+        complete_authoritative_roster(&roster),
+        identity_probe(ctx, &roster)
     );
     if failures.is_empty() {
         return format!(
