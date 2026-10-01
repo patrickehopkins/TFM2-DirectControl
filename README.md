@@ -4,7 +4,7 @@ Real-time direct champion control for **Teamfight Manager 2**.
 
 The mod keeps the watched match simulation running in real time, lets you take control of any of the ten visible champions, and feeds commands back through Teamfight Manager 2's own player-input system. Pick/ban, champion logic, pathing, combat resolution, fog, shopping, and the underlying simulation remain TFM2 systems; Direct Control adds a human command layer on top.
 
-Current release target: **Teamfight Manager 2 v0.6.1 on Windows/Steam**.
+Current release target: **Teamfight Manager 2 v0.6.2 on Windows/Steam**.
 
 ## Control scheme at a glance
 
@@ -96,7 +96,7 @@ A known first-release spectator loophole remains: TFM2's native follow UI can st
 
 ## Current compatibility notes
 
-Physically validated on v0.6.1 include:
+Physically validated on v0.6.2 include:
 
 - real-time watched-match pacing;
 - startup synchronization and Ctrl+Home handoff;
@@ -140,7 +140,7 @@ The small companion log lives alongside the game's own `log.log`:
 If a player cannot activate or select a champion after this update, ask them only
 to reproduce the problem once and send that single log file. The normal game log
 records whether the companion log started successfully. Normal-play tests on
-Windows v0.6.1 have confirmed automatic logging, synchronization, successful
+Windows v0.6.1 and v0.6.2 have confirmed automatic logging, synchronization, successful
 card mapping and champion selection. See `docs/support-diagnostics.md` for
 the maintainer's interpretation guide and the final release checks.
 
@@ -173,7 +173,7 @@ External live input crosses TFM2's deterministic simulation boundary. The first 
 
 ## Development setup
 
-Target platform: **Windows + Steam**. Current runtime validation applies to the tested v0.6.1 executable; an updated game build requires independent native-hook verification and physical testing.
+Target platform: **Windows + Steam**. Current runtime validation applies to the tested v0.6.2 executable; an updated game build requires independent native-hook verification and physical testing.
 
 Prerequisites: a Windows installation of Teamfight Manager 2 with its bundled stable mod SDK, a Rust toolchain (`cargo` and `rustfmt`), and PowerShell. Python is only needed for optional investigation/compatibility utilities in `tools/`.
 
@@ -247,7 +247,7 @@ Before updating the **existing** Workshop listing:
 1. finish tests from the exact intended release commit (`cargo fmt --check`,
    `cargo test`, then `cargo build --release` without diagnostic features);
 2. use **Build Only (No Upload)** in the uploader, inspect its actual staged
-   runtime package, and confirm the compiled DLL and `mod.mod_info` are v0.1.2;
+   runtime package, and confirm the compiled DLL and `mod.mod_info` are v0.1.3;
 3. select the **original publishing folder containing `mod.workshop_id`**,
    or copy that local ID file into the chosen package folder before uploading.
    Keep a backup: a missing ID can create a duplicate Workshop item;
