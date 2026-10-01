@@ -6,16 +6,21 @@ The direct-control layer is intentionally a low-policy primitive rather than a p
 
 Teamfight Manager 2 exposes ten visible match cards labeled F1-F10, but runtime testing proved that this visible order is **not** the same as Candidate A's internal `player_id` ordering. The core therefore must not define `F3 == player_id 2` or similar arithmetic mappings.
 
-For the current UI convenience layer:
+For the draft 0.6.2 selection layer (PR #27), physical F1-F10 remain Harbinger's independent selection shortcuts, even if the game's native follow shortcuts have been rebound:
 
 ```text
-F1-F10 visible card
-        -> displayed athlete identity
-        -> stable athlete id
-        -> Candidate-A StableAiContext::athlete_id()
+Candidate A: stable athlete_id + team + lane for each of ten players
+management SDK: stable manager-team ID
+F1-F5 -> manager's team, by top/jungle/mid/bottom/support
+F6-F10 -> other simulation team, same lane order
+selected slot -> stable athlete_id -> Candidate A
 ```
 
-The core does **not** decide which team belongs to the human manager and does not reject an athlete because of team ownership. Team/ownership restrictions, if desired, belong to a higher-level mod or feature built on top of this control layer.
+The manager-team ID identifies the **card group**, not a permission boundary. Athletes on both sides remain selectable. If a complete authoritative roster or matching manager-team identity is unavailable, an unambiguous legacy card may still calibrate a block; missing evidence must never cause a guessed identity.
+
+Player names, shortcut labels and card visibility are not inputs to the authoritative mapping. The role/card-order assumption and hidden-UI behavior require live regression testing before this branch can be merged.
+
+The core does **not** reject an athlete because of team ownership. Team/ownership restrictions, if desired, belong to a higher-level mod or feature built on top of this control layer.
 
 This is deliberate. The project should remain useful as a dependency/foundation for future mods that may want to control either side, spectate/control arbitrary actors, build debugging tools, implement alternate game modes, or impose their own permissions.
 
