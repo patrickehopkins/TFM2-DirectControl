@@ -17,7 +17,9 @@ Inventory every player-facing action: readiness/start, ten visible-card selector
 
 A dedicated Direct Control category or context in the native Shortcuts Settings UI would be preferable if a robust SDK/native integration surface becomes available. Shared shortcuts with explicit conflict management are a fallback. Avoid globally overwriting the player's ordinary game bindings. The release's current fixed bindings remain documented in `README.md`; do not promise that configurable bindings already exist.
 
-F1-F10 should continue to map to visible match cards rather than assuming player-team roles or internal simulation IDs. The validated mapping is detailed in `docs/core-control-contract.md`.
+On the tested 0.6.2 hardening branch (PR #27), F1-F5 map to the manager's team's top/jungle/mid/bottom/support champions, and F6-F10 map to the opposing team in the same order. Authoritative team/lane/athlete IDs, not name strings, UI visibility, or native follow-shortcut labels, resolve selection. See `docs/core-control-contract.md`. Keep F1-F10 configurable as independent Harbinger shortcuts in the later native Shortcuts UI work.
+
+**Deferred camera-follow behavior:** previously selecting a champion also moved the camera only because the game's native follow key was triggered incidentally. With selection independent of native follow bindings, camera motion must be implemented intentionally. The future keybind update should distinguish (1) selecting a champion for manual control, (2) centering/following the currently selected champion, and (3) toggling/unlocking camera follow, including when the UI is hidden and when native bindings have changed. Do not add camera-follow changes to PR #27's selection bugfix.
 
 ## Non-negotiable playback ownership
 
