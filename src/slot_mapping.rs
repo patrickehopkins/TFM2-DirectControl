@@ -2,14 +2,15 @@
 //!
 //! Native follow actions and cards follow the two five-role blocks (Top, Jungle, Mid, Bottom,
 //! Support); simulation player-id order is NOT card order. Candidate A supplies athlete/team/lane
-//! identities. An unambiguous UI card only calibrates which simulation team occupies each block.
-//! Once calibrated, duplicate names, changed shortcut labels, and hidden card presentation cannot
-//! change actor selection. Without adequate evidence, preserve the legacy independent per-card
-//! fallback and fail closed rather than guessing an athlete.
+//! identities. Stable manager-team identity anchors the F1-F5 own-team block; Candidate A supplies
+//! the opposite team for F6-F10. Both teams remain selectable: management identity is an addressing
+//! input, not a control restriction. The legacy UI-card matcher is only a fallback if identity is
+//! unavailable; duplicate names, remapped follow labels, and hidden cards do not affect the main
+//! simulation-based resolution. Fail closed rather than guessing on incomplete data.
 
 use std::sync::Mutex;
 
-use mod_api_stable::{LaneV1, RecordKindV1, StableClient};
+use mod_api_stable::{LaneV1, StableClient};
 
 const MAX_UI_NODES: usize = 2_000;
 const SLOT_COUNT: usize = 10;
@@ -477,34 +478,6 @@ fn reject_duplicate_assignments(slots: &mut [Option<CachedSlot>], errors: &mut [
     }
 }
 
-// A bounded one-time identity probe: the stable SDK exposes the management team's ID and
-// athlete record documents, but does not document the contracted team's JSON field. Capture a
-// sample from each simulation team so we can validate that relationship without guessing which
-// five-card block is on which side. No record is modified.
-fn identity_probe(ctx: &StableClient<'_>, roster: &[ObservedAthlete]) -> String {
-    let own_team = ctx.player_team_id();
-    let mut observed_teams = roster.iter().map(|entry| entry.team).collect::<Vec<_>>();
-    observed_teams.sort_unstable();
-    observed_teams.dedup();
-    let samples = observed_teams
-        .iter()
-        .filter_map(|team| {
-            let athlete_id = roster.iter().find(|entry| entry.team == *team)?.athlete_id;
-            let contract = ctx
-                .record_get_json(RecordKindV1::Athlete, athlete_id, "contract")
-                .unwrap_or_else(|| "<unavailable>".to_owned());
-            let excerpt = contract.chars().take(400).collect::<String>();
-            Some(format!(
-                "simulation_team={team} athlete_id={athlete_id} contract={excerpt}"
-            ))
-        })
-        .collect::<Vec<_>>();
-    format!(
-        "identity probe: manager_team_id={own_team:?}; {}",
-        samples.join("; ")
-    )
-}
-
 /// Read-only automatic one-time roster health check for support logs.
 pub fn roster_diagnostics(ctx: &StableClient<'_>) -> String {
     let (slots, errors) = rebuild_mapping(ctx);
@@ -516,10 +489,10 @@ pub fn roster_diagnostics(ctx: &StableClient<'_>) -> String {
     let roster = authoritative_roster_snapshot();
     let blocks = TEAM_BLOCKS.lock().map(|blocks| *blocks).unwrap_or([None, None]);
     let authority = format!(
-        "candidate_a_roster={}/10 complete={} team_blocks={blocks:?}; {}",
+        "candidate_a_roster={}/10 complete={} team_blocks={blocks:?} manager_team_id={:?}",
         roster.len(),
         complete_authoritative_roster(&roster),
-        identity_probe(ctx, &roster)
+        ctx.player_team_id()
     );
     if failures.is_empty() {
         return format!(
