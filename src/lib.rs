@@ -1337,7 +1337,7 @@ fn init(host: &StableHost) -> StableMod {
     match replay_action_gate::install() {
         Ok(()) => host.log(
             LogLevel::Info,
-            "TFM2 replay shortcut gate installed (semantic action lookup; v0.6.1)",
+            "TFM2 replay shortcut gate installed (semantic action lookup; verified build)",
         ),
         Err(error) => {
             diagnostics::event(&format!("replay safety gate FAILED: {error}"));
