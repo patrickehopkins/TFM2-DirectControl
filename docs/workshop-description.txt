@@ -46,6 +46,6 @@ Commander Shepard's romance with Tali isn't fixed canon so there's still hope th
 [/list]
 
 [h2]COMPATIBILITY[/h2]
-[b]Windows/Steam, Teamfight Manager 2 v0.6.1. Single-player only.[/b]
+[b]Windows/Steam, Teamfight Manager 2 v0.6.2. Single-player only.[/b]
 
 Mods that modify champion AI, combat, targeting, native inputs, or simulation timing could conflict with Harbinger. Content-focused mods may be compatible, but combinations haven't been tested. Commander Shepard is completely incompatible with Harbinger.
