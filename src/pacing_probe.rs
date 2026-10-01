@@ -222,6 +222,7 @@ fn observe_candidate_job(probe: simulation_probe::SimulationProbeSnapshot) {
     ACTIVE_JOB_CONTEXT.store(probe.last_context, Ordering::Release);
     ACTIVE_JOB_ENTRY.store(probe.entries, Ordering::Release);
     reset_job_runtime();
+    crate::slot_mapping::reset_candidate_roster();
     STARTUP_JOB_START_MS.store(unsafe { GetTickCount64() }, Ordering::Release);
 }
 
@@ -803,6 +804,7 @@ impl StablePlayerAi for CandidateAObserverAi {
         let tick = ctx.tick() as u64;
         let player_id = ctx.player_id();
         let athlete_id = ctx.athlete_id();
+        crate::slot_mapping::observe_candidate(athlete_id, ctx.team(), ctx.lane());
 
         CANDIDATE_A_THINK_CALLS.fetch_add(1, Ordering::Relaxed);
         let _ = FIRST_CANDIDATE_A_TICK.compare_exchange(
