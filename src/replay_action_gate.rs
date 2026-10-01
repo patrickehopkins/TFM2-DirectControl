@@ -1,4 +1,4 @@
-//! v0.6.1 binding-independent native replay shortcut gate.
+//! Binding-independent native replay shortcut gate for verified TFM2 builds.
 //!
 //! This detours the *runtime action -> current key* lookup, NOT action-name
 //! formatting, the physical keyboard, or persisted shortcut configuration.
@@ -11,7 +11,7 @@
 //! through the stable client API. Native camera actions 0x35/0x36 and all
 //! non-replay actions are ALWAYS forwarded unchanged.
 //!
-//! All RVAs/signatures are valid ONLY for the exact verified 0.6.1 PE build.
+//! Every RVA/signature is selected only for an exact verified PE build.
 //! An unsupported game must not silently enter live control unprotected.
 
 use std::{
@@ -23,9 +23,30 @@ use std::{
     },
 };
 
-const PE_TIMESTAMP: u32 = 0x6AB1_D950;
-const PE_IMAGE_SIZE: u32 = 0x0526_4000;
-const BINDING_LOOKUP_RVA: usize = 0x021C_4CE0;
+#[derive(Debug, Clone, Copy)]
+struct ReplayActionLayout {
+    pe_timestamp: u32,
+    image_size: u32,
+    binding_lookup_rva: usize,
+}
+
+const BUILD_0_6_1: ReplayActionLayout = ReplayActionLayout {
+    pe_timestamp: 0x6AB1_D950,
+    image_size: 0x0526_4000,
+    binding_lookup_rva: 0x021C_4CE0,
+};
+
+const BUILD_0_6_2: ReplayActionLayout = ReplayActionLayout {
+    pe_timestamp: 0x6ABC_597E,
+    image_size: 0x052B_8000,
+    binding_lookup_rva: 0x028D_3E90,
+};
+
+fn known_layout(timestamp: u32, image_size: u32) -> Option<&'static ReplayActionLayout> {
+    [&BUILD_0_6_1, &BUILD_0_6_2]
+        .into_iter()
+        .find(|layout| layout.pe_timestamp == timestamp && layout.image_size == image_size)
+}
 
 // Exact first 12 complete instructions bytes, verified from the uploaded
 // SHA-256 91084e9a...d15c2268f98 executable. No RIP-relative instructions;
@@ -129,16 +150,17 @@ unsafe fn install_inner() -> Result<(), String> {
     }
     let timestamp = ptr::read_unaligned(module.add(pe_offset + 8).cast::<u32>());
     let image_size = ptr::read_unaligned(module.add(pe_offset + 24 + 56).cast::<u32>());
-    if timestamp != PE_TIMESTAMP || image_size != PE_IMAGE_SIZE {
-        return Err(format!(
+    let layout = known_layout(timestamp, image_size).ok_or_else(|| {
+        format!(
             "unsupported replay action lookup build: timestamp=0x{timestamp:08X}, image=0x{image_size:08X}"
-        ));
-    }
+        )
+    })?;
 
-    let target = module.add(BINDING_LOOKUP_RVA);
+    let target = module.add(layout.binding_lookup_rva);
     if std::slice::from_raw_parts(target, PATCH_LEN) != EXPECTED_PROLOGUE {
         return Err(format!(
-            "replay binding lookup signature mismatch at RVA 0x{BINDING_LOOKUP_RVA:X}"
+            "replay binding lookup signature mismatch at RVA 0x{:X}",
+            layout.binding_lookup_rva
         ));
     }
 
