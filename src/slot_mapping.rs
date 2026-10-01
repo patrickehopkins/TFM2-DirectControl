@@ -680,6 +680,42 @@ mod tests {
     }
 
     #[test]
+    fn all_labels_remapped_and_names_duplicated_still_resolve_both_teams() {
+        reset_candidate_roster();
+        let roster = (0..10).map(|i| ObservedAthlete {
+            athlete_id: 100 + i,
+            team: if i < 5 { 9 } else { 3 },
+            lane_index: i % 5,
+        }).collect::<Vec<_>>();
+        let no_card_labels = vec![None; SLOT_COUNT];
+        let blocks = calibrated_team_blocks(&no_card_labels, &roster, Some(9));
+        assert_eq!(blocks, [Some(9), Some(3)]);
+        for i in 0..10 {
+            assert_eq!(authoritative_slot_with_blocks(i, &roster, blocks), Some(100 + i));
+        }
+        // The manager's team need not have the lowest numeric ID.
+        let reversed = calibrated_team_blocks(&no_card_labels, &roster, Some(3));
+        assert_eq!(reversed, [Some(3), Some(9)]);
+        assert_eq!(authoritative_slot_with_blocks(0, &roster, reversed), Some(105));
+        assert_eq!(authoritative_slot_with_blocks(5, &roster, reversed), Some(100));
+        reset_candidate_roster();
+    }
+
+    #[test]
+    fn unavailable_team_identity_does_not_guess_an_initial_block() {
+        reset_candidate_roster();
+        let roster = (0..10).map(|i| ObservedAthlete {
+            athlete_id: 100 + i,
+            team: if i < 5 { 9 } else { 3 },
+            lane_index: i % 5,
+        }).collect::<Vec<_>>();
+        let no_card_labels = vec![None; SLOT_COUNT];
+        assert_eq!(calibrated_team_blocks(&no_card_labels, &roster, None), [None, None]);
+        assert_eq!(calibrated_team_blocks(&no_card_labels, &roster, Some(777)), [None, None]);
+        reset_candidate_roster();
+    }
+
+    #[test]
     fn longest_unambiguous_name_wins_in_card_text() {
         let athletes = vec![(1, "Sam".to_owned()), (2, "Samwise".to_owned())];
         let selection = match_card_to_athlete("Samwise (F2)", &athletes).unwrap();
