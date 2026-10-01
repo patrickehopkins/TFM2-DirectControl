@@ -242,7 +242,24 @@ fn complete_authoritative_roster(roster: &[ObservedAthlete]) -> bool {
 fn calibrated_team_blocks(
     ui_slots: &[Option<CachedSlot>],
     roster: &[ObservedAthlete],
+    manager_team_id: Option<usize>,
 ) -> [Option<usize>; 2] {
+    // Own-team F1-F5, enemy F6-F10: identify both from management identity and Candidate A.
+    // Never guess from player-id order, name strings, or labels such as "(F1)".
+    if complete_authoritative_roster(roster) {
+        if let Some(own) = manager_team_id {
+            if roster.iter().any(|entry| entry.team == own) {
+                if let Some(enemy) = roster.iter().map(|entry| entry.team).find(|team| *team != own) {
+                    let blocks = [Some(own), Some(enemy)];
+                    if let Ok(mut saved) = TEAM_BLOCKS.lock() {
+                        *saved = blocks;
+                    }
+                    return blocks;
+                }
+            }
+        }
+    }
+
     let previous = TEAM_BLOCKS.lock().map(|blocks| *blocks).unwrap_or([None, None]);
     let mut blocks = previous;
     let mut conflicts = [false, false];
@@ -427,7 +444,7 @@ fn rebuild_mapping(ctx: &StableClient<'_>) -> (Vec<Option<CachedSlot>>, Vec<Opti
     // First reject ambiguous presentation matches. They must never serve as calibration anchors.
     reject_duplicate_assignments(&mut slots, &mut errors);
     let roster = authoritative_roster_snapshot();
-    let blocks = calibrated_team_blocks(&slots, &roster);
+    let blocks = calibrated_team_blocks(&slots, &roster, ctx.player_team_id());
     populate_authoritative_slots(ctx, &mut slots, &mut errors, &roster, blocks);
     reject_duplicate_assignments(&mut slots, &mut errors);
 
