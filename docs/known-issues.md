@@ -35,6 +35,19 @@ The first Workshop release keeps the live simulation on the validated 60 Hz / 1x
 
 The investigation stopping point, including death/respawn fast-forward ideas, is preserved in `docs/deferred-investigations.md`.
 
+## Occasional presentation drift relative to live simulation
+
+Status: **reported; automatic detection and correction remain deferred.**
+
+A user report showed presentation falling roughly one second behind the authoritative
+simulation by about 6:30 in a match: the displayed Berserker followed its live
+control circle with a visible delay. A 3× playback diagnostic corrected the
+presentation in that report, but Harbinger does not yet detect or repair this
+drift automatically. Preserve the authoritative 60 Hz simulation baseline;
+do not solve presentation lag by accelerating the simulation. Follow the
+current release's replay-safety restrictions during Direct Control and avoid
+issuing commands when live rings no longer match displayed entities.
+
 ## Gunfighter attack-move does not preserve his native move-while-attacking behavior
 
 Status: **known champion-specific compatibility gap; post-release.**
@@ -50,6 +63,12 @@ Status: **validated on known benchmarks; broader champion interactions may still
 Berserker Skill 1 and Monk Skill 1 correctly cast immediately on keypress, while Ogre's automatic/passive trigger remained non-activatable.
 
 The stable AI context does not expose the live base champion action definition directly, so Targeting-style self-only actions are inferred from validator evidence. If a later champion exposes an ordinary ally-target skill that is incorrectly classified as self-only in a particular situation, narrow the generic rule rather than adding broad champion hard-codes.
+
+## Champion selection does not automatically follow the camera
+
+Status: **deferred to configurable Harbinger shortcuts and dedicated camera controls.**
+
+F1-F10 champion selection is now independent of the game's native follow bindings, which can be changed by the user. Earlier camera movement on F-key selection was incidental native follow behavior rather than an explicit Harbinger feature. The native bindings may still independently move the camera when the same physical key is pressed. Harbinger currently supports MMB drag and mouse-wheel zoom; intentional select/center/follow controls belong to the planned shortcut-menu update, not the v0.1.4 bugfix.
 
 ## Space recenter/follow is deferred
 
