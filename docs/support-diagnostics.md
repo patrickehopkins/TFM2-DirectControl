@@ -1,78 +1,83 @@
-# Harbinger v0.1.2: automatic support diagnostics
+# Harbinger v0.1.4: automatic support diagnostics
 
-The public maintenance build records startup, keyboard activation and champion mapping
-diagnostics **automatically** while the player uses Harbinger normally.
-Each compiled DLL embeds a build stamp (Git revision, dirty marker when
-available, and build timestamp) in the companion log's session header. This
-separates differently compiled v0.1.2 test builds without changing gameplay.
-It is a support identifier, **not a cryptographic hash of the DLL**. There is no
-debug hotkey, console command, special launch option or additional test procedure.
+Automatic support diagnostics were introduced in v0.1.2 and remain enabled in
+normal v0.1.4 gameplay. They record startup, keyboard activation, authoritative
+ten-champion roster mapping, and selection outcomes without a debug switch.
+
+Each compiled DLL embeds a support build stamp (Git revision, dirty marker when
+available, and build timestamp). This distinguishes development builds sharing
+a public version; it is **not** a cryptographic hash of the DLL.
 
 ## What to request from a player
 
 1. Let Steam update Harbinger and restart Teamfight Manager 2.
-2. Play a match and try Ctrl+Home, then F1 to select a champion, as usual.
-3. If it still fails, send the single file below after closing the game:
+2. Start a match, wait for READY, press Ctrl+Home, and try the affected F-key.
+3. If control fails, close the game and send this single file:
 
 `%APPDATA%\TeamSamoyed\TeamfightManager2\data\harbinger-diagnostics.log`
 
-Players can paste that location directly into Windows Explorer's address bar.
-The file's path **and build identifier** are printed in the game's ordinary
-`log.log` during mod initialization, allowing us to check whether diagnostics
-started and identify which build the player actually loaded.
-If the companion log does not exist, request the adjacent `log.log` instead.
+Players can paste that path directly into Windows Explorer's address bar.
+The companion log's path and build identifier are also printed in the ordinary
+game `log.log` at mod initialization. If the companion log cannot be created,
+request `log.log` instead.
 
-No private keyboard activity is logged: we only record Harbinger's Ctrl+Home
-and F1-F10 input attempts when the game owns foreground focus. We do not log
-raw text input. The support log is append-only with a roughly 1 MiB
-startup-rotation policy (one previous log retained); the latest session is
-separated by an explicit process-start header.
+Harbinger logs its Ctrl+Home and F1-F10 attempts only when the game has foreground
+focus; it does not record raw text entry. The companion log is append-only with
+roughly 1 MiB startup rotation and one previous log retained. Each process
+start has a separate header.
 
 ## What the maintainer will see
 
-- Game version, compiled build identifier and guarded hook initialization errors.
+- Game version, compiled build identifier, and guarded hook initialization errors.
 - Match lifecycle and phase changes.
 - Every 15 seconds in a visible match: phase, start state, synchronization,
   readiness tick, visible clock, last watched simulation tick, foreground
-  process ownership, replay safety, native speed-override state, and whether a
-  champion is selected.
-- Ctrl+Home presses: detected and either activated or still blocked. The worker
-  path also logs Ctrl+Home presses if a loading callback is blocking rendering.
-- An automatic ten-slot roster-health report once manual control is enabled.
-- F1-F10 presses and the corresponding selection success or precise mapping
-  failure (no visible card, unmatched athlete, ambiguous duplicate, etc.).
+  process ownership, replay safety, native speed-override state, and whether
+  a champion is selected.
+- Ctrl+Home attempts, including activation and blocked states. The worker
+  path also records activation during a render-blocking loading callback.
+- A one-time ten-slot roster-health report once manual control is enabled:
+  `candidate_a_roster` count, authoritative roster completeness, resolved
+  `team_blocks`, and `manager_team_id`.
+- F1-F10 attempts, selection successes (stable athlete IDs), and specific
+  mapping failures when an authoritative slot or safe fallback is unavailable.
 
-## Safe scope of this patch
+## Selection identity and fallback
 
-A malformed or missing card no longer prevents selection of every other valid,
-non-ambiguous card. Ambiguous or duplicate athlete assignments still fail
-closed to avoid controlling the wrong champion.
+Normal v0.1.4 selection uses the manager-team ID plus Candidate A's authoritative
+athlete/team/lane observations. F1-F5 map to the manager's team and F6-F10 to
+the opposing team, each in Top/Jungle/Mid/Bottom/Support order. Selection does
+not depend on athlete names, visible player-card labels, native follow shortcut
+bindings, or whether the match UI is hidden.
 
-The validated live simulation, 1x pacing, native replay safety gate, pause,
-skill commands, camera hooks, and multiplayer-disabled behavior are unchanged.
-If the current public build is reliable locally, do not merge or publish
-until this branch passes a Windows build and the smoke tests below.
+If the authoritative roster or manager-team relationship is incomplete, the
+mapper can still use unambiguous legacy UI card evidence as a limited fallback.
+It rejects ambiguous and duplicate athlete assignments rather than silently
+controlling the wrong champion. A failure involving missing `(F1)`-style text
+is therefore relevant only to the legacy fallback, **not** an expected failure
+with a complete authoritative roster.
+
+The validated 1x/60 Hz simulation, native replay safety gate, synchronized
+pause, skill commands, camera hooks, and single-player scope are unchanged by
+the v0.1.4 selection fix.
 
 ## Maintainer's release acceptance checks
 
-- Fresh Windows/Steam v0.6.1 Workshop-equivalent installation.
-- Ordinary match startup, wait for READY, Ctrl+Home, then F1-F10 selection
-  for all ten visible cards on an unchanged English-language game.
-- Ordinary movement, attacks, abilities, pause, End, Ctrl+End, and a new match.
-- Repeat the activation/selection test with the same other-mod combinations
-  previously checked by the maintainer.
-- Confirm the support log appears without any special action, has bounded
-  event frequency, and records Ctrl+Home, mapping health and selection outcomes.
-- Temporarily rebind a native F-key follow shortcut and verify any altered UI
-  card text is diagnosed rather than selecting the wrong actor.
-- Confirm both logs identify the same compiled build stamp and `log.log`
-  reports the companion-file path. If creation is blocked,
-  verify that error is recorded in `log.log`.
+- Install the intended Windows/Steam TFM2 v0.6.2 build, with the exact
+  Harbinger v0.1.4 release DLL and metadata.
+- Verify READY, Ctrl+Home, and all ten F1-F10 selections across both teams.
+- Test duplicate names on opposing teams, remapped native follow shortcuts,
+  and a fully hidden match UI. The maintainer reported all three passing
+  on the v0.1.4 selection-fix development build.
+- Verify movement, attacks, skills, pause/resume, End, Ctrl+End, and a fresh
+  match on the final packaged build.
+- Verify that the companion log identifies the compiled build and reports a
+  complete 10/10 Candidate-A roster and both team blocks.
+- Check `log.log` if companion logging or native hook installation fails.
+- Keep the original `mod.workshop_id` and update the existing Workshop item
+  rather than creating a duplicate listing.
 
-Leave a startup-stall watchdog out of this patch: ordinary phase transitions and
-the existing match heartbeat already capture the present support cases. Revisit
-only if incoming player logs prove there is an unobserved pre-render stall.
-
-Publish as an **update of the same Workshop item**, preserving
-`mod.workshop_id`. Do not rewrite the hand-edited Steam description during
-diagnostic maintenance.
+A startup-stall watchdog is not part of this maintenance update; existing
+match lifecycle and heartbeat diagnostics remain the first investigation path.
+Do not rewrite the maintainer's hand-edited Steam Workshop description as
+part of diagnostic maintenance.
