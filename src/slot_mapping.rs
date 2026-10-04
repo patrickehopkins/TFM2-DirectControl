@@ -562,6 +562,34 @@ fn reject_duplicate_assignments(slots: &mut [Option<CachedSlot>], errors: &mut [
     }
 }
 
+// Report contract evidence by simulation side without dumping private salary or
+// contract details into the normal support log.
+fn club_evidence_summary(
+    roster: &[ObservedAthlete],
+    clubs: &[(usize, usize)],
+) -> String {
+    let mut sides = roster.iter().map(|entry| entry.team).collect::<Vec<_>>();
+    sides.sort_unstable();
+    sides.dedup();
+    sides
+        .iter()
+        .map(|side| {
+            let mut owners = clubs
+                .iter()
+                .filter_map(|(athlete_id, club_id)| {
+                    roster
+                        .iter()
+                        .any(|entry| entry.athlete_id == *athlete_id && entry.team == *side)
+                        .then_some(*club_id)
+                })
+                .collect::<Vec<_>>();
+            owners.sort_unstable();
+            format!("side={side}:contracts={}/5:club_ids={owners:?}", owners.len())
+        })
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
 /// Read-only automatic one-time roster health check for support logs.
 pub fn roster_diagnostics(ctx: &StableClient<'_>) -> String {
     let (slots, errors) = rebuild_mapping(ctx);
@@ -577,12 +605,13 @@ pub fn roster_diagnostics(ctx: &StableClient<'_>) -> String {
         .unwrap_or([None, None]);
     let clubs = roster_club_ids(ctx, &roster);
     let authority = format!(
-        "candidate_a_roster={}/10 complete={} team_blocks={blocks:?} manager_club_id={:?} contract_clubs={}/10 club_side_blocks={:?}",
+        "candidate_a_roster={}/10 complete={} team_blocks={blocks:?} manager_club_id={:?} contract_clubs={}/10 club_side_blocks={:?} side_evidence=[{}]",
         roster.len(),
         complete_authoritative_roster(&roster),
         ctx.player_team_id(),
         clubs.len(),
-        ctx.player_team_id().and_then(|manager| club_team_blocks(&roster, &clubs, manager))
+        ctx.player_team_id().and_then(|manager| club_team_blocks(&roster, &clubs, manager)),
+        club_evidence_summary(&roster, &clubs)
     );
     if failures.is_empty() {
         return format!(
@@ -921,8 +950,14 @@ mod tests {
         let blocks = calibrated_team_blocks(&no_ui_cards, &roster, Some(42), &clubs);
         assert_eq!(blocks, [Some(1), Some(0)]);
         for key in 0..5 {
-            assert_eq!(authoritative_slot_with_blocks(key, &roster, blocks), Some(105 + key));
-            assert_eq!(authoritative_slot_with_blocks(key + 5, &roster, blocks), Some(100 + key));
+            assert_eq!(
+                authoritative_slot_with_blocks(key, &roster, blocks),
+                Some(105 + key)
+            );
+            assert_eq!(
+                authoritative_slot_with_blocks(key + 5, &roster, blocks),
+                Some(100 + key)
+            );
         }
         reset_candidate_roster();
     }
