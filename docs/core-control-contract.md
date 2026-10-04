@@ -6,7 +6,7 @@ The direct-control layer is intentionally a low-policy primitive rather than a p
 
 Teamfight Manager 2 exposes ten visible match cards labeled F1-F10, but runtime testing proved that this visible order is **not** the same as Candidate A's internal `player_id` ordering. The core therefore must not define `F3 == player_id 2` or similar arithmetic mappings.
 
-For the draft 0.6.2 selection layer (PR #27), physical F1-F10 remain Harbinger's independent selection shortcuts, even if the game's native follow shortcuts have been rebound:
+In the validated v0.1.4 selection layer (merged PR #27), physical F1-F10 remain Harbinger's independent selection shortcuts, even if the game's native follow shortcuts have been rebound:
 
 ```text
 Candidate A: stable athlete_id + team + lane for each of ten players
@@ -18,7 +18,7 @@ selected slot -> stable athlete_id -> Candidate A
 
 The manager-team ID identifies the **card group**, not a permission boundary. Athletes on both sides remain selectable. If a complete authoritative roster or matching manager-team identity is unavailable, an unambiguous legacy card may still calibrate a block; missing evidence must never cause a guessed identity.
 
-Player names, shortcut labels and card visibility are not inputs to the authoritative mapping. The role/card-order assumption and hidden-UI behavior require live regression testing before this branch can be merged.
+Player names, shortcut labels and card visibility are not inputs to the authoritative mapping. The team/role mapping, duplicate-name independence, remapped-follow-key independence, and hidden-UI behavior passed a live 0.6.2 regression test before PR #27 merged.
 
 The core does **not** reject an athlete because of team ownership. Team/ownership restrictions, if desired, belong to a higher-level mod or feature built on top of this control layer.
 
@@ -38,13 +38,13 @@ The base layer should provide mechanisms such as:
 
 It should avoid policy such as:
 
-- identifying "my team" unless a higher layer explicitly asks for it;
+- using manager-team identity to impose team ownership restrictions (it is used here only to establish card-slot order);
 - deciding which side may be controlled;
 - enforcing game-mode-specific permissions;
 - choosing strategic behavior for uncontrolled actors;
 - adding feature-rich UX that constrains future consumers.
 
-## Startup behavior (current v0.6.1)
+## Startup behavior (current v0.6.2)
 
 A true zero-pre-simulation start gate is **not part of the current core contract**: the game's Start Match transition needs real Candidate-A simulation progress before it can construct an interactive battlefield. Freezing at tick 1 or after only one complete tick was physically rejected.
 
