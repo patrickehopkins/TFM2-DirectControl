@@ -273,7 +273,8 @@ fn roster_club_ids(ctx: &StableClient<'_>, roster: &[ObservedAthlete]) -> Vec<(u
     roster
         .iter()
         .filter_map(|entry| {
-            let contract = ctx.record_get_json(RecordKindV1::Athlete, entry.athlete_id, "contract")?;
+            let contract =
+                ctx.record_get_json(RecordKindV1::Athlete, entry.athlete_id, "contract")?;
             Some((entry.athlete_id, parse_contract_club_id(&contract)?))
         })
         .collect()
@@ -564,10 +565,7 @@ fn reject_duplicate_assignments(slots: &mut [Option<CachedSlot>], errors: &mut [
 
 // Report contract evidence by simulation side without dumping private salary or
 // contract details into the normal support log.
-fn club_evidence_summary(
-    roster: &[ObservedAthlete],
-    clubs: &[(usize, usize)],
-) -> String {
+fn club_evidence_summary(roster: &[ObservedAthlete], clubs: &[(usize, usize)]) -> String {
     let mut sides = roster.iter().map(|entry| entry.team).collect::<Vec<_>>();
     sides.sort_unstable();
     sides.dedup();
@@ -584,7 +582,10 @@ fn club_evidence_summary(
                 })
                 .collect::<Vec<_>>();
             owners.sort_unstable();
-            format!("side={side}:contracts={}/5:club_ids={owners:?}", owners.len())
+            format!(
+                "side={side}:contracts={}/5:club_ids={owners:?}",
+                owners.len()
+            )
         })
         .collect::<Vec<_>>()
         .join("; ")
