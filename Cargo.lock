@@ -8,7 +8,7 @@ version = "0.1.0"
 
 [[package]]
 name = "tfm2_direct_control"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "mod-api-stable",
  "windows-sys",
