@@ -4,7 +4,7 @@ These instructions apply to the current `main` implementation. For behavior, use
 
 ## Project and supported build
 
-Harbinger Direct Control runs Teamfight Manager 2's watched match near real time and publishes commands for a selected champion through the official stable native Rust SDK. The currently validated target is **TFM2 v0.6.2 on Windows/Steam**, single-player first. Do not claim that a new game version, Linux/Steam Deck, replay determinism, or multiplayer works without separate validation.
+Harbinger Direct Control runs Teamfight Manager 2's watched match near real time and publishes commands for a selected champion through the official stable native Rust SDK. The current Harbinger release target is **v0.1.5** on **TFM2 v0.6.2 Windows/Steam**, single-player first. Do not claim that a new game version, Linux/Steam Deck, replay determinism, or multiplayer works without separate validation.
 
 ## Current behavior to preserve
 
