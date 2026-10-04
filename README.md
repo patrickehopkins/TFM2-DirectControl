@@ -240,27 +240,68 @@ The installed mod lives under:
 
 ## Release / Workshop
 
-Use the game's `TFM2ModUploader.exe`.
+Use the game's `TFM2ModUploader.exe` to **update the existing Steam Workshop item**,
+not to create a second listing. The release DLL is always built from the
+checked-out repository source; neither the stray root
+`TFM2-DirectControl.dll` nor an older DLL in `dist/workshop` is authoritative.
 
-Before updating the **existing** Workshop listing:
+After the release PRs have merged, switch to `main` and pull the latest changes
+in GitHub Desktop. From the **repository root** in PowerShell:
 
-1. finish tests from the exact intended release commit (`cargo fmt --check`,
-   `cargo test`, then `cargo build --release` without diagnostic features);
-2. use **Build Only (No Upload)** in the uploader, inspect its actual staged
-   runtime package, and confirm the compiled DLL and `mod.mod_info` are v0.1.4;
-3. select the **original publishing folder containing `mod.workshop_id`**,
-   or copy that local ID file into the chosen package folder before uploading.
-   Keep a backup: a missing ID can create a duplicate Workshop item;
-4. use **Update Workshop Item** with a short change note. Preserve the existing
-   manually edited Steam Workshop description; do not replace it with the
-   shorter runtime metadata description;
-5. for a Workshop-installed smoke test, first remove the duplicate development
-   install at `<TFM2 install>\mods\tfm2_direct_control`, then restart the
-   game. Never run the development and Workshop copies simultaneously.
+```powershell
+.\scripts\bootstrap-sdk.ps1
+cargo fmt --check
+cargo check
+cargo test
+cargo build --release
+```
 
-`mod.workshop_id` is deliberately Git-ignored; **preserve it locally** rather
-than committing it to the public source repository. The historical first-release
-checklist is not the current update procedure.
+Build without the `replay-native-trace` diagnostic feature. A successful
+`cargo build --release` writes the canonical DLL to
+`target\release\tfm2_direct_control.dll`.
+
+Stage **that exact DLL** with the current repository metadata into your
+existing Workshop package. These commands intentionally refuse to proceed if
+the original Workshop ID is missing:
+
+```powershell
+$pkg = ".\dist\workshop\tfm2_direct_control"
+if (!(Test-Path "$pkg\mod.workshop_id")) {
+    throw "Original mod.workshop_id missing. Stop: do not create a duplicate Workshop item."
+}
+Copy-Item ".\target\release\tfm2_direct_control.dll" "$pkg\tfm2_direct_control.dll" -Force
+Copy-Item ".\mod.mod_info" "$pkg\mod.mod_info" -Force
+(Get-Content "$pkg\mod.mod_info" -Raw | ConvertFrom-Json).version
+Get-FileHash ".\target\release\tfm2_direct_control.dll"
+Get-FileHash "$pkg\tfm2_direct_control.dll"
+```
+
+The staged metadata must say **0.1.4**, and the two DLL hashes must match.
+Keep the existing preview/thumbnail assets and **preserve
+`mod.workshop_id` locally**. Do not commit the Workshop ID to Git.
+
+1. In `TFM2ModUploader.exe`, select the **existing** package folder
+   `dist/workshop/tfm2_direct_control`. Run **Build Only (No Upload)** and
+   inspect the staged files. This is not a replacement for the Cargo build or
+   the explicit copy above.
+2. Perform a short final smoke test of the intended package: READY,
+   `Ctrl+Home`, selection with F1-F5 on **your** team (whether blue or red),
+   F6-F10 on the opponent, movement, skills, `End`, and confirmed
+   `Ctrl+End`. Also preserve the previously passed duplicate-name, remapped
+   native-follow, and hidden-UI regressions.
+3. Choose **Update Workshop Item** on the **original** listing. Do not choose
+   new publication; a missing `mod.workshop_id` can create a duplicate item.
+   The short in-game metadata may overwrite the live Workshop description.
+   Check the page afterward and restore the versioned BBCode from
+   `docs/workshop-description.txt` using the Steam page's **Edit title &
+   description** control as necessary.
+4. For a Workshop-installed smoke test, move the duplicate local development
+   installation out of `<TFM2 install>\mods\tfm2_direct_control` first, then
+   restart the game. Do not load development and Workshop copies simultaneously.
+
+See `docs/workshop-publishing.md` for the distinction between the short
+in-game description and the full Steam page copy. Historical first-release
+checklists are not the current update procedure.
 
 ## Project documentation
 
