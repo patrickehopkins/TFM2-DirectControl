@@ -51,6 +51,12 @@ Berserker Skill 1 and Monk Skill 1 correctly cast immediately on keypress, while
 
 The stable AI context does not expose the live base champion action definition directly, so Targeting-style self-only actions are inferred from validator evidence. If a later champion exposes an ordinary ally-target skill that is incorrectly classified as self-only in a particular situation, narrow the generic rule rather than adding broad champion hard-codes.
 
+## Champion selection does not automatically follow the camera
+
+Status: **deferred to configurable Harbinger shortcuts and dedicated camera controls.**
+
+F1-F10 champion selection is now independent of the game's native follow bindings, which can be changed by the user. Earlier camera movement on F-key selection was incidental native follow behavior rather than an explicit Harbinger feature. The native bindings may still independently move the camera when the same physical key is pressed. Harbinger currently supports MMB drag and mouse-wheel zoom; intentional select/center/follow controls belong to the planned shortcut-menu update, not the v0.1.4 bugfix.
+
 ## Space recenter/follow is deferred
 
 Status: **post-release.**
