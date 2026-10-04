@@ -286,33 +286,39 @@ fn club_team_blocks(
     athlete_clubs: &[(usize, usize)],
     manager_club_id: usize,
 ) -> Option<[usize; 2]> {
-    if !complete_authoritative_roster(roster) || athlete_clubs.len() != SLOT_COUNT {
+    if !complete_authoritative_roster(roster) {
         return None;
     }
-    let mut club_for_side = std::collections::HashMap::<usize, usize>::new();
-    for athlete in roster {
-        let mut clubs = athlete_clubs
-            .iter()
-            .filter(|(id, _)| *id == athlete.athlete_id);
-        let club_id = clubs.next()?.1;
-        if clubs.next().is_some() {
+
+    // Some lineup athletes have no readable management contract (e.g. loaned or
+    // temporary participants). A full ten-person Candidate-A roster is required,
+    // but management contract records need not cover all ten athletes. Demand at
+    // least two independent, noncontradictory club records on EACH match side.
+    let mut evidence = std::collections::HashMap::<usize, (usize, usize)>::new();
+    let mut seen_athletes = std::collections::HashSet::new();
+    for &(athlete_id, club_id) in athlete_clubs {
+        if !seen_athletes.insert(athlete_id) {
             return None;
         }
-        if let Some(previous) = club_for_side.insert(athlete.team, club_id) {
-            if previous != club_id {
-                return None;
-            }
+        let athlete = roster.iter().find(|entry| entry.athlete_id == athlete_id)?;
+        let side = evidence.entry(athlete.team).or_insert((club_id, 0));
+        if side.0 != club_id {
+            // Contract records disagree about who owns the same match-side roster.
+            // Never override contradictory evidence with a majority vote.
+            return None;
         }
+        side.1 += 1;
     }
-    if club_for_side.len() != 2 {
+    if evidence.len() != 2 || evidence.values().any(|(_, count)| *count < 2) {
         return None;
     }
-    let own = club_for_side
+
+    let own = evidence
         .iter()
-        .find_map(|(&side, &club)| (club == manager_club_id).then_some(side))?;
-    let enemy = club_for_side
+        .find_map(|(&side, &(club, _))| (club == manager_club_id).then_some(side))?;
+    let enemy = evidence
         .iter()
-        .find_map(|(&side, &club)| (club != manager_club_id).then_some(side))?;
+        .find_map(|(&side, &(club, _))| (club != manager_club_id).then_some(side))?;
     Some([own, enemy])
 }
 
@@ -887,7 +893,54 @@ mod tests {
         assert_eq!(club_team_blocks(&roster, &clubs, 42), None);
         clubs[2].1 = 19;
         clubs.pop();
+        // A missing contract is permitted when both sides still have at least
+        // two consistent owners; it must not disable all ten F-keys.
+        assert_eq!(club_team_blocks(&roster, &clubs, 42), Some([1, 0]));
+        clubs.retain(|(id, _)| !matches!(*id, 105 | 106 | 107));
         assert_eq!(club_team_blocks(&roster, &clubs, 42), None);
+    }
+
+    #[test]
+    fn partial_contract_roster_resolves_both_sides_without_ui_labels() {
+        reset_candidate_roster();
+        let roster = (0..10)
+            .map(|index| ObservedAthlete {
+                athlete_id: 100 + index,
+                team: index / 5,
+                lane_index: index % 5,
+            })
+            .collect::<Vec<_>>();
+        // Seven readable contracts reproduce the user's 7/10 diagnostic: all
+        // five blue athletes plus just two red athletes have contract records.
+        let clubs = roster
+            .iter()
+            .take(7)
+            .map(|entry| (entry.athlete_id, if entry.team == 0 { 19 } else { 42 }))
+            .collect::<Vec<_>>();
+        let no_ui_cards = vec![None; SLOT_COUNT];
+        let blocks = calibrated_team_blocks(&no_ui_cards, &roster, Some(42), &clubs);
+        assert_eq!(blocks, [Some(1), Some(0)]);
+        for key in 0..5 {
+            assert_eq!(authoritative_slot_with_blocks(key, &roster, blocks), Some(105 + key));
+            assert_eq!(authoritative_slot_with_blocks(key + 5, &roster, blocks), Some(100 + key));
+        }
+        reset_candidate_roster();
+    }
+
+    #[test]
+    fn insufficient_independent_contract_evidence_never_guesses() {
+        let roster = (0..10)
+            .map(|index| ObservedAthlete {
+                athlete_id: 100 + index,
+                team: index / 5,
+                lane_index: index % 5,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(club_team_blocks(&roster, &[(100, 19), (105, 42)], 42), None);
+        assert_eq!(
+            club_team_blocks(&roster, &[(100, 19), (101, 19), (105, 42), (106, 19)], 42),
+            None
+        );
     }
 
     #[test]
