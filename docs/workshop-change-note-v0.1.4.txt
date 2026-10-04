@@ -1,0 +1,8 @@
+Harbinger v0.1.4 — champion selection reliability
+
+- Fixed F1–F5 selecting blue instead of your own team when playing on red; F6–F10 select the opponents.
+- Fixed selection with duplicate player names, remapped native follow shortcuts, and hidden UI.
+- Improved selection with incomplete athlete contract data while rejecting ambiguous team assignments.
+- Updated the in-game controls and compatibility descriptions for TFM2 v0.6.2.
+
+Dedicated Harbinger camera-follow controls and configurable mod keybindings are planned for a future update.
