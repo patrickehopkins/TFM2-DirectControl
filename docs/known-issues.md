@@ -35,6 +35,19 @@ The first Workshop release keeps the live simulation on the validated 60 Hz / 1x
 
 The investigation stopping point, including death/respawn fast-forward ideas, is preserved in `docs/deferred-investigations.md`.
 
+## Occasional presentation drift relative to live simulation
+
+Status: **reported; automatic detection and correction remain deferred.**
+
+A user report showed presentation falling roughly one second behind the authoritative
+simulation by about 6:30 in a match: the displayed Berserker followed its live
+control circle with a visible delay. A 3× playback diagnostic corrected the
+presentation in that report, but Harbinger does not yet detect or repair this
+drift automatically. Preserve the authoritative 60 Hz simulation baseline;
+do not solve presentation lag by accelerating the simulation. Follow the
+current release's replay-safety restrictions during Direct Control and avoid
+issuing commands when live rings no longer match displayed entities.
+
 ## Gunfighter attack-move does not preserve his native move-while-attacking behavior
 
 Status: **known champion-specific compatibility gap; post-release.**
