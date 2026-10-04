@@ -4,7 +4,7 @@ Real-time direct champion control for **Teamfight Manager 2**.
 
 The mod keeps the watched match simulation running in real time, lets you take control of any of the ten champions, and feeds commands back through Teamfight Manager 2's own player-input system. Pick/ban, champion logic, pathing, combat resolution, fog, shopping, and the underlying simulation remain TFM2 systems; Direct Control adds a human command layer on top.
 
-Current Harbinger version: **v0.1.4**, targeting **Teamfight Manager 2 v0.6.2 on Windows/Steam**.
+Current Harbinger version: **v0.1.5**, targeting **Teamfight Manager 2 v0.6.2 on Windows/Steam**.
 
 ## Control scheme at a glance
 
@@ -124,7 +124,7 @@ Known/deferred work is tracked in:
 
 One notable champion-specific gap remains post-release: Gunfighter's native move-while-attacking behavior does not compose correctly with generic attack-move yet.
 
-## Automatic support diagnostics (introduced in v0.1.2; mapping hardened in v0.1.4)
+## Automatic support diagnostics (introduced in v0.1.2; selection hardened in v0.1.4–v0.1.5)
 
 Harbinger automatically captures startup synchronization, Ctrl+Home activation, F1-F10
 selection outcomes, and a one-time authoritative roster/team-slot mapping health check while the user
@@ -276,7 +276,7 @@ Get-FileHash ".\target\release\tfm2_direct_control.dll"
 Get-FileHash "$pkg\tfm2_direct_control.dll"
 ```
 
-The staged metadata must say **0.1.4**, and the two DLL hashes must match.
+The staged metadata must say **0.1.5**, and the two DLL hashes must match.
 Keep the existing preview/thumbnail assets and **preserve
 `mod.workshop_id` locally**. Do not commit the Workshop ID to Git.
 
