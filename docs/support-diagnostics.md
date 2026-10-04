@@ -38,8 +38,12 @@ start has a separate header.
   path also records activation during a render-blocking loading callback.
 - A one-time ten-slot roster-health report once manual control is enabled:
   `candidate_a_roster` count, authoritative roster completeness, resolved
-  `team_blocks`, `manager_club_id`, contract identity count, and the resolved
-  club-to-match-side mapping.
+  `team_blocks`, `manager_club_id`, contract identity count, per-side ownership
+  evidence, and the resolved club-to-match-side mapping. A full authoritative
+  ten-athlete roster is required, but the club relation accepts incomplete
+  contract data when each side has at least two matching, noncontradictory
+  contract-club records. Missing or conflicting evidence remains visible in
+  the one-time roster report.
 - F1-F10 attempts, selection successes (stable athlete IDs), and specific
   mapping failures when an authoritative slot or safe fallback is unavailable.
 
