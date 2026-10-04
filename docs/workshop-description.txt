@@ -12,7 +12,7 @@ Harbinger Direct Control turns Teamfight Manager 2's pre-simulated matches into 
 [h2]CONTROLS[/h2]
 [table]
 [tr][td]Ctrl+Home[/td][td]Begin Direct Control[/td][/tr]
-[tr][td]F1-F10[/td][td]Control champion[/td][/tr]
+[tr][td]F1-F5 / F6-F10[/td][td]Control your team / opposing team (Top, Jungle, Mid, Bottom, Support)[/td][/tr]
 [tr][td]RMB[/td][td]Move / Attack[/td][/tr]
 [tr][td]A + LMB[/td][td]Attack-move[/td][/tr]
 [tr][td]Q / W / R[/td][td]Abilities 1, 2 and 3 respectively[/td][/tr]
@@ -26,10 +26,12 @@ Harbinger Direct Control turns Teamfight Manager 2's pre-simulated matches into 
 
 [h2]IMPORTANT NOTES:[/h2]
 [h3]MATCH START PRE-SIMULATION[/h3]
-The loading screen after the start of a match is noticeably longer. The game requires some pre-simulation time before the battlefield becomes interactive. Wait for the initial synchronization and ready prompt before pressing Ctrl+Home at the start of a game.
+The game requires some pre-simulation time before the battlefield becomes interactive, so initial loading and synchronization may take a little longer than usual. Wait for the ready prompt before pressing Ctrl+Home at the start of a game.
 
 [h3]SHORTCUT SETTINGS[/h3]
-Some default spectator shortcuts conflict with the controls I've chosen. Please check your personal Shortcut settings, especially 'R' and 'F1'-'F10' in the game's Shortcuts menu. 'Q' and 'A' also overlap replay actions, but Harbinger suppresses those replay actions while it owns the live match. I'll implement customizable mod keybindings later. I promise!
+Some default spectator shortcuts conflict with the controls I've chosen. Harbinger's F1-F10 champion selection works independently of the game's native follow bindings, even with duplicate player names or a hidden UI. F1-F5 always select your team and F6-F10 select the opposing team, regardless of which side is blue or red. Feel free to rebind the game's native follow shortcuts, but they may still move the camera if assigned to the same keys.
+
+Please check your Shortcut settings, especially 'R' (Auto Follow). 'Q' and 'A' also overlap replay actions, but Harbinger suppresses those replay actions while it owns the live match. Selecting a champion doesn't independently center or follow the camera; MMB drag and scroll-wheel zoom are the supported camera controls. I'll implement customizable mod keybindings and dedicated camera-follow controls later. I promise!
 
 [h3]TALI'ZORAH NAR RAYYA[/h3]
 Commander Shepard's romance with Tali isn't fixed canon so there's still hope that it could be me. It would never have worked anyway. Tali is an immaculate, environmentally sterile goddess of Quarian perfection; a radiant, violet-eyed miracle of evolution, lovingly preserved in a hermetically sealed cathedral of aerospace-grade techno-magic. A divine convergence of intellect, elegance, and immune-system deficiency. An impossibly beautiful creature whose very existence represents the triumph of intelligent design over a universe fundamentally unworthy of her. Shepard's basically just a violent cyborg zombie murder-monkey with no real friends. I refuse to acknowledge the timeline in which her name ends in "Vas Normandy".
@@ -39,6 +41,7 @@ Commander Shepard's romance with Tali isn't fixed canon so there's still hope th
 [list]
 [*]Some champion mechanics still need special handling. For example, Gunfighter doesn't preserve his native move-while-attacking behavior during attack-move.
 [*]Certain champions have skill descriptions that don't accurately represent their actual in-game behavior. Harbinger follows the game's native skill mechanics.
+[*]Rare presentation lag can leave displayed champions behind the live simulation; automatic desync correction is not implemented yet.
 [*]Player-issued AI pings and manual shopping are planned but not implemented. Ordinary shopping remains automatic whenever you visit home base.
 [*]I still haven't figured out how to flame the AI in-game yet.
 [*]I still haven't figured out how to make the AI flame me in-game yet.
@@ -46,6 +49,6 @@ Commander Shepard's romance with Tali isn't fixed canon so there's still hope th
 [/list]
 
 [h2]COMPATIBILITY[/h2]
-[b]Windows/Steam, Teamfight Manager 2 v0.6.2. Single-player only.[/b]
+[b]Harbinger v0.1.4 for Teamfight Manager 2 v0.6.2. Windows/Steam, single-player only.[/b]
 
 Mods that modify champion AI, combat, targeting, native inputs, or simulation timing could conflict with Harbinger. Content-focused mods may be compatible, but combinations haven't been tested. Commander Shepard is completely incompatible with Harbinger.
