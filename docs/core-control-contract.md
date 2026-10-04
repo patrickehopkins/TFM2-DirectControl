@@ -10,15 +10,16 @@ In the validated v0.1.4 selection layer (merged PR #27), physical F1-F10 remain 
 
 ```text
 Candidate A: stable athlete_id + team + lane for each of ten players
-management SDK: stable manager-team ID
-F1-F5 -> manager's team, by top/jungle/mid/bottom/support
+management SDK: persistent manager club ID + each athlete's contract club ID
+resolve club ownership to Candidate-A blue/red simulation side
+F1-F5 -> manager's club, by top/jungle/mid/bottom/support
 F6-F10 -> other simulation team, same lane order
 selected slot -> stable athlete_id -> Candidate A
 ```
 
-The manager-team ID identifies the **card group**, not a permission boundary. Athletes on both sides remain selectable. If a complete authoritative roster or matching manager-team identity is unavailable, an unambiguous legacy card may still calibrate a block; missing evidence must never cause a guessed identity.
+The persistent manager-team ID is **not** a Candidate-A blue/red side index. Resolve the manager's side by matching the athlete contract club IDs to the manager's club ID; never compare these different ID namespaces directly. The resulting ownership identifies the **card group**, not a permission boundary. Athletes on both sides remain selectable. If a complete authoritative roster or matching manager-team identity is unavailable, an unambiguous legacy card may still calibrate a block; missing evidence must never cause a guessed identity.
 
-Player names, shortcut labels and card visibility are not inputs to the authoritative mapping. The team/role mapping, duplicate-name independence, remapped-follow-key independence, and hidden-UI behavior passed a live 0.6.2 regression test before PR #27 merged.
+Player names, shortcut labels and card visibility are not inputs to the authoritative mapping. Duplicate-name independence, remapped-follow-key independence, and hidden-UI behavior passed a live 0.6.2 regression test before PR #27 merged. That test was blue-side only and did not validate manager-club ownership on red. The red-side ordering correction requires its own live regression test before merging.
 
 The core does **not** reject an athlete because of team ownership. Team/ownership restrictions, if desired, belong to a higher-level mod or feature built on top of this control layer.
 
