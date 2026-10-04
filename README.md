@@ -2,7 +2,7 @@
 
 Real-time direct champion control for **Teamfight Manager 2**.
 
-The mod keeps the watched match simulation running in real time, lets you take control of any of the ten visible champions, and feeds commands back through Teamfight Manager 2's own player-input system. Pick/ban, champion logic, pathing, combat resolution, fog, shopping, and the underlying simulation remain TFM2 systems; Direct Control adds a human command layer on top.
+The mod keeps the watched match simulation running in real time, lets you take control of any of the ten champions, and feeds commands back through Teamfight Manager 2's own player-input system. Pick/ban, champion logic, pathing, combat resolution, fog, shopping, and the underlying simulation remain TFM2 systems; Direct Control adds a human command layer on top.
 
 Current release target: **Teamfight Manager 2 v0.6.2 on Windows/Steam**.
 
@@ -11,7 +11,7 @@ Current release target: **Teamfight Manager 2 v0.6.2 on Windows/Steam**.
 | Input | Behavior |
 | --- | --- |
 | **Ctrl+Home** | Start Direct Control once the match has synchronized and the ready prompt appears |
-| **F1-F10** | Select the champion shown on that visible match card |
+| **F1-F10** | Select champion: F1-F5 own team, F6-F10 opposing team; Top/Jungle/Mid/Bottom/Support order |
 | **RMB** | Contextual move/attack; may be held and swept continuously |
 | **RMB on minimap** | Contextual minimap move/attack |
 | **A, then LMB** | Attack-move |
@@ -29,7 +29,7 @@ Self-only/cursorless skills cast immediately on Q/W/R instead of requiring a red
 
 ### Selection and targeting
 
-F1-F10 correspond to the **ten visible player cards**, not raw simulation player IDs. Direct Control resolves the card to stable athlete identity, so selection remains team-neutral: either side can be controlled.
+F1-F5 select the manager's Top, Jungle, Mid, Bottom, and Support champions, respectively; F6-F10 select the opposing team's champions in the same order. The mapper uses Candidate A's authoritative athlete/team/lane identities plus the manager-team ID, **not** player names, card text, card visibility, or raw simulation player-ID ordering. Both teams are controllable, including with duplicate player names, a hidden HUD, or remapped native follow shortcuts. Harbinger's F-keys are currently fixed independent selection shortcuts; if the game also binds a native follow action to one of those keys, it may move the camera separately. Selecting a champion in Harbinger does not itself trigger camera follow.
 
 Contextual RMB uses enlarged **clickable selection geometry only**; it does not change collision or pathing:
 
@@ -88,7 +88,7 @@ The lightweight targeting/click rings come from the **live simulation**, not del
 
 ## Camera and fog
 
-The release camera controls are the physically validated **MMB drag + mouse-wheel zoom** path. Screen-edge scrolling and Space follow were investigated and deliberately deferred rather than shipping brittle implementations.
+The release camera controls are the physically validated **MMB drag + mouse-wheel zoom** path. Camera follow on F-key selection was incidental behavior of the game's independently configurable native follow shortcuts; Harbinger does not currently center or follow the camera itself when selecting a champion. Dedicated camera-follow controls, configurable Harbinger shortcuts, screen-edge scrolling, and Space follow are deferred rather than shipping brittle implementations.
 
 While a champion is controlled, Direct Control automatically switches native spectator fog to that champion's simulation team. Releasing the champion with End stops enforcement and leaves the current native spectator view in place.
 
@@ -100,7 +100,7 @@ Physically validated on v0.6.2 include:
 
 - real-time watched-match pacing;
 - startup synchronization and Ctrl+Home handoff;
-- F1-F10 selection across both teams;
+- F1-F10 selection across both teams, including duplicate names, remapped native follow shortcuts, and hidden HUD;
 - ground movement, exact-target attacks, and held contextual RMB;
 - minimap commands;
 - attack-move;
@@ -124,10 +124,10 @@ Known/deferred work is tracked in:
 
 One notable champion-specific gap remains post-release: Gunfighter's native move-while-attacking behavior does not compose correctly with generic attack-move yet.
 
-## Automatic support diagnostics (v0.1.2)
+## Automatic support diagnostics (introduced in v0.1.2; mapping hardened in v0.1.4)
 
 Harbinger automatically captures startup synchronization, Ctrl+Home activation, F1-F10
-selection outcomes, and a one-time player-card mapping health check while the user
+selection outcomes, and a one-time authoritative roster/team-slot mapping health check while the user
 plays normally. No debug switch, command line, or extra in-game controls are necessary.
 Each compiled DLL embeds a revision-and-build-time support stamp so we can
 distinguish development builds without changing the public version number.
@@ -141,7 +141,7 @@ If a player cannot activate or select a champion after this update, ask them onl
 to reproduce the problem once and send that single log file. The normal game log
 records whether the companion log started successfully. Normal-play tests on
 Windows v0.6.1 and v0.6.2 have confirmed automatic logging, synchronization, successful
-card mapping and champion selection. See `docs/support-diagnostics.md` for
+champion mapping and selection. The v0.1.4 selection regression was also tested against duplicate names, rebound native follow shortcuts, and hidden UI. See `docs/support-diagnostics.md` for
 the maintainer's interpretation guide and the final release checks.
 
 ## Technical overview
@@ -152,7 +152,7 @@ The core input path is:
 Windows / stable SDK input
         |
         v
-visible F-key card -> stable athlete identity
+F-key slot -> manager team + Candidate-A team/lane -> stable athlete identity
         |
         v
 mouse -> battlefield/minimap projection
@@ -247,7 +247,7 @@ Before updating the **existing** Workshop listing:
 1. finish tests from the exact intended release commit (`cargo fmt --check`,
    `cargo test`, then `cargo build --release` without diagnostic features);
 2. use **Build Only (No Upload)** in the uploader, inspect its actual staged
-   runtime package, and confirm the compiled DLL and `mod.mod_info` are v0.1.3;
+   runtime package, and confirm the compiled DLL and `mod.mod_info` are v0.1.4;
 3. select the **original publishing folder containing `mod.workshop_id`**,
    or copy that local ID file into the chosen package folder before uploading.
    Keep a backup: a missing ID can create a duplicate Workshop item;
