@@ -4,7 +4,7 @@ Real-time direct champion control for **Teamfight Manager 2**.
 
 The mod keeps the watched match simulation running in real time, lets you take control of any of the ten champions, and feeds commands back through Teamfight Manager 2's own player-input system. Pick/ban, champion logic, pathing, combat resolution, fog, shopping, and the underlying simulation remain TFM2 systems; Direct Control adds a human command layer on top.
 
-Current release target: **Teamfight Manager 2 v0.6.2 on Windows/Steam**.
+Current Harbinger version: **v0.1.4**, targeting **Teamfight Manager 2 v0.6.2 on Windows/Steam**.
 
 ## Control scheme at a glance
 
