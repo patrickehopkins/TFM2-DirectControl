@@ -76,8 +76,10 @@ the v0.1.4 selection fix.
 - Test the manager on **both blue and red**; F1-F5 must always select the
   manager's champions, and F6-F10 must always select the opponents. Also test
   duplicate names on opposing teams, remapped native follow shortcuts,
-  and a fully hidden match UI. The maintainer reported all three passing
-  on the v0.1.4 selection-fix development build.
+  and a fully hidden match UI. The maintainer reported the original three
+  selection regressions passing and subsequently confirmed the red-side
+  club-ownership fix in the revised development build. Repeat the essential
+  checks against the exact final Workshop package.
 - Verify movement, attacks, skills, pause/resume, End, Ctrl+End, and a fresh
   match on the final packaged build.
 - Verify that the companion log identifies the compiled build and reports a
