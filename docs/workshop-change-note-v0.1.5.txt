@@ -1,0 +1,7 @@
+Harbinger v0.1.5 — own-team selection fix
+
+- Fixed F1–F5 selecting blue instead of your own team when you're playing on red; F6–F10 select the opponents in either case.
+- Fixed selection failures when some athletes have no readable contract data, while retaining safeguards against ambiguous team assignments.
+- Preserved duplicate-name, hidden-UI and remapped-follow-shortcut selection support.
+
+Compatible with Teamfight Manager 2 v0.6.2 on Windows/Steam; single-player only.
