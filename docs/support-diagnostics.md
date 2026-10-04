@@ -1,7 +1,7 @@
-# Harbinger v0.1.4: automatic support diagnostics
+# Harbinger v0.1.5: automatic support diagnostics
 
 Automatic support diagnostics were introduced in v0.1.2 and remain enabled in
-normal v0.1.4 gameplay. They record startup, keyboard activation, authoritative
+normal v0.1.5 gameplay. They record startup, keyboard activation, authoritative
 ten-champion roster mapping, and selection outcomes without a debug switch.
 
 Each compiled DLL embeds a support build stamp (Git revision, dirty marker when
@@ -49,7 +49,7 @@ start has a separate header.
 
 ## Selection identity and fallback
 
-Normal v0.1.4 selection uses the manager's persistent club ID, each athlete's contract club ID,
+Normal v0.1.5 selection uses the manager's persistent club ID, each athlete's contract club ID,
 and Candidate A's authoritative athlete/match-side/lane observations. F1-F5 map to the manager's team and F6-F10 to
 the opposing team, each in Top/Jungle/Mid/Bottom/Support order. Contract
 membership determines the manager's blue/red side; do not compare persistent
@@ -66,12 +66,12 @@ with a complete authoritative roster.
 
 The validated 1x/60 Hz simulation, native replay safety gate, synchronized
 pause, skill commands, camera hooks, and single-player scope are unchanged by
-the v0.1.4 selection fix.
+the v0.1.4–v0.1.5 selection fixes.
 
 ## Maintainer's release acceptance checks
 
 - Install the intended Windows/Steam TFM2 v0.6.2 build, with the exact
-  Harbinger v0.1.4 release DLL and metadata.
+  Harbinger v0.1.5 release DLL and metadata.
 - Verify READY, Ctrl+Home, and all ten F1-F10 selections across both teams.
 - Test the manager on **both blue and red**; F1-F5 must always select the
   manager's champions, and F6-F10 must always select the opponents. Also test
