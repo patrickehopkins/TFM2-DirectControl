@@ -6,7 +6,7 @@ The direct-control layer is intentionally a low-policy primitive rather than a p
 
 Teamfight Manager 2 exposes ten visible match cards labeled F1-F10, but runtime testing proved that this visible order is **not** the same as Candidate A's internal `player_id` ordering. The core therefore must not define `F3 == player_id 2` or similar arithmetic mappings.
 
-In the validated v0.1.4 selection layer (merged PR #27), physical F1-F10 remain Harbinger's independent selection shortcuts, even if the game's native follow shortcuts have been rebound:
+In the v0.1.4–v0.1.5 selection layer (merged PRs #27 and #29), physical F1-F10 remain Harbinger's independent selection shortcuts, even if the game's native follow shortcuts have been rebound:
 
 ```text
 Candidate A: stable athlete_id + team + lane for each of ten players
