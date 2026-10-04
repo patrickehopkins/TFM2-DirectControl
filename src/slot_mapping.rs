@@ -834,6 +834,77 @@ mod tests {
     }
 
     #[test]
+    fn manager_on_red_selects_red_with_f1_through_f5() {
+        reset_candidate_roster();
+        let roster = (0..10)
+            .map(|index| ObservedAthlete {
+                athlete_id: 100 + index,
+                team: if index < 5 { 0 } else { 1 }, // blue then red, regardless of club
+                lane_index: index % 5,
+            })
+            .collect::<Vec<_>>();
+        let contracts = roster
+            .iter()
+            .map(|athlete| {
+                (athlete.athlete_id, if athlete.team == 0 { 19 } else { 42 })
+            })
+            .collect::<Vec<_>>();
+        let hidden_ui = vec![None; SLOT_COUNT];
+        // The manager's persistent club ID (42) is neither simulation side ID.
+        let blocks = calibrated_team_blocks(&hidden_ui, &roster, Some(42), &contracts);
+        assert_eq!(blocks, [Some(1), Some(0)]);
+        for key in 0..5 {
+            assert_eq!(
+                authoritative_slot_with_blocks(key, &roster, blocks),
+                Some(105 + key)
+            );
+            assert_eq!(
+                authoritative_slot_with_blocks(key + 5, &roster, blocks),
+                Some(100 + key)
+            );
+        }
+        reset_candidate_roster();
+    }
+
+    #[test]
+    fn contradictory_contract_membership_never_guesses_a_match_side() {
+        let roster = (0..10)
+            .map(|index| ObservedAthlete {
+                athlete_id: index + 100,
+                team: index / 5,
+                lane_index: index % 5,
+            })
+            .collect::<Vec<_>>();
+        let mut clubs = roster
+            .iter()
+            .map(|entry| {
+                (entry.athlete_id, if entry.team == 0 { 19 } else { 42 })
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(club_team_blocks(&roster, &clubs, 42), Some([1, 0]));
+        clubs[2].1 = 42;
+        assert_eq!(club_team_blocks(&roster, &clubs, 42), None);
+        clubs[2].1 = 19;
+        clubs.pop();
+        assert_eq!(club_team_blocks(&roster, &clubs, 42), None);
+    }
+
+    #[test]
+    fn contract_parser_requires_one_in_contract_team_id() {
+        assert_eq!(
+            parse_contract_club_id(
+                r#"{"InContract":{"end_date":"2028-12-31","team_id":42,"weekly_salary":20.0}}"#
+            ),
+            Some(42)
+        );
+        assert_eq!(parse_contract_club_id(r#"{"FreeAgent":{}}"#), None);
+        assert_eq!(
+            parse_contract_club_id(r#"{"InContract":{"team_id":42,"other":{"team_id":19}}}"#),
+            None
+        );
+    }
+
+    #[test]
     fn longest_unambiguous_name_wins_in_card_text() {
         let athletes = vec![(1, "Sam".to_owned()), (2, "Samwise".to_owned())];
         let selection = match_card_to_athlete("Samwise (F2)", &athletes).unwrap();
