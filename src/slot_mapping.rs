@@ -249,7 +249,9 @@ fn complete_authoritative_roster(roster: &[ObservedAthlete]) -> bool {
 fn parse_contract_club_id(contract: &str) -> Option<usize> {
     let (_, tagged_value) = contract.split_once("\"InContract\"")?;
     if !tagged_value.trim_start().starts_with(':')
-        || !tagged_value.trim_start_matches(|c: char| c == ':' || c.is_whitespace()).starts_with('{')
+        || !tagged_value
+            .trim_start_matches(|c: char| c == ':' || c.is_whitespace())
+            .starts_with('{')
     {
         return None;
     }
@@ -788,7 +790,10 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let no_card_labels = vec![None; SLOT_COUNT];
-        let clubs = roster.iter().map(|entry| (entry.athlete_id, if entry.team == 9 { 51 } else { 73 })).collect::<Vec<_>>();
+        let clubs = roster
+            .iter()
+            .map(|entry| (entry.athlete_id, if entry.team == 9 { 51 } else { 73 }))
+            .collect::<Vec<_>>();
         let blocks = calibrated_team_blocks(&no_card_labels, &roster, Some(51), &clubs);
         assert_eq!(blocks, [Some(9), Some(3)]);
         for i in 0..10 {
@@ -845,9 +850,7 @@ mod tests {
             .collect::<Vec<_>>();
         let contracts = roster
             .iter()
-            .map(|athlete| {
-                (athlete.athlete_id, if athlete.team == 0 { 19 } else { 42 })
-            })
+            .map(|athlete| (athlete.athlete_id, if athlete.team == 0 { 19 } else { 42 }))
             .collect::<Vec<_>>();
         let hidden_ui = vec![None; SLOT_COUNT];
         // The manager's persistent club ID (42) is neither simulation side ID.
@@ -877,9 +880,7 @@ mod tests {
             .collect::<Vec<_>>();
         let mut clubs = roster
             .iter()
-            .map(|entry| {
-                (entry.athlete_id, if entry.team == 0 { 19 } else { 42 })
-            })
+            .map(|entry| (entry.athlete_id, if entry.team == 0 { 19 } else { 42 }))
             .collect::<Vec<_>>();
         assert_eq!(club_team_blocks(&roster, &clubs, 42), Some([1, 0]));
         clubs[2].1 = 42;
