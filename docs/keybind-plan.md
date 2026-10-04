@@ -4,7 +4,7 @@
 
 ## Current validated v0.6.2 behavior
 
-- `Ctrl+Home` starts after READY; `F1-F5` select the manager's Top/Jungle/Mid/Bottom/Support champions and `F6-F10` select the opposing team in the same order, using stable athlete identity rather than simulation player-ID arithmetic.
+- `Ctrl+Home` starts after READY; `F1-F5` select the manager's Top/Jungle/Mid/Bottom/Support champions and `F6-F10` select the opposing team in the same order, using stable athlete identity and athlete contract club ownership rather than simulation player-ID arithmetic or fixed blue/red order.
 - RMB performs contextual battlefield/minimap movement and attacks (including held RMB). `A` then LMB is attack-move; `H` Hold; `B` Return; Q/W/R cast skills; LMB confirms and RMB/Esc cancels armed targeting.
 - `End` temporarily yields the selected champion to AI; MMB drag and wheel zoom still work. Crucially, paced-match ownership **continues**, so remappable native seek/highlight actions stay disabled.
 - Confirmed `Ctrl+End` globally and irreversibly releases manual control and live pacing for the current match. Only then are native replay actions restored.
@@ -17,7 +17,7 @@ Inventory every player-facing action: readiness/start, ten visible-card selector
 
 A dedicated Direct Control category or context in the native Shortcuts Settings UI would be preferable if a robust SDK/native integration surface becomes available. Shared shortcuts with explicit conflict management are a fallback. Avoid globally overwriting the player's ordinary game bindings. The release's current fixed bindings remain documented in `README.md`; do not promise that configurable bindings already exist.
 
-In the tested, merged 0.6.2 selection fix (PR #27), F1-F5 map to the manager's team's top/jungle/mid/bottom/support champions, and F6-F10 map to the opposing team in the same order. Authoritative team/lane/athlete IDs, not name strings, UI visibility, or native follow-shortcut labels, resolve selection. See `docs/core-control-contract.md`. Keep F1-F10 configurable as independent Harbinger shortcuts in the later native Shortcuts UI work.
+In the tested, merged 0.6.2 selection fix (PR #27), F1-F5 map to the manager's team's top/jungle/mid/bottom/support champions, and F6-F10 map to the opposing team in the same order. Manager club identity plus athlete contract ownership identifies the user's blue/red side; authoritative match-side/lane/athlete IDs resolve selection. Name strings, UI visibility, and native follow-shortcut labels are not required. See `docs/core-control-contract.md`. Keep F1-F10 configurable as independent Harbinger shortcuts in the later native Shortcuts UI work.
 
 **Deferred camera-follow behavior:** previously selecting a champion also moved the camera only because the game's native follow key was triggered incidentally. With selection independent of native follow bindings, camera motion must be implemented intentionally. The future keybind update should distinguish (1) selecting a champion for manual control, (2) centering/following the currently selected champion, and (3) toggling/unlocking camera follow, including when the UI is hidden and when native bindings have changed. Keep camera-follow changes separate from PR #27's completed selection bugfix.
 

@@ -38,15 +38,22 @@ start has a separate header.
   path also records activation during a render-blocking loading callback.
 - A one-time ten-slot roster-health report once manual control is enabled:
   `candidate_a_roster` count, authoritative roster completeness, resolved
-  `team_blocks`, and `manager_team_id`.
+  `team_blocks`, `manager_club_id`, contract identity count, per-side ownership
+  evidence, and the resolved club-to-match-side mapping. A full authoritative
+  ten-athlete roster is required, but the club relation accepts incomplete
+  contract data when each side has at least two matching, noncontradictory
+  contract-club records. Missing or conflicting evidence remains visible in
+  the one-time roster report.
 - F1-F10 attempts, selection successes (stable athlete IDs), and specific
   mapping failures when an authoritative slot or safe fallback is unavailable.
 
 ## Selection identity and fallback
 
-Normal v0.1.4 selection uses the manager-team ID plus Candidate A's authoritative
-athlete/team/lane observations. F1-F5 map to the manager's team and F6-F10 to
-the opposing team, each in Top/Jungle/Mid/Bottom/Support order. Selection does
+Normal v0.1.4 selection uses the manager's persistent club ID, each athlete's contract club ID,
+and Candidate A's authoritative athlete/match-side/lane observations. F1-F5 map to the manager's team and F6-F10 to
+the opposing team, each in Top/Jungle/Mid/Bottom/Support order. Contract
+membership determines the manager's blue/red side; do not compare persistent
+club IDs directly to simulation-side IDs. Selection does
 not depend on athlete names, visible player-card labels, native follow shortcut
 bindings, or whether the match UI is hidden.
 
@@ -66,7 +73,9 @@ the v0.1.4 selection fix.
 - Install the intended Windows/Steam TFM2 v0.6.2 build, with the exact
   Harbinger v0.1.4 release DLL and metadata.
 - Verify READY, Ctrl+Home, and all ten F1-F10 selections across both teams.
-- Test duplicate names on opposing teams, remapped native follow shortcuts,
+- Test the manager on **both blue and red**; F1-F5 must always select the
+  manager's champions, and F6-F10 must always select the opponents. Also test
+  duplicate names on opposing teams, remapped native follow shortcuts,
   and a fully hidden match UI. The maintainer reported all three passing
   on the v0.1.4 selection-fix development build.
 - Verify movement, attacks, skills, pause/resume, End, Ctrl+End, and a fresh
