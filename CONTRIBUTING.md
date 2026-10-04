@@ -11,7 +11,7 @@ Thanks for helping improve Harbinger. This repository intentionally retains some
 
 ## Local development
 
-The tested target is **Teamfight Manager 2 v0.6.1 on Windows/Steam**. The release is single-player first; neither multiplayer compatibility nor other operating systems should be assumed from a successful build.
+The tested target is **Teamfight Manager 2 v0.6.2 on Windows/Steam**. The release is single-player first; neither multiplayer compatibility nor other operating systems should be assumed from a successful build.
 
 1. Install the game and a Rust toolchain. Open PowerShell in this repository's root.
 2. Run `./scripts/bootstrap-sdk.ps1` (PowerShell also accepts `.\scripts\bootstrap-sdk.ps1`). If your game is in a different Steam library, pass `-GameDir "YOUR_GAME_INSTALL_FOLDER"`.
@@ -24,7 +24,7 @@ Python tools in `tools/` are optional, specialized reverse-engineering and compa
 
 ## Non-negotiable behavior
 
-- The visible F1–F10 match-card roster maps through stable athlete identity. Do not replace it with assumed player-ID arithmetic.
+- F1–F5 address the manager's five champions in Top/Jungle/Mid/Bottom/Support order and F6–F10 the opposing team in the same order. Resolve those slots from the manager-team ID plus Candidate-A athlete/team/lane identity, not player names, visible UI card text, game follow bindings or simulation player-ID arithmetic. Both teams remain controllable.
 - `End` temporarily yields the champion to normal AI without releasing the live pacer **or** replay-seek suppression.
 - Confirmed `Ctrl+End` is the irreversible global release for that match. Native seeking/highlighting returns only after that release.
 - Seek/highlight suppression must work even when users rebind native shortcuts. Read `docs/replay-native-action-analysis.md` before changing the version-specific native gate.
