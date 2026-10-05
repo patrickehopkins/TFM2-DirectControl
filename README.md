@@ -15,7 +15,8 @@ Harbinger's differentiator will increasingly be **reusable infrastructure and re
 See:
 - `docs/control-0.9-study.md` — observed Control architecture/behavior and clean-room comparison;
 - `docs/project-direction.md` — active division of labor and Harbinger's new strategic direction;
-- `docs/multiplayer-research.md` — reconnaissance plan for synchronized external control.
+- `docs/multiplayer-research.md` — reconnaissance plan for synchronized external control;
+- `docs/ai-ping-investigation.md` — current AI-responsive ping/stat-weighting research handoff.
 
 ## Control scheme at a glance
 
@@ -333,6 +334,7 @@ checklists are not the current update procedure.
 - `docs/control-0.9-study.md` — Control v0.9 behavior/architecture study and Harbinger comparison
 - `docs/project-direction.md` — active post-Control project direction
 - `docs/multiplayer-research.md` — multiplayer reconnaissance plan
+- `docs/ai-ping-investigation.md` — AI stat access and safe ping-response weighting investigation
 
 ## Reference
 

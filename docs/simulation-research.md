@@ -1,5 +1,8 @@
 # TFM2 Client Simulation Research
 
+> **Versioned historical research record.** The detailed disassembly below begins with v0.5.8/v0.6.0 discovery and must not be treated as the current native map. Current `main` has explicit simulation profiles through TFM2 v0.6.2. For v0.6.2, `src/simulation_probe.rs` identifies PE timestamp `0x6ABC597E`, image size `0x052B8000`, and Candidate A/B/C RVAs `0x00BE42B0`, `0x00BE4D40`, and `0x00BE57D0`. Use the shipping source and exact-build guards as the current authority.
+
+
 ## v0.6.0 migration status
 
 Direct comparison of the supplied v0.5.8 reference executable with the v0.6.0 target relocated the three `game-view/src/logic/client/data.rs` simulation jobs:
@@ -50,34 +53,11 @@ The GamePlayDone packet-handler function containing those diagnostics is approxi
 
 - VA `0x141A9FC70` through `0x141AA0CA1`
 
-## Match-view playback state
+## Rejected match-view playback-field hypothesis
 
-Static tracing of the same match-view object already used for the camera hook found playback-related fields:
+Early static tracing suggested that fields near `match_view +0x250/+0x258` might expose displayed/played match time. **Physical testing later rejected that interpretation.** In the Stage 2A test, `+0x250` remained exactly `1` while the visible clock advanced through 00:02, 00:05, 00:20, and 00:30. Adjacent accumulator interpretations at `+0x258/+0x260` also failed.
 
-- `+0x250`: displayed/played match tick
-- `+0x258`: playback elapsed-time accumulator
-
-The client derives the played tick from the playback accumulator and consumes/render events corresponding to that point in the match.
-
-Working model:
-
-```text
-client simulation runs ahead
-        |
-        v
-result / frame-event stream
-        |
-        v
-match-view playback
-        |
-        v
-played tick (+0x250)
-        |
-        v
-what the user sees
-```
-
-The direct-control problem is therefore a simulation-timing/ownership problem, not a camera or mouse-projection problem.
+Do **not** use `+0x250` or `+0x258` as a current presentation-clock hook. The durable conclusion that survived is broader: Candidate A is the watched client simulation job and can run far ahead of presentation, so Direct Control must manage simulation/presentation ownership explicitly. See `docs/pacing-validation-log.md` for the rejection tests and current pacing evidence.
 
 ## game-core simulation runner
 
@@ -176,7 +156,7 @@ Result: **this runtime patch strategy is rejected.** The temporary `src/loop_pro
 
 The crash mechanism has not been proven. The leading concern is that this address is a shared, very hot game-core loop used by simulation work outside Candidate A as well. Installing a multi-byte detour at mod initialization can race with another worker already executing that shared code, or can expose the probe to startup simulation contexts we did not intend to instrument. Do not assume the static loop target itself is semantically wrong; the unsafe part may be the global runtime-patching strategy.
 
-## Revised next target
+## Historical next target at this stage
 
 Do not patch the shared runner loop globally again.
 
@@ -186,7 +166,7 @@ Candidate A is already isolated and has a known call site into the common wrappe
 2. instrument a Candidate-A-specific call site rather than the global runner body;
 3. if a shared inner function must eventually be observed, activate any instrumentation only for the confirmed Candidate A worker/context and use a patching mechanism that cannot race an executing instruction stream.
 
-The long-term implementation directions remain:
+At this historical stage, the implementation directions were:
 
 1. pace the client live simulation so it stays only a small number of ticks ahead of presentation, allowing current client input to affect near-future decisions;
 2. inject manual input directly at the native player-input decision point of Candidate A's simulation.
