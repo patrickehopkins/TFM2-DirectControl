@@ -72,7 +72,9 @@ F1-F10 champion selection is now independent of the game's native follow binding
 
 ## Space recenter/follow is deferred
 
-Status: **post-release.**
+Status: **post-release; desired UX externally validated.**
+
+Control v0.9 implements the held-center and lock/unlock behavior cleanly, including unlock-on-manual-pan. This validates the interaction design, but not Harbinger's previously rejected custom-pan or synthetic-key implementations.
 
 Multiple custom follow and native-input approaches were physically rejected, and the native follow controller proved to live upstream of the validated camera hook surface. Do not restart from custom pan chasing or synthetic F-key injection.
 
@@ -85,3 +87,12 @@ Status: **post-release.**
 Stationary-edge updates were visibly stepped, native UI regions interfered with the behavior, and synthetic mouse wakeups introduced flicker. MMB drag plus wheel zoom are the validated release camera controls.
 
 See `docs/deferred-investigations.md` for the rejected approaches and resumption point.
+
+
+## Control v0.9 is not a parity target
+
+Status: **project-direction note.**
+
+Firkin's Control has already implemented several polished player-facing systems Harbinger once planned, including configurable controls, camera follow/lock, edge pan, selected-champion/KD/cooldown HUD, and current-gold/native-next-purchase presentation.
+
+These are not Harbinger bugs simply because Harbinger lacks equivalent polish. The project is intentionally shifting toward a robust reference implementation, reusable low-level infrastructure, diagnostics, compatibility research, and new systems such as genuine AI calls, manual shopping control, and multiplayer reconnaissance. See `docs/project-direction.md` and `docs/control-0.9-study.md`.
