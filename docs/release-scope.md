@@ -1,6 +1,6 @@
 # Historical Direct Control release scope
 
-> **Historical design/backlog record, not an active priority list.** This document captures the evolving first-release priorities; references to "current queue", "pre-release", pending runtime confirmation, or native shortcut conflicts may be obsolete. Do not use it to direct new work or override the shipping implementation. Start with `README.md` for current behavior, `docs/known-issues.md` for active limitations, `docs/deferred-investigations.md` for future experiments, and `docs/replay-native-action-analysis.md` for current replay-suppression evidence. The completed first-release execution checklist lives in `docs/release-week-plan.md`.
+> **Historical design/backlog record, not an active priority list.** The active post-Control direction is in `docs/project-direction.md`; Control comparison evidence is in `docs/control-0.9-study.md`; multiplayer research is in `docs/multiplayer-research.md`. This document captures the evolving first-release priorities; references to "current queue", "pre-release", pending runtime confirmation, or native shortcut conflicts may be obsolete. Do not use it to direct new work or override the shipping implementation. Start with `README.md` for current behavior, `docs/known-issues.md` for active limitations, `docs/deferred-investigations.md` for future experiments, and `docs/replay-native-action-analysis.md` for current replay-suppression evidence. The completed first-release execution checklist lives in `docs/release-week-plan.md`.
 
 ## Historical release-week override
 
@@ -56,7 +56,7 @@ Current release sequence: **automatic team fog-of-war -> F-key mapping hardening
 9. **Clicks beyond the playable map edge** — **validated.** Battlefield clicks beyond the legal map express direction by clamping only the requested movement destination into the legal 0..960 world square. TFM2 still receives an ordinary movement request, so native pathfinding, terrain, champion radius, and entity collision remain authoritative; Direct Control never grants permission to leave the map.
    - physical validation passed RMB and attack-move edge/corner movement without bypassing normal pathing/collision.
    - current release queue after validated control polish: **diagnostic presentation cleanup -> Workshop packaging/release**; synchronized speeds/death fast-forward are shelved until after the first public release.
-10. **Skill cooldown UI** — expose direct-control-friendly Q/W/R cooldown/readiness information with high visibility so the player does not have to infer cooldowns from the normal spectator presentation. Include explicit red feedback for attempted use while unavailable.
+10. **Skill cooldown UI** — historical player-facing polish target. Control v0.9 now implements an elegant cooldown/selected-character HUD. Harbinger should not prioritize matching that presentation solely for parity; expose cooldown/readiness state only where useful to the reference implementation or reusable UI/data infrastructure.
 11. **Click-target hitbox polish** — **validated.**
    - enlarge only the **clickable/selectable area**; never alter entity collision/pathing geometry;
    - current screen-space forgiveness: +8 px champions, +28 px towers, +24 px other targetable objective/building-like entities, +5 px minions; champion padding was reduced from +12 px after playtesting showed it could make minions underneath champions awkward to select;
@@ -89,10 +89,7 @@ Current release sequence: **automatic team fog-of-war -> F-key mapping hardening
    - **post-release hardening (not required for the tested first release):** a snap-to-live watchdog could detect any future playback/live divergence and re-align presentation; the verified v0.6.1 native replay-action gate and release smoke test currently address user-driven seeking;
    - do **not** repair desync by temporarily speeding playback until it catches up;
    - prefer event-driven detection from the native playback controller; lightweight polling is the fallback.
-16. **Current-gold HUD** — pre-release readability polish.
-   - expose the manually controlled champion/player's current spendable gold somewhere continuously readable in Direct Control mode;
-   - support both live match UI layouts;
-   - richer next-purchase information belongs to the later shop-control/auto-shop refinement in `docs/economy-ui-plan.md`.
+16. **Current-gold HUD** — historical readability target, now externally productized by Control v0.9 together with native next-purchase information. Harbinger should not spend a dedicated parity pass on this UI. Preserve economy introspection/manual-shopping as an infrastructure research target; see `docs/economy-ui-plan.md`.
 17. **Synchronized match-speed variation / death fast-forward** — pre-release playback QoL.
    - change Candidate-A wall-clock pacing and presentation rate together;
    - requested mappings: `0.5x = 30 Hz`, `1x = 60 Hz`, `1.5x = 90 Hz` if exposed, `2x = 120 Hz`, `3x = 180 Hz`;
@@ -124,8 +121,9 @@ Current release sequence: **automatic team fog-of-war -> F-key mapping hardening
    - re-test RMB world projection, skill aim, minimap input, MMB 1:1 drag, MMB UI bypass, mouse-wheel zoom, HUD placement, and click-target geometry;
    - most gameplay projection already uses live `draw_map_size("UI")`, live `ingame.center_log`, and live minimap rectangles, but MMB still relies on the validated `1920 x 1080` logical-UI assumption outside `StableClient`, so treat it as the highest-risk scaling path;
    - if a mismatch is found, publish live UI/battlefield geometry from the stable client into the camera adapter rather than adding resolution-specific constants.
-22. **Pings/team commands** — **post-release work / release boundary.** Potentially large subsystem; do not hold the first public release for this unless explicitly reconsidered.
-23. **Shop control** — post-release/manual-shopping work. Default auto-shop remains an explicit supported mode; when auto-shop is selected, expose the native next intended item/upgrade and additional gold needed beside current gold where practical. See `docs/economy-ui-plan.md`.
+22. **Pings/team commands** — **open frontier.** Control v0.9 does not appear to implement genuine moment-to-moment AI-responsive calls. The valuable Harbinger target is a reusable native AI-call surface, not merely a ping graphic.
+23. **Shop control** — **open frontier below the UI layer.** Control v0.9 already implements current-gold/native-next-purchase presentation. Harbinger's remaining opportunity is safe native shopping-intent introspection and manual override/control while preserving vanilla auto-shop.
+24. **Multiplayer reconnaissance** — **approved research frontier.** Determine TFM2's native peer synchronization/determinism before writing custom networking. See `docs/multiplayer-research.md`.
 
 ## Must iron out before release
 
