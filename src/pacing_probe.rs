@@ -12,7 +12,9 @@
 //! tick; the tick is allowed to finish, then Candidate A blocks again until the user explicitly
 //! starts Direct Control. This preserves the loader's physically validated path while preventing
 //! further watched-match progress once the battlefield is actually available.
-//! The worker-local Ctrl+Home escape remains available while a Candidate-A callback is held.
+//! The worker-local Ctrl+Home poll remains available while a Candidate-A callback is held. A press
+//! records start intent immediately, but actual simulation release waits for the same interactive +
+ //! presentation-synchronized prerequisites as the render-thread path.
 //!
 //! Pause uses a separate presentation gate. Ctrl+End permanently releases pacing and manual input
 //! for the current match.
@@ -611,7 +613,10 @@ fn wait_until_started() -> bool {
             ));
             request_start_simulation();
             let started = START_REQUESTED.load(Ordering::Acquire);
-            crate::diagnostics::event(&format!("Worker-thread Ctrl+Home result started={started}"));
+            crate::diagnostics::event(&format!(
+                "Worker-thread Ctrl+Home result started={started} pending={}",
+                start_intent_pending()
+            ));
             if started {
                 return true;
             }
