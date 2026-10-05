@@ -147,7 +147,7 @@ Keep these as genuine open research areas:
 - manual shopping / native shopping override;
 - multiplayer external-input synchronization.
 
-Pings are attractive because discovering a genuine native moment-to-moment AI call surface would be broadly reusable.
+**Pings have narrowed to an AI-weighting problem.** On October 5, Firkin reported that an experimental Control path could already emit pings and hand a hard `fight` command to AI teammates, but the result was too cooperative: the command could override sensible native caution and produce suicidal commits. Harbinger's useful research target is therefore the native decision layer underneath "should I join/continue/rotate to this fight?" and a way to bias that evaluation without replacing it. A prior Flame Simulator probe also confirmed that management-side `Athlete.stat` values are readable in-match, making player-stat-to-AI-state tracing a concrete lead. See `docs/ai-ping-investigation.md`.
 
 Manual shopping remains useful as an infrastructure problem even though Control already solved the player-facing current-gold/next-item HUD.
 

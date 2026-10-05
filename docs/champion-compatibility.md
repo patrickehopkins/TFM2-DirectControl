@@ -1,6 +1,6 @@
 # Direct Control champion compatibility review
 
-This records champion-specific compatibility findings around the first Workshop release. The preferred policy is universal-first: investigate whether a generic Direct Control rule, stable/native action property, or target-form resolver can fix a champion-specific failure without hard-coding that champion. Only add a champion-specific exception when the underlying action genuinely behaves differently and no resilient generic rule fits.
+This records champion-specific compatibility findings from the first Workshop release through the current v0.1.5 / TFM2 v0.6.2 state. The preferred policy is universal-first: investigate whether a generic Direct Control rule, stable/native action property, or target-form resolver can fix a champion-specific failure without hard-coding that champion. Only add a champion-specific exception when the underlying action genuinely behaves differently and no resilient generic rule fits.
 
 ## Generic self-only skill casting
 
@@ -12,7 +12,7 @@ Current generic rule:
 - ordinary ally/enemy Target skills retain click confirmation whenever another legal entity target exists;
 - locked-slot and cooldown safety remain ahead of all validator probing.
 
-This is intentionally universal rather than a Berserker-specific adapter. **Physical validation on v0.6.1:** Berserker Skill 1 and Monk Skill 1 cast immediately on keypress; Ogre's automatic/passive trigger did not become manually activatable. If later testing shows an ordinary ally-target skill can be misclassified when no other target is presently legal, narrow or defer the heuristic rather than hard-coding broad exceptions.
+This is intentionally universal rather than a Berserker-specific adapter. **Original physical validation on v0.6.1, preserved by the current v0.6.2 release behavior:** Berserker Skill 1 and Monk Skill 1 cast immediately on keypress; Ogre's automatic/passive trigger did not become manually activatable. If later testing shows an ordinary ally-target skill can be misclassified when no other target is presently legal, narrow or defer the heuristic rather than hard-coding broad exceptions.
 
 ## Confirmed issues
 
@@ -46,4 +46,4 @@ Do not change ordinary champion attack-move semantics merely to make Gunfighter 
 
 ## Release status
 
-Gambler Skill 1 is cleared for release. Gunfighter's move-while-attacking behavior remains a documented compatibility gap and is not being allowed to reopen first-release scope. Universal fixes remain preferred when champion-specific work resumes post-release.
+Gambler Skill 1 remains cleared in the current release. Gunfighter's move-while-attacking behavior remains the documented champion-specific compatibility gap. Universal fixes remain preferred when champion-specific work resumes.

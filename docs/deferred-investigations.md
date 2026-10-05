@@ -1,6 +1,6 @@
 # Deferred investigation handoffs
 
-This file preserves stopping points for features that received real implementation/investigation work and were deliberately moved out of the first public release. The goal is to make later resumption start from evidence rather than repeating failed experiments.
+This file preserves stopping points for deferred or historical investigations so later work can resume from evidence instead of repeating failed experiments. Status notes dated before the current v0.1.5 / TFM2 v0.6.2 release are historical unless a section explicitly says it is active.
 
 ## Space recenter / follow
 
@@ -126,7 +126,7 @@ The branch explored:
 
 Physical tests showed that native presentation speed controls and live Direct Control simulation authority did not remain reliably synchronized enough for a release-time feature. Highlight/death behavior exposed useful ideas, but without an authoritative presentation position and robust ownership indicator, variable speed made the control model less predictable.
 
-The accepted first-release invariant is therefore:
+The accepted current invariant is therefore:
 - Candidate A stays at the validated 60 Hz / 1x baseline;
 - startup synchronization freezes live simulation until visible presentation catches up;
 - no ordinary speed-changing feature is enabled during Direct Control;
@@ -175,18 +175,49 @@ Only revisit if a deeper native camera/update ownership route becomes available.
 
 ## AI-responsive pings / teammate calls
 
-**Status:** active open frontier / future design investigation.
+**Status:** active collaborative investigation; the unknown has narrowed from ping emission to safe AI-response weighting.
 
-The October 2026 Control study found no evidence that Control has implemented genuine AI-responsive pings or teammate calls. Under Harbinger's new infrastructure-first direction, this is more valuable than a cosmetic ping system: the research target is a reusable native moment-to-moment AI call surface that other mods could invoke.
+**October 5, 2026 collaboration update:** Firkin independently got ping emission and AI command handoff working in an experimental Control build. The failure mode was the opposite of "AI ignores me": issuing a hard `fight` command made teammates too cooperative and could make them commit suicidally under a tower. Therefore **"can a ping reach the AI?" is no longer the primary research question.**
 
-**Original release status:** future design investigation, not first-release scope.
+The desired architecture is now:
 
-The important design conclusion is already fixed:
-- only proceed if genuine/native moment-to-moment AI calls can be injected, or an equally resilient future-proof route is found;
-- do not implement player pings by mutating persistent pre-game macro strategy settings (objective/tower/Morgard strategy toggles). Those are long-lived plans, not "do this now" calls;
-- before adding player-specific weighting, first characterize how vanilla AI responds to genuine native calls.
+```text
+player ping / call
+    -> temporary bias to an existing native AI evaluator
+    -> vanilla danger / positioning / target judgement still runs
+    -> AI becomes more or less receptive instead of receiving an absolute command
+```
 
-No implementation branch needs preserving yet.
+A separate Flame Simulator probe on TFM2 v0.5.8 established a useful lead: management-side `Athlete.stat` records were resolvable and readable while a match was active, with these twelve observed fields:
+
+```text
+last_hit
+skill_avoid
+skill_hit
+control_speed
+positioning
+judgement
+mental
+concentration
+order
+roaming
+aggressive
+ego
+```
+
+This **does not prove** that live match AI reads those management records directly. The simulation may read them live, snapshot them at match initialization, transform them into hidden coefficients, or consult only a subset in particular evaluators. The old probe did **not** expose a native call accept/reject function and did **not** prove an Ego/Order/Judgement roll. There is no observed stat literally named `calls`.
+
+Highest-value next probe:
+1. resolve a known match player to `athlete_id`;
+2. read/trace `Athlete.stat`;
+3. find where `order`, `ego`, `judgement`, `aggressive`, and `roaming` enter simulation state;
+4. identify a native fight-join/rotate/respond evaluator;
+5. test extreme values while holding the situation as constant as practical;
+6. prefer a temporary score/input bias over replacing the final AI command.
+
+If live mutation of `Athlete.stat` has no effect, do **not** conclude the stats are irrelevant until match-initialization copies/derived coefficients have also been traced.
+
+See `docs/ai-ping-investigation.md` for the focused technical handoff.
 
 ---
 

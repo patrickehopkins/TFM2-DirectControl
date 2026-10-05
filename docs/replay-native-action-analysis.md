@@ -1,8 +1,26 @@
-# v0.6.1 native replay action suppression
+# Native replay action suppression — current v0.6.2 profile and v0.6.1 research
+
+> **Current status (Harbinger v0.1.5 / TFM2 v0.6.2):** the shipping source supports the v0.6.2 replay-binding lookup profile with PE timestamp `0x6ABC597E`, image size `0x052B8000`, and binding-lookup RVA `0x028D3E90`. The current implementation in `src/replay_action_gate.rs` is the source of truth. It still semantically suppresses action `0x1B` and `0x30..0x34` while Harbinger owns the match, independent of the user's remapped physical keys. The v0.6.2 release was smoke-tested as part of the current release validation. Detailed RVAs below that are explicitly labeled v0.6.1 are preserved as historical reverse-engineering evidence and must not be transplanted to v0.6.2.
+
+## Current v0.6.2 hook profile
+
+Current `main` selects this exact build profile before installing the replay gate:
+
+```text
+PE timestamp       0x6ABC597E
+PE image size      0x052B8000
+binding lookup RVA 0x028D3E90
+blocked actions    0x1B, 0x30, 0x31, 0x32, 0x33, 0x34
+unbound sentinel   0xFF
+```
+
+The verified 12-byte getter prologue remains `56 53 48 83 EC 28 89 D3 88 54 24 27`. Unsupported PE profiles or prologue mismatches fail closed and block Direct Control startup rather than falling back to a physical-key blacklist.
+
+## Historical v0.6.1 validation
 
 **Implementation status: physically smoke-tested on the supported v0.6.1 build (user-reported pass, 2026-09-23).** The Windows development build installed and the replay protection, control, pause, tooltip, speed, temporary-release, global-release, and next-match smoke tests passed. This validates the tested build only; recheck native signatures and repeat runtime tests after executable changes.
 
-## Executable identity and verified runtime path
+## Historical v0.6.1 executable identity and verified runtime path
 
 All findings below come from offline disassembly of the user-supplied TeamfightManager2.exe:
 
@@ -38,9 +56,9 @@ If the exact build or getter prologue doesn't match, the hook refuses installati
 
 Action-name formatter RVA `0x0215D0C0`, default binding registration, and the generic hasher RVA `0x00BA3A30` are **not** runtime replay action rejection points. A temporary feature-gated `replay-native-trace` generic-hasher probe remains available for forensic fallback, but is disabled for standard builds and must not be included in Workshop packaging. Binding-key filters for M/6/etc. are intentionally rejected.
 
-## Physical acceptance test (passed for tested v0.6.1 build; rerun on updates)
+## Historical physical acceptance test (passed on v0.6.1; rerun against current profiles after updates)
 
-On the exact supported v0.6.1 game, close the game and install a **standard** development build (no `-ReplayTrace`):
+For the historical v0.6.1 validation, the exact supported build used the following procedure. For current releases, use the current executable profile and release checklist instead of assuming these RVAs:
 
 ```powershell
 git pull
