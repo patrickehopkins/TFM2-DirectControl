@@ -1,6 +1,8 @@
 # Harbinger native shortcut menu — audited scope and implementation contract
 
-Status: **current design / source audit, not implemented or physically validated**. Based on `main` Harbinger v0.1.5 for Teamfight Manager 2 v0.6.2, audited October 4, 2026. This document supersedes the broad proposal portions of `docs/keybind-plan.md` for shortcut work. Do not change the established 60 Hz authoritative simulation or merge functional changes without maintainer approval.
+Status: **current design / source audit, not implemented or physically validated**.
+
+External comparison note: Control v0.9 has a polished custom Ctrl+K key/settings overlay and a centralized JSON-backed action registry. That validates the need for a central binding layer, but it does **not** solve the native TFM2 Shortcuts integration/compatibility goal defined here. Based on `main` Harbinger v0.1.5 for Teamfight Manager 2 v0.6.2, audited October 4, 2026. This document supersedes the broad proposal portions of `docs/keybind-plan.md` for shortcut work. Do not change the established 60 Hz authoritative simulation or merge functional changes without maintainer approval.
 
 ## Objective
 
