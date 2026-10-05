@@ -2,7 +2,7 @@
 
 ## Status — locked / validated
 
-Camera controls are considered **done for now**. Do not alter the validated MMB or wheel behavior during unrelated work. Reopen this area only for the planned resolution/UI-scaling compatibility audit or for a reproducible regression.
+Camera controls are considered **done for now**. Do not alter the validated MMB or wheel behavior during unrelated work. Reopen this area only for a deliberate resolution/UI-scaling compatibility audit or for a reproducible regression.
 
 Physically validated behavior:
 
@@ -34,7 +34,7 @@ If edge scrolling is ever revisited, investigate the native camera/update owners
 
 ## Resolution / UI-scaling audit
 
-Current physical validation has been performed on one native-resolution setup. A dedicated pre-release compatibility pass must verify that resolution, window size, aspect ratio, Windows DPI/display scaling, or any in-game UI-scale option does not invalidate coordinate assumptions.
+Current physical validation was originally performed on one native-resolution setup. A broader resolution/window/DPI/UI-scale compatibility audit remains useful, but this is **post-release compatibility hardening**, not an uncompleted pre-release gate for v0.1.5.
 
 Most gameplay targeting already converts the physical cursor through live `draw_map_size("UI")`, live `ingame.center_log`, and live minimap rectangles. MMB is the highest-risk path because its camera driver currently converts physical cursor displacement using the validated `1920 x 1080` logical-UI assumption outside `StableClient`.
 
@@ -43,4 +43,4 @@ The compatibility audit should cover multiple 16:9 resolutions/window sizes, bot
 ## Later optional camera polish
 
 - **Screen-edge scrolling:** shelved until/unless a deeper native-camera route is worth revisiting.
-- **Space recenter/follow:** deferred after substantial pre-release investigation. Custom pan-follow and synthetic-input approaches were physically rejected, and native follow proved to live upstream of the validated camera object/handler surface. Resume from `docs/deferred-investigations.md`; do not repeat the rejected approaches.
+- **Space recenter/follow:** deferred after substantial historical investigation. Custom pan-follow and synthetic-input approaches were physically rejected, and native follow proved to live upstream of the validated camera object/handler surface. Resume from `docs/deferred-investigations.md`; do not repeat the rejected approaches.

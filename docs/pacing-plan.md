@@ -1,5 +1,8 @@
 # Candidate A pacing plan
 
+> **Historical implementation plan (v0.5.8-era).** This document records the route that led to the shipping Candidate-A pacer. It is useful reverse-engineering evidence, not current implementation instructions. The current v0.1.5 / TFM2 v0.6.2 behavior lives in `src/pacing_probe.rs`, `README.md`, and `docs/core-control-contract.md`. In particular, the old `match_view + 0x250` presentation-tick hypothesis mentioned below was later physically rejected; do not revive it.
+
+
 This note records the safer pacing route discovered after the failed shared runner-loop detour. The goal is to avoid patching the hot game-core loop entirely.
 
 ## Candidate A to runner-state pointer chain
@@ -84,7 +87,7 @@ If those callbacks track Candidate A's runner tick, we have an authoritative AI-
 Once both sides are validated:
 
 - authoritative simulation tick: Candidate A / filtered `StablePlayerAi` callback;
-- presentation tick: exact played tick from the match-view object (already statically traced at `+0x250`, to be revalidated in the existing camera/match-view capture path);
+- presentation tick: **historical hypothesis only**. This plan proposed `match_view +0x250`; later physical testing showed that value remained `1` while visible match time advanced, so it is not the advancing presentation tick. See `docs/pacing-validation-log.md`.
 
 then pacing can happen in the Candidate A worker's own AI callback rather than in a native runner detour. For one designated player callback per tick, the worker can wait only when:
 

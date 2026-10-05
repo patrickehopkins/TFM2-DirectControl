@@ -1,6 +1,6 @@
 # Contextual RMB validation
 
-Status: contextual picking, cursor projection, manual ownership, vision-aware target loss, and explicit pursuit are physically validated. Current follow-up teaches the pacer about the match viewer's separate timeline-pause state so presentation cannot silently fall behind Candidate A.
+Status: **historical validation record.** Contextual picking, cursor projection, manual ownership, vision-aware target loss, and explicit pursuit were physically validated here. The timeline-pause/pacing follow-up referenced by the original note was later completed and is part of the current synchronized pause/replay-ownership architecture; use `README.md`, `docs/core-control-contract.md`, and current source for shipping behavior.
 
 ## Goal
 

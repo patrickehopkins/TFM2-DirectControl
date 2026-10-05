@@ -1,10 +1,10 @@
 # Known issues and deferred polish
 
-This file describes the limitations that still apply to the first Workshop release. Completed investigations that are no longer active release issues live in `docs/deferred-investigations.md`.
+This file describes limitations that still apply to the current Harbinger v0.1.5 / TFM2 v0.6.2 release. Historical investigations that are no longer active release issues live in `docs/deferred-investigations.md`.
 
 ## Startup requires bounded pre-simulation
 
-Status: **accepted first-release limitation with validated synchronization.**
+Status: **accepted current limitation with validated synchronization.**
 
 Teamfight Manager 2 requires watched-match simulation progress before it can construct the battlefield. Candidate A is already the correct `ClientMatchView` simulation at tick 1, but freezing it there prevents the loader from reaching a usable match view.
 
@@ -12,7 +12,7 @@ The release path therefore allows the validated loader runway, freezes the live 
 
 True zero-pre-simulation startup remains deferred.
 
-**Current observation (v0.6.1, maintainer's September 25 testing):** match entry
+**Historical observation (v0.6.1, maintainer's September 25 testing; current v0.6.2 release retains the same safety architecture):** match entry
 and presentation synchronization now appear effectively immediate in ordinary
 use; the earlier noticeable loading delay is no longer reproducible locally.
 The cause has not been established. Preserve the bounded loader runway and
@@ -21,7 +21,7 @@ show a reproducible problem.
 
 ## Enemy native follow can reveal a fogged champion
 
-Status: **accepted first-release limitation.**
+Status: **accepted current limitation.**
 
 Automatic team fog follows the simulation team of the champion under Direct Control and is physically validated. TFM2's native spectator follow behavior can still follow an opposing champion and reveal that champion's position through fog.
 
@@ -31,7 +31,7 @@ Direct Control does not attempt to turn spectator-mode UI into an anti-cheat bou
 
 Status: **post-release experiment.**
 
-The first Workshop release keeps the live simulation on the validated 60 Hz / 1x control model. An attempted synchronized-speed system did not keep native presentation and live simulation coupled reliably enough to ship.
+The current release keeps the live simulation on the validated 60 Hz / 1x control model. An attempted synchronized-speed system did not keep native presentation and live simulation coupled reliably enough to ship.
 
 The investigation stopping point, including death/respawn fast-forward ideas, is preserved in `docs/deferred-investigations.md`.
 
@@ -95,4 +95,4 @@ Status: **project-direction note.**
 
 Firkin's Control has already implemented several polished player-facing systems Harbinger once planned, including configurable controls, camera follow/lock, edge pan, selected-champion/KD/cooldown HUD, and current-gold/native-next-purchase presentation.
 
-These are not Harbinger bugs simply because Harbinger lacks equivalent polish. The project is intentionally shifting toward a robust reference implementation, reusable low-level infrastructure, diagnostics, compatibility research, and new systems such as genuine AI calls, manual shopping control, and multiplayer reconnaissance. See `docs/project-direction.md` and `docs/control-0.9-study.md`.
+These are not Harbinger bugs simply because Harbinger lacks equivalent polish. The project is intentionally shifting toward a robust reference implementation, reusable low-level infrastructure, diagnostics, compatibility research, and new systems such as safe AI-responsive ping weighting, manual shopping control, and multiplayer reconnaissance. See `docs/project-direction.md` and `docs/control-0.9-study.md`.
