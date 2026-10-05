@@ -49,7 +49,7 @@ It should avoid policy such as:
 
 A true zero-pre-simulation start gate is **not part of the current core contract**: the game's Start Match transition needs real Candidate-A simulation progress before it can construct an interactive battlefield. Freezing at tick 1 or after only one complete tick was physically rejected.
 
-The validated startup path provides a bounded loader runway at the standard 60 Hz pace, freezes the live watched Candidate-A simulation at the first usable InGame boundary, and waits for visible presentation to synchronize to that frozen state. Only then does the player see the READY prompt. `Ctrl+Home` is the **supported, explicit start command**, not a diagnostic escape; it is ignored until synchronization is ready. See `README.md`, `docs/known-issues.md`, and `docs/pacing-validation-log.md` for the implementation boundary and limitations.
+The validated startup path provides a bounded loader runway at the standard 60 Hz pace, freezes the live watched Candidate-A simulation at the first usable InGame boundary, and waits for visible presentation to synchronize to that frozen state. Only then does the player see the READY prompt. `Ctrl+Home` is the **supported, explicit start command**, not a diagnostic escape. A foreground press that arrives just before the readiness flags are published is now **queued** and activates automatically once the verified replay gate, interactive match state, and presentation synchronization are all ready; the key edge is not discarded. See `README.md`, `docs/known-issues.md`, and `docs/pacing-validation-log.md` for the implementation boundary and limitations.
 
 Do not claim that control begins at literal simulation tick 1 or replace this path with a fixed time-offset guess.
 
