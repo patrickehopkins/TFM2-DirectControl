@@ -6,6 +6,17 @@ The mod keeps the watched match simulation running in real time, lets you take c
 
 Current Harbinger version: **v0.1.5**, targeting **Teamfight Manager 2 v0.6.2 on Windows/Steam**.
 
+## Project direction
+
+Harbinger remains a usable direct-control mod, but its long-term goal is no longer to win a feature-for-feature polish race. The October 2026 study of Firkin's **Control** mod showed a successful downstream iteration: Control has already productized several player-facing ideas Harbinger had planned, including configurable controls, camera peek/lock, a polished selected-champion/KD/cooldown HUD, and current-gold/native-next-purchase presentation.
+
+Harbinger's differentiator will increasingly be **reusable infrastructure and research**: robust match ownership, simulation synchronization, stable identity, legal input injection, native-action/shortcut coexistence, compatibility tooling, diagnostics, and new control surfaces that other mods can build on.
+
+See:
+- `docs/control-0.9-study.md` — observed Control architecture/behavior and clean-room comparison;
+- `docs/project-direction.md` — active division of labor and Harbinger's new strategic direction;
+- `docs/multiplayer-research.md` — reconnaissance plan for synchronized external control.
+
 ## Control scheme at a glance
 
 | Input | Behavior |
@@ -319,6 +330,9 @@ checklists are not the current update procedure.
 - `docs/replay-native-action-analysis.md` — validated native replay-shortcut suppression and retest requirements
 - `docs/keybind-plan.md` — **future proposal**; not shipping shortcut behavior
 - `docs/release-scope.md` — historical scope and backlog, not current priorities
+- `docs/control-0.9-study.md` — Control v0.9 behavior/architecture study and Harbinger comparison
+- `docs/project-direction.md` — active post-Control project direction
+- `docs/multiplayer-research.md` — multiplayer reconnaissance plan
 
 ## Reference
 
