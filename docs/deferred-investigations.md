@@ -4,7 +4,11 @@ This file preserves stopping points for features that received real implementati
 
 ## Space recenter / follow
 
-**Status:** deferred before first Workshop release.
+**Status:** deferred before first Workshop release; Control v0.9 independently validates the desired UX.
+
+October 2026 external-mod observation: Firkin's Control implements both a held center/peek action and a camera lock toggle, and its runtime logs confirm that manual panning breaks the lock. This validates Harbinger's intended interaction model but **not** Harbinger's rejected implementation routes. Control appears to use different camera/layout machinery, including minimap-derived camera-state tracking. Harbinger should continue looking for a native semantic follow/control surface rather than reviving moving-target pan or synthetic F-key injection. See `docs/control-0.9-study.md`.
+
+**Original status:** deferred before first Workshop release.
 
 **Desired behavior**
 - Hold Space: immediately center/follow the currently controlled champion.
@@ -171,7 +175,11 @@ Only revisit if a deeper native camera/update ownership route becomes available.
 
 ## AI-responsive pings / teammate calls
 
-**Status:** future design investigation, not first-release scope.
+**Status:** active open frontier / future design investigation.
+
+The October 2026 Control study found no evidence that Control has implemented genuine AI-responsive pings or teammate calls. Under Harbinger's new infrastructure-first direction, this is more valuable than a cosmetic ping system: the research target is a reusable native moment-to-moment AI call surface that other mods could invoke.
+
+**Original release status:** future design investigation, not first-release scope.
 
 The important design conclusion is already fixed:
 - only proceed if genuine/native moment-to-moment AI calls can be injected, or an equally resilient future-proof route is found;
@@ -184,6 +192,21 @@ No implementation branch needs preserving yet.
 
 ## Manual shopping
 
-**Status:** future possibility, not active work.
+**Status:** future infrastructure/gameplay frontier, not active implementation.
 
-Vanilla automatic shopping remains explicitly supported. If shop control is revisited, prefer exposing the native intended next purchase/upgrade and required gold before attempting a full manual shop system.
+Control v0.9 already has elegant player-facing current-gold and native-next-purchase presentation, closely matching Harbinger's earlier economy-HUD concept. Therefore **HUD parity is no longer a reason to pursue this work**.
+
+The remaining Harbinger value is deeper: discover and expose the native shopping/build intent and a safe manual override/control path. Vanilla automatic shopping remains explicitly supported. If shop control is revisited, use the native intended next purchase/upgrade and live prices as research anchors, then focus on a reusable Manual Shop API rather than recreating Control's HUD.
+
+
+---
+
+## Multiplayer direct control
+
+**Status:** reconnaissance approved; implementation not started.
+
+The next step is to determine TFM2's native multiplayer synchronization model, not to build rollback. Start with passive two-client state/tick comparison and only then inject one harmless one-sided `InputV1` to observe whether TFM2 replicates, rejects, reconciles, or diverges.
+
+Keep multiplayer locked to 1x / 60 Hz during all research. Use stable identity and deterministic simulation state, not presentation/UI state.
+
+See `docs/multiplayer-research.md` for the full staged plan.
