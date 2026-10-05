@@ -1,6 +1,8 @@
 # Future keybinding and playback-safety design
 
-> **Status: post-release proposal, not current implementation instructions.** The validated behavior is described in `README.md` and `docs/core-control-contract.md`. This document records ideas for configurable Direct Control bindings and safe future speed features. Do not re-enable native replay seeking on `End` or implement the discarded variable-speed experiment from this document.
+> **October 2026 update:** active implementation design now lives in `docs/native-shortcut-ui-spec.md`. Firkin's Control v0.9 independently demonstrates a strong centralized mod-binding registry and persisted JSON configuration, but uses a custom Ctrl+K overlay rather than native TFM2 Shortcuts integration. Harbinger should learn from the architecture while continuing its native/coexisting route.
+
+> **Status: historical proposal unless superseded by `docs/native-shortcut-ui-spec.md`.** The validated behavior is described in `README.md` and `docs/core-control-contract.md`. This document records ideas for configurable Direct Control bindings and safe future speed features. Do not re-enable native replay seeking on `End` or implement the discarded variable-speed experiment from this document.
 
 ## Current validated v0.6.2 behavior
 
@@ -38,3 +40,18 @@ A snap-to-live watchdog is a future hardening idea, not a currently implemented 
 ## Related safety testing
 
 Retest normal pause/resume, the `View Match Results Immediately` path when relevant, rebound native replay shortcuts, foreground-focus safety, and next-match gate reinstallation before claiming a changed input/playback implementation is safe. See `docs/replay-native-action-analysis.md` for the tested v0.6.1 regression sequence.
+
+
+## External validation from Control v0.9
+
+Observed Control behavior strengthens several Harbinger design choices:
+
+- one centralized action/config registry is preferable to scattered hard-coded physical-key checks;
+- held and toggle camera actions should be first-class trigger types;
+- manual camera pan should break latched follow;
+- gameplay hotkeys must be suspended during key capture;
+- persisted mod-owned JSON is a practical fallback when no supported global native shortcut registry exists.
+
+Control also installs a WndProc hook, which may explain some physical-key conflict handling. Harbinger should **not** adopt blanket message swallowing when a verified semantic native-action gate can suppress only the conflicting action.
+
+Control's custom overlay is not evidence that native Shortcuts insertion is impossible. Harbinger's current goal remains shared/native templates and semantic coexistence, because that is more useful infrastructure for UI compatibility.

@@ -36,3 +36,17 @@ Harbinger Direct Control runs Teamfight Manager 2's watched match near real time
 6. Update `README.md` and current-status docs when behavior changes. Place unfinished investigations in `docs/deferred-investigations.md` or a clearly marked historical log rather than turning old plans back into active requirements.
 
 AI-assisted contributions are welcome; accuracy and reproducible evidence matter more than whether an AI helped write the patch.
+
+
+## October 2026 project-direction guardrail
+
+Harbinger is no longer trying to duplicate every polished player-facing feature in Firkin's Control mod. Treat `docs/project-direction.md` as the strategic source of truth and `docs/control-0.9-study.md` as the external comparison record.
+
+When proposing work:
+
+- prefer robust reusable primitives, diagnostics, compatibility tooling, and genuinely new control surfaces;
+- do not add player-facing parity features solely because Control has them;
+- preserve Harbinger's generic validator-driven skill architecture rather than importing a large champion-specific profile model;
+- use Control only as a behavioral/differential research oracle unless Firkin later publishes source under terms that explicitly permit reuse;
+- keep the accepted 60 Hz authoritative simulation baseline;
+- multiplayer work begins with `docs/multiplayer-research.md` reconnaissance, not rollback/netcode implementation.
