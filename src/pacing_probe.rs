@@ -12,7 +12,9 @@
 //! tick; the tick is allowed to finish, then Candidate A blocks again until the user explicitly
 //! starts Direct Control. This preserves the loader's physically validated path while preventing
 //! further watched-match progress once the battlefield is actually available.
-//! The worker-local Ctrl+Home escape remains available while a Candidate-A callback is held.
+//! The worker-local Ctrl+Home poll remains available while a Candidate-A callback is held. A press
+//! records start intent immediately, but actual simulation release waits for the same interactive +
+ //! presentation-synchronized prerequisites as the render-thread path.
 //!
 //! Pause uses a separate presentation gate. Ctrl+End permanently releases pacing and manual input
 //! for the current match.
@@ -83,6 +85,10 @@ static FIRST_CENTER_LOG_MS: AtomicU64 = AtomicU64::new(NO_TICK);
 static FIRST_INGAME_RENDER_TICK: AtomicU64 = AtomicU64::new(NO_TICK);
 static FIRST_INGAME_RENDER_MS: AtomicU64 = AtomicU64::new(NO_TICK);
 
+// START_INTENT_PENDING records the user's Ctrl+Home intent separately from the actual
+// simulation release. A press that arrives one render/update before the safe startup
+// prerequisites are published must not be consumed and lost.
+static START_INTENT_PENDING: AtomicBool = AtomicBool::new(false);
 static START_REQUESTED: AtomicBool = AtomicBool::new(false);
 static START_AUTO_RELEASED: AtomicBool = AtomicBool::new(false);
 static INTERACTIVE_MATCH: AtomicBool = AtomicBool::new(false);
@@ -166,6 +172,7 @@ fn reset_job_runtime() {
     LAST_CANDIDATE_A_THREAD.store(0, Ordering::Release);
     SEEN_PLAYER_MASK.store(0, Ordering::Release);
 
+    START_INTENT_PENDING.store(false, Ordering::Release);
     START_REQUESTED.store(false, Ordering::Release);
     START_AUTO_RELEASED.store(false, Ordering::Release);
     LAST_RENDER_HEARTBEAT_MS.store(0, Ordering::Release);
@@ -304,28 +311,57 @@ pub fn ready_gate_tick() -> Option<u64> {
 
 pub fn set_startup_presentation_synced(synced: bool) {
     STARTUP_PRESENTATION_SYNCED.store(synced, Ordering::Release);
+    if synced {
+        try_activate_pending_start();
+    }
 }
 
 pub fn startup_presentation_synced() -> bool {
     STARTUP_PRESENTATION_SYNCED.load(Ordering::Acquire)
 }
 
-/// Starts the held Candidate-A simulation and re-anchors the 60 Hz wall-clock pacer.
+fn try_activate_pending_start() -> bool {
+    if START_REQUESTED.load(Ordering::Acquire) {
+        START_INTENT_PENDING.store(false, Ordering::Release);
+        return true;
+    }
+    if !START_INTENT_PENDING.load(Ordering::Acquire)
+        || manual_control_released()
+        || !crate::replay_action_gate::installed()
+        || !INTERACTIVE_MATCH.load(Ordering::Acquire)
+        || !STARTUP_PRESENTATION_SYNCED.load(Ordering::Acquire)
+    {
+        return false;
+    }
+
+    START_REQUESTED.store(true, Ordering::Release);
+    START_INTENT_PENDING.store(false, Ordering::Release);
+    PRESENTATION_PHASE.store(PHASE_RUNNING, Ordering::Release);
+    reanchor_pacer();
+    crate::diagnostics::event(
+        "Queued Ctrl+Home activated after interactive + presentation-sync prerequisites",
+    );
+    true
+}
+
+/// Records the user's Ctrl+Home intent, then starts the held Candidate-A simulation as soon as
+/// the verified replay gate, interactive match, and presentation synchronization are all ready.
+///
+/// This intent/result split is deliberate: render/update ordering can expose the user's key edge one
+/// callback before the readiness flags. Consuming that edge and simply returning forced the player
+/// to release and press Ctrl+Home again, which looked exactly like a spectator-lock failure.
 pub fn request_start_simulation() {
     if manual_control_released() || !crate::replay_action_gate::installed() {
         // Unsupported/unverified native lookup means no safe Direct Control start.
         return;
     }
 
-    if INTERACTIVE_MATCH.load(Ordering::Acquire)
-        && !STARTUP_PRESENTATION_SYNCED.load(Ordering::Acquire)
-    {
-        return;
-    }
+    START_INTENT_PENDING.store(true, Ordering::Release);
+    let _ = try_activate_pending_start();
+}
 
-    START_REQUESTED.store(true, Ordering::Release);
-    PRESENTATION_PHASE.store(PHASE_RUNNING, Ordering::Release);
-    reanchor_pacer();
+pub fn start_intent_pending() -> bool {
+    START_INTENT_PENDING.load(Ordering::Acquire)
 }
 
 /// Publish a render heartbeat independently of pause-state inference. If the client stops
@@ -348,6 +384,12 @@ pub fn set_presentation_state(interactive_match: bool, paused: bool) {
             LAST_CANDIDATE_A_TICK.load(Ordering::Acquire),
             Ordering::Release,
         );
+    }
+
+    // post_render can observe Ctrl+Home before this callback publishes the first InGame
+    // INTERACTIVE_MATCH=true state. Re-evaluate any queued intent after publishing it.
+    if interactive_match {
+        let _ = try_activate_pending_start();
     }
 
     if !START_REQUESTED.load(Ordering::Acquire) {
@@ -571,7 +613,10 @@ fn wait_until_started() -> bool {
             ));
             request_start_simulation();
             let started = START_REQUESTED.load(Ordering::Acquire);
-            crate::diagnostics::event(&format!("Worker-thread Ctrl+Home result started={started}"));
+            crate::diagnostics::event(&format!(
+                "Worker-thread Ctrl+Home result started={started} pending={}",
+                start_intent_pending()
+            ));
             if started {
                 return true;
             }
