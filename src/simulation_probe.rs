@@ -69,8 +69,20 @@ const BUILD_0_6_2: SimulationLayout = SimulationLayout {
     core_runner_anchor_rva: None,
 };
 
+const BUILD_0_6_3: SimulationLayout = SimulationLayout {
+    pe_timestamp: 0x6AC5_C567,
+    image_size: 0x052D_6000,
+    // Static v0.6.3 relocation: all three jobs moved together by +0x18070 from
+    // v0.6.2, retain 0xA90 spacing, and preserve the exact detour-safe prologue.
+    // Candidate A remains the live watched-simulation discriminator; do not replace
+    // that identity check with origin/seed/tick heuristics.
+    candidate_rvas: [0x00BF_C320, 0x00BF_CDB0, 0x00BF_D840],
+    core_wrapper_rva: None,
+    core_runner_anchor_rva: None,
+};
+
 fn known_layout(timestamp: u32, image_size: u32) -> Option<&'static SimulationLayout> {
-    [&BUILD_0_5_8, &BUILD_0_6_0, &BUILD_0_6_1, &BUILD_0_6_2]
+    [&BUILD_0_5_8, &BUILD_0_6_0, &BUILD_0_6_1, &BUILD_0_6_2, &BUILD_0_6_3]
         .into_iter()
         .find(|layout| layout.pe_timestamp == timestamp && layout.image_size == image_size)
 }
