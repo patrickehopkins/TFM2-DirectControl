@@ -42,15 +42,22 @@ const BUILD_0_6_2: ReplayActionLayout = ReplayActionLayout {
     binding_lookup_rva: 0x028D_3E90,
 };
 
+const BUILD_0_6_3: ReplayActionLayout = ReplayActionLayout {
+    pe_timestamp: 0x6AC5_C567,
+    image_size: 0x052D_6000,
+    binding_lookup_rva: 0x01C3_3180,
+};
+
 fn known_layout(timestamp: u32, image_size: u32) -> Option<&'static ReplayActionLayout> {
-    [&BUILD_0_6_1, &BUILD_0_6_2]
+    [&BUILD_0_6_1, &BUILD_0_6_2, &BUILD_0_6_3]
         .into_iter()
         .find(|layout| layout.pe_timestamp == timestamp && layout.image_size == image_size)
 }
 
-// Exact first 12 complete instructions bytes, verified from the uploaded
-// SHA-256 91084e9a...d15c2268f98 executable. No RIP-relative instructions;
-// the next instruction after these 12 bytes reads the original rcx.
+// Exact first 12 complete instruction bytes, retained by the known layouts.
+// v0.6.3 (PE timestamp 0x6AC5C567, image 0x052D6000) contains this prologue
+// uniquely at the relocated lookup. No RIP-relative instructions; the next
+// instruction after these 12 bytes reads the original rcx.
 const PATCH_LEN: usize = 12;
 const EXPECTED_PROLOGUE: [u8; PATCH_LEN] = [
     0x56, // push rsi
