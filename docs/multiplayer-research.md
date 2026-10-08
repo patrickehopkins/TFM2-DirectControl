@@ -165,6 +165,53 @@ A downstream mod should be able to provide its local manual command stream while
 
 That would let future mods concentrate on gameplay/UI rather than reinventing multiplayer synchronization.
 
+## Networking research, operating budget, and external references (2026-10-08)
+
+**Research only.** Multiplayer Direct Control is not shipped. No transport, networking service, netcode model, or external engine has been selected. Keep this plan distinct from the working single-player mod.
+
+### Hard cost constraint
+
+**$0.00/month** to maintain multiplayer networking. Do not require a rented server, subscription, metered relay, paid matchmaking, or recurring domain registration. Reasonably priced **one-time licenses** may be investigated case by case; none is approved. Prefer player-hosted sessions and modular networking with a direct/alternate connection path if a free service changes policy. Free third-party services are subject to terms, limits, and future pricing changes.
+
+Do **not** assume any particular home ISP. Evaluate ordinary NAT, CGNAT, firewalls, and unfavorable NAT combinations, but do not mistake a Starlink-at-work connection for the developer's personal networking setup.
+
+### Separate feasibility gates
+
+1. **Simulation/control gate (primary unknown):** Observe two *vanilla* TFM2 clients in the same match; confirm whether they share deterministic ticks and game state and whether either is authoritative. Determine whether an external InputV1 command can enter the *live authoritative simulation* at a known tick without violating StablePlayerAi determinism. A precomputed replay or a locally altered presentation is not proof of multiplayer interaction.
+2. **Connectivity gate (downstream):** After input injection is shown viable, deliver authenticated commands between machines, with ownership, ticks, ordering, delivery, deduplication, and disconnect behavior. Free transports exist; they cannot repair a missing game simulation hook.
+
+Failure through the **stable mod API** does *not* prove TFM2 multiplayer impossible. Potential later investigations include a supported queued-input interface, upstream mod API request, or explicitly version-scoped native hooks. OS keyboard injection is not a demonstrated solution to independently controlling 2–10 champions. Do not implement a large network stack before this gate is solved.
+
+### Candidate connectivity paths — none adopted
+
+| Approach | Possible role | Important qualification |
+| --- | --- | --- |
+| Loopback / LAN transport | Local two-process and two-computer probes | Does not establish public internet reachability |
+| Direct UDP / WebRTC / ICE | Player-hosted peers without rented servers | Requires signaling, security, NAT traversal, and possibly relay fallback |
+| Epic Online Services P2P / lobbies / relay | Potential no-hosting-fee connectivity | Verify **third-party TFM2 mod** eligibility, SDK terms and credentials; cannot assume permission to use TFM2's product identity |
+| Steamworks P2P / Steam Datagram Relay | Possible Steam-based connections | Owning/modding a Steam game does not confer Steamworks app credentials or guaranteed access to Valve's relays. Open-source GameNetworkingSockets does not bundle the proprietary Steam relay backend |
+| Cloudflare Tunnel + WebSockets | HTTPS/WebSocket signaling or experimental command relay | Not a free generic UDP game relay. Named production hostnames generally need a domain; Quick Tunnels are for development. Paid Spectrum is excluded |
+| Tailscale / ZeroTier | Closed collaboration/testing | Free-tier user/device restrictions and possible accounts make them unproven as a public ten-player infrastructure solution |
+
+All service terms and free-tier limits must be rechecked before any adoption. A third-party relay is never a guarantee of universal free connectivity.
+
+### Prototype design and test sequence
+
+- Preserve the existing two-client observation, identical-tick hash, and one-sided harmless MoveTo experiment above. Compare inputs and simulation state *before* selecting lockstep, host authority, snapshots, or rollback.
+- If injection works, isolate: network transport -> authorized match/participant ownership -> ordered tick-indexed command queue -> deterministic simulation. **Never read sockets within deterministic callbacks.**
+- Exchange command intent and stable entity identity, not camera/render state; include session, simulation tick, sequence and integrity checks.
+- Establish two participants first. **Up to ten human-controlled champions** is a later aspiration, not a verified capability.
+- Exercise loss, delay, jitter, packet reordering, firewalls/NAT, disconnects, repeated joins, and first divergent tick with existing emulation tools before building a custom test laboratory.
+- Keep player-facing claims at "single-player only" until actual multiplayer passes repeatable two-machine tests.
+
+### Reference hierarchy
+
+**Established conceptual guidance** — Gaffer on Games (https://gafferongames.com/categories/networked-physics/), Valve Source multiplayer architecture (https://developer.valvesoftware.com/wiki/Source_Multiplayer_Networking), GGPO's deterministic save/restore/rollback requirements (https://github.com/pond3r/ggpo/blob/master/doc/DeveloperGuide.md), and GameNetworkingSockets' transport-versus-service distinction (https://github.com/ValveSoftware/GameNetworkingSockets/blob/master/README_P2P.md). **TFM2's actual API and peer-level probe results override any generic architectural inference.**
+
+**Secondary implementations to study, not adopt by mention** — GGRS (https://github.com/gschup/ggrs) for sync tests and multiple participants; Drift Engine (https://driftengine.dev/) for a compact example of deterministic stepping, rewinds, and simulated poor network conditions. Drift is neither a new networking paradigm nor established proof of large-scale reliability, and **there is no commitment to use it**.
+
+**Provider policy sources** — EOS licensing (https://onlineservices.epicgames.com/licensing) and acceptable use (https://onlineservices.epicgames.com/services/terms/aup); Steam networking (https://partner.steamgames.com/doc/features/multiplayer/networking); Cloudflare Tunnel (https://developers.cloudflare.com/tunnel/get-started/) and Spectrum (https://developers.cloudflare.com/spectrum/get-started/).
+
 ## Non-goals for the reconnaissance phase
 
 - rollback;
