@@ -259,3 +259,22 @@ Two of Harbinger's three shipping native compatibility surfaces have high-confid
 - camera handler/private layout: **not yet safely relocated**
 
 Until the camera item is resolved, Harbinger should continue to reject v0.6.3 rather than run partially migrated.
+
+
+## 9. Cross-project stable match-hook execution finding
+
+Creep Chaos Probe 004 added an important stable-SDK runtime observation relevant to any future Harbinger work that uses `StableMatchHook`.
+
+In one ordinary v0.6.3 match, the hook's process-global counter exceeded **1,000,000 calls before Candidate-A watched tick 1** and continued climbing rapidly while the visible match advanced normally. Large numbers of otherwise-valid 10-champion / 16-tower simulation copies were observed.
+
+This confirms in practice that `StableMatchHook` is invoked across the game's internal simulation workload, not once per visible/watched tick.
+
+Implications for Harbinger:
+
+- do not use process-global hook-call counts as a live-match clock;
+- do not assume `ClientMatchView`, seed equality, or ordinary 5v5 entity counts identify the watched simulation;
+- Candidate-A discrimination remains the evidence-backed watched-client boundary;
+- any future gameplay mutation implemented through the stable match hook must explicitly decide whether it is intended to affect **all deterministic simulation copies** or only a specific observed/live context;
+- external direct-control input/presentation logic should continue to attach to Candidate A rather than a generic stable match callback.
+
+Creep Chaos used Candidate-A-only mutation in Probe 005 solely as an architecture proof so the effect could be correlated with the watched client. That restriction should **not** be copied into Harbinger gameplay logic without separately considering multiplayer determinism and AI/pre-sim consistency.
