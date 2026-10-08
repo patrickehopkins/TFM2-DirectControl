@@ -2,7 +2,7 @@
 
 Date: 2026-10-07
 
-Status: **static migration research complete for simulation and replay-gate hooks; camera relocation still required before a runnable Harbinger v0.6.3 build should be enabled.**
+Status: **simulation Candidate A is now physically cross-validated on v0.6.3; replay-gate relocation remains strong static evidence; camera relocation is still required before a runnable Harbinger v0.6.3 build should be enabled.**
 
 This document is intentionally fail-closed. Do not mark Harbinger compatible with v0.6.3 from static evidence alone.
 
@@ -64,11 +64,15 @@ const BUILD_0_6_3: SimulationLayout = SimulationLayout {
 
 Add it to `known_layout`.
 
-### Runtime confidence boundary
+### Runtime confidence boundary — updated after Creep Chaos Probe 002
 
-This is a high-confidence **static** relocation. Candidate A was physically validated as the watched/live job on prior Harbinger builds, but it has not yet been physically re-proven on v0.6.3.
+Creep Chaos Probe 002 has now physically exercised the relocated v0.6.3 Candidate-A detour.
 
-Creep Chaos Probe 002 now uses only the v0.6.3 Candidate-A detour to distinguish the live watched simulation from parallel `ClientMatchView` copies. A clean Probe 002 run is useful cross-validation before or alongside Harbinger's physical migration test.
+The watched-match capture contains exactly one match start / one tick-1 initialization and then one coherent timeline through tick 38,290; the duplicate ClientMatchView sequence seen without Candidate-A filtering is gone.
+
+Therefore **Candidate A at `0x00BFC320` is physically cross-validated as the watched/live client simulation job on the supplied v0.6.3 executable.**
+
+This is strong evidence for Harbinger's simulation-layout migration, but it is not a substitute for Harbinger's own full Direct Control smoke test: pacing, ownership, control injection, UI safety, camera, and release behavior still need physical validation together.
 
 ## 2. Replay action lookup: strong static relocation
 
