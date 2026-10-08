@@ -178,3 +178,49 @@ That would let future mods concentrate on gameplay/UI rather than reinventing mu
 - polished multiplayer UI.
 
 Those are all downstream questions. First establish TFM2's native synchronization model and whether identical externally supplied InputV1 commands remain deterministic.
+
+## October 8, 2026: cost constraint and external references
+
+**Status: research only. No networking implementation or dependency has been selected; Harbinger remains single-player.**
+
+### Non-negotiable operating budget
+
+The finished multiplayer feature must not require **any recurring developer/operator expenditure** for hosting, relays, sessions, matchmaking, domain renewal, dedicated servers, usage-metered services, or network access beyond participants' ordinary internet connections. The infrastructure budget is **$0.00/month**. A reasonably priced **one-time license** may be reviewed separately; purchasing it is not authorized by this document.
+
+Prefer player-hosted matches and an optional direct-connection path. A provider advertised as free can be investigated, but do not assume a permanent entitlement, unrestricted traffic, relay capacity, or permission for use from a third-party game mod. Record service terms, rate limits, authentication requirements, game/app ownership requirements, potential quota exhaustion, and what happens if the service disappears. Never make a mandatory paid fallback part of the design.
+
+**Network reachability is a general problem:** consumer routers, firewall policy, carrier-grade NAT, NAT traversal failures, and non-forwardable connections need eventual testing. Do not infer a particular personal ISP or network topology. Do not require a static public IP or router configuration from ordinary players.
+
+### Separate the two gates: simulation vs. transport
+
+**Gate A — Native simulation/authority:** prove that an input from outside the local game's usual keyboard/controller path can legally affect a *running authoritative match* at an agreed tick, rather than only the viewed replay or a local-only simulation. The existence of \`StablePlayerAi::think()\` / \`InputV1\` is not proof of safe live network integration. Identify the native data boundary and deterministic rules; do not read sockets, OS clocks, mutable external queues, or nondeterministic state directly inside deterministic simulation callbacks.
+
+**Gate B — Player connectivity:** only after Gate A is demonstrated, choose a transport for ordered/tick-addressed inputs, acknowledgments where necessary, peer/host roles, session binding, reconnect policy, and state hashes. A successful LAN socket test proves nothing about Gate A, and a successful single-player manual-input mod proves nothing about Gate B.
+
+If Gate A fails through the stable API, distinguish *stable API limitation* from *underlying engine impossibility*. Investigate, in order: an upstream SDK request for synchronized external inputs, documented native multiplayer command ingress, carefully version-checked native hooks, and a separately tested host-side command interface. A lower-level approach must fail closed when game signatures change. Do not claim that a WebSocket, relay, VPN, or library can bypass an engine that cannot accept external commands. If no safe authoritative-tick ingress can be demonstrated, stop multiplayer implementation and document that blocker.
+
+### Updated staged experiments
+
+0. **Single-machine input-boundary proof:** in a local test match, feed a synthetic, tick-labelled harmless command via a non-keyboard producer and check which simulation (live authoritative vs. replay presentation) consumes it. This is a controlled feasibility probe, not multiplayer support.
+1. **Unmodified vanilla two-player baseline:** compare two instances' tick numbers, stable identities and canonical state hashes; learn which instance(s) simulate and who has authority.
+2. **One-sided controlled divergence:** perform the previously specified harmless \`InputV1\` experiment at a recorded tick. Observe whether the game replicates, ignores, corrects or diverges.
+3. **Deterministic ingress prototype:** if feasible, serialize one remote command with session ID, tick, stable champion identity, kind, payload and sequence; apply it only at the validated ingress boundary. Measure latency and replay/simulation drift without assuming rollback.
+4. **Free two-machine transport:** begin with LAN or direct networking. Compare optional free relay/NAT traversal services only when needed. Test disconnects, duplicates, out-of-order delivery, packet loss, and inconsistent inputs; measure state hashes.
+5. **Capacity research:** start from the game's ordinary two-player session. Only after verified ownership, session and authority behavior should an aspirational **up-to-ten independent controllers** be investigated. This is **not** a current supported feature.
+
+Do not create a standalone network laboratory merely to recreate capabilities already offered by GGPO sync tests, existing impairment tools, or the game's own instrumentation.
+
+### Reference hierarchy (not technology commitments)
+
+| Reference | Research value | Adoption status |
+| --- | --- | --- |
+| [Team Samoyed stable mod SDK](https://github.com/TeamSamoyed/TeamfightManager2Mod) | Native deterministic input and multiplayer API rules; first authority for this mod | API to inspect/validate against installed game version |
+| [Gaffer On Games — Networked Physics](https://gafferongames.com/categories/networked-physics/) | Lockstep versus state synchronization, host authority, packet/timing constraints | Design reading only |
+| [Valve — Source Multiplayer Networking](https://developer.valvesoftware.com/wiki/Source_Multiplayer_Networking) | Commands, server authority, interpolation, prediction | Design reading only |
+| [GGPO Developer Guide](https://github.com/pond3r/ggpo/blob/master/doc/DeveloperGuide.md) | Determinism tests, input logs, state serialization and *rollback prerequisites* | Comparative reference; **do not assume rollback is possible in TFM2** |
+| [GGRS](https://github.com/gschup/ggrs) | Alternate input-sync and sync-test examples | Comparative reference only |
+| [Drift Engine](https://driftengine.dev/) | Compact illustrative architecture for rewinds, input history and test visualization | **Small/less-established example only; not a selected engine, transport or dependency** |
+
+**Connectivity candidates (all unselected):** direct UDP or WebRTC (no required operator fee but NAT limitations); Epic Online Services networking/relay (check [license](https://onlineservices.epicgames.com/licensing), authentication, third-party-mod eligibility and availability); Steam networking (do **not** assume our mod may use TFM2's Steam application networking identity); temporary personal overlays such as Tailscale/ZeroTier for a small test cohort (free-tier device/user limits); and WebSocket command bridging through Cloudflare Tunnel only where its applicable terms and traffic requirements fit. **Cloudflare Spectrum is paid and not a $0 general UDP game-hosting solution.** A free tunnel does not imply permanent free domain registration or production-grade game-transport guarantees.
+
+The native simulation feasibility result, not the choice of networking provider, determines whether TFM2 multiplayer is possible. Do not introduce Drift as a presumed solution, and do not rewrite this research plan as a claim of shipping multiplayer.
