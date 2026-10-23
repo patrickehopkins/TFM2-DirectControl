@@ -213,8 +213,9 @@ impl DirectControlExtension {
             ));
             pacing_probe::request_start_simulation();
             diagnostics::event(&format!(
-                "Ctrl+Home result started={} phase={}",
+                "Ctrl+Home result started={} pending={} phase={}",
                 pacing_probe::start_requested(),
+                pacing_probe::start_intent_pending(),
                 pacing_probe::presentation_phase_label()
             ));
         }
@@ -969,8 +970,11 @@ impl DirectControlExtension {
 
     fn draw_ready_prompt(ctx: &mut StableClient<'_>) {
         let synced = pacing_probe::startup_presentation_synced();
+        let pending = pacing_probe::start_intent_pending();
         let message = if !replay_action_gate::installed() {
             "Replay safety unavailable. Ctrl+End to release; see log.log."
+        } else if pending && !synced {
+            "Ctrl+Home received. Synchronizing Direct Control with the live match..."
         } else if synced {
             "Direct Control is ready. Press Ctrl+Home to take control and resume the match."
         } else {
@@ -1286,9 +1290,10 @@ impl StableExtension for DirectControlExtension {
                     .collect::<Vec<_>>()
                     .join(", ");
                 format!(
-                    "MATCH phase={} started={} synced={} ready_tick={:?} visible_seconds={:?} last_tick={:?} foreground={} replay_gate={} speed_override={} manual_enabled={} selected={} visible_nonstandard_targets=[{}]",
+                    "MATCH phase={} started={} pending_start={} synced={} ready_tick={:?} visible_seconds={:?} last_tick={:?} foreground={} replay_gate={} speed_override={} manual_enabled={} selected={} visible_nonstandard_targets=[{}]",
                     pacing_probe::presentation_phase_label(),
                     pacing_probe::start_requested(),
+                    pacing_probe::start_intent_pending(),
                     synced,
                     pacing_probe::ready_gate_tick(),
                     Self::visible_match_seconds(ctx),

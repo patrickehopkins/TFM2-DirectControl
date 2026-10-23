@@ -34,8 +34,10 @@ start has a separate header.
   readiness tick, visible clock, last watched simulation tick, foreground
   process ownership, replay safety, native speed-override state, and whether
   a champion is selected.
-- Ctrl+Home attempts, including activation and blocked states. The worker
-  path also records activation during a render-blocking loading callback.
+- Ctrl+Home attempts, including whether the request started immediately or was
+  queued as `pending`. The worker path also records presses observed during a
+  render-blocking loading callback. A queued start should later emit
+  `Queued Ctrl+Home activated after interactive + presentation-sync prerequisites`.
 - A one-time ten-slot roster-health report once manual control is enabled:
   `candidate_a_roster` count, authoritative roster completeness, resolved
   `team_blocks`, `manager_club_id`, contract identity count, per-side ownership
@@ -92,3 +94,28 @@ A startup-stall watchdog is not part of this maintenance update; existing
 match lifecycle and heartbeat diagnostics remain the first investigation path.
 Do not rewrite the maintainer's hand-edited Steam Workshop description as
 part of diagnostic maintenance.
+
+
+## Ctrl+Home queued-start hardening (development after v0.1.5)
+
+A startup race was identified in the control handoff itself, independent of F-key
+selection. The render thread could observe the Ctrl+Home rising edge immediately
+before the same frame/update published either `INTERACTIVE_MATCH=true` or
+`STARTUP_PRESENTATION_SYNCED=true`.
+
+Previously, `request_start_simulation()` simply returned when synchronization
+was not ready. The physical key edge had already been consumed, so the user had
+to release and press Ctrl+Home again. Depending on timing, that could look like
+the mod was permanently stuck in spectator mode.
+
+The hardened design separates **user intent** from **safe activation**:
+
+1. a valid foreground Ctrl+Home press records `pending_start=true`;
+2. Harbinger continues to hold Candidate A;
+3. once the verified replay gate, interactive match, and presentation sync are
+   all true, the pending request activates automatically;
+4. the pending flag is cleared only on activation or match reset.
+
+This is intentionally a latch, not a relaxation of startup safety. Ctrl+Home
+still cannot start an unsupported replay-gate build or bypass presentation
+synchronization.
